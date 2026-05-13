@@ -1,0 +1,82 @@
+import { useCallback } from "react";
+import { Mic, MicOff, Volume2 } from "lucide-react";
+import type { PeerState } from "../stores/room";
+
+interface ParticipantCardProps {
+  peer: PeerState;
+  isLocal: boolean;
+  onVolumeChange?: (volume: number) => void;
+}
+
+function getInitials(name: string): string {
+  return name
+    .split(/\s+/)
+    .map((w) => w[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+}
+
+export function ParticipantCard({ peer, isLocal, onVolumeChange }: ParticipantCardProps) {
+  const handleVolume = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      onVolumeChange?.(parseFloat(e.target.value));
+    },
+    [onVolumeChange],
+  );
+
+  return (
+    <div
+      className="flex flex-col items-center gap-3 rounded-xl border border-sonic-600 bg-sonic-800 p-4 transition-all hover:border-sonic-500"
+      role="listitem"
+      aria-label={`${peer.displayName}${isLocal ? " (you)" : ""}${peer.isMuted ? ", muted" : ""}${peer.isSpeaking ? ", speaking" : ""}`}
+    >
+      {/* Avatar */}
+      <div
+        className={`flex h-16 w-16 items-center justify-center rounded-full text-lg font-bold transition-all ${
+          peer.isSpeaking
+            ? "speaking-ring border-2 border-speaking bg-speaking/20 text-speaking"
+            : peer.isMuted
+              ? "border-2 border-sonic-600 bg-sonic-700 text-sonic-400"
+              : "border-2 border-sonic-500 bg-sonic-700 text-sonic-200"
+        }`}
+      >
+        {getInitials(peer.displayName)}
+      </div>
+
+      {/* Name + status */}
+      <div className="flex items-center gap-1.5">
+        <span className="max-w-[120px] truncate text-sm font-medium text-sonic-100">
+          {peer.displayName}
+        </span>
+        {isLocal && (
+          <span className="rounded bg-sonic-accent/20 px-1.5 py-0.5 text-xs text-sonic-accent">
+            you
+          </span>
+        )}
+        {peer.isMuted ? (
+          <MicOff className="h-3.5 w-3.5 text-muted" aria-label="Muted" />
+        ) : (
+          <Mic className="h-3.5 w-3.5 text-sonic-300" aria-label="Unmuted" />
+        )}
+      </div>
+
+      {/* Volume slider (only for remote peers) */}
+      {!isLocal && (
+        <div className="flex w-full items-center gap-2">
+          <Volume2 className="h-3.5 w-3.5 shrink-0 text-sonic-400" />
+          <input
+            type="range"
+            min="0"
+            max="4"
+            step="0.01"
+            value={peer.volume}
+            onChange={handleVolume}
+            className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-sonic-600 accent-sonic-accent"
+            aria-label={`Volume for ${peer.displayName}`}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
