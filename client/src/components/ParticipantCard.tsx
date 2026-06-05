@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { Mic, MicOff, Volume2 } from "lucide-react";
+import { Mic, MicOff, Volume2, Music } from "lucide-react";
 import type { PeerState } from "../stores/room";
 
 interface ParticipantCardProps {
@@ -34,14 +34,16 @@ export function ParticipantCard({ peer, isLocal, onVolumeChange }: ParticipantCa
       {/* Avatar */}
       <div
         className={`flex h-16 w-16 items-center justify-center rounded-full text-lg font-bold transition-all ${
-          peer.isSpeaking
-            ? "speaking-ring border-2 border-speaking bg-speaking/20 text-speaking"
-            : peer.isMuted
-              ? "border-2 border-sonic-600 bg-sonic-700 text-sonic-400"
-              : "border-2 border-sonic-500 bg-sonic-700 text-sonic-200"
+          peer.isMusic
+            ? "border-2 border-sonic-accent bg-sonic-accent/20 text-sonic-accent"
+            : peer.isSpeaking
+              ? "speaking-ring border-2 border-speaking bg-speaking/20 text-speaking"
+              : peer.isMuted
+                ? "border-2 border-sonic-600 bg-sonic-700 text-sonic-400"
+                : "border-2 border-sonic-500 bg-sonic-700 text-sonic-200"
         }`}
       >
-        {getInitials(peer.displayName)}
+        {peer.isMusic ? <Music className="h-7 w-7" /> : getInitials(peer.displayName)}
       </div>
 
       {/* Name + status */}
@@ -54,7 +56,9 @@ export function ParticipantCard({ peer, isLocal, onVolumeChange }: ParticipantCa
             you
           </span>
         )}
-        {peer.isMuted ? (
+        {peer.isMusic ? (
+          <Music className="h-3.5 w-3.5 text-sonic-accent" aria-label="Music stream" />
+        ) : peer.isMuted ? (
           <MicOff className="h-3.5 w-3.5 text-muted" aria-label="Muted" />
         ) : (
           <Mic className="h-3.5 w-3.5 text-sonic-300" aria-label="Unmuted" />

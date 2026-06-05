@@ -22,7 +22,13 @@ export const routerOptions: RouterOptions = {
         useinbandfec: 1,
         usedtx: 0,
         maxplaybackrate: 48000,
-        maxaveragebitrate: 64000,
+        // This is a ceiling, not a floor. Voice producers self-limit to mono
+        // 64k via their own offered fmtp (client `forceOpusParams` /
+        // `opusStereo:false`), so raising the router ceiling does NOT make
+        // voice balloon. It only lets the stereo "music caster" producer
+        // (Ecobox) negotiate up to a hi-fi bitrate. Do not lower this back to
+        // 64000 — that would silently clamp the music stream to voice quality.
+        maxaveragebitrate: 256000,
         minptime: 10,
         ptime: 10,
       },

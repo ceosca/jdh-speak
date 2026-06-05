@@ -191,15 +191,23 @@ describe("decideMode", () => {
     assert.deepEqual(decideMode(1, "p2p", false), { mode: "p2p", action: "none" });
   });
 
-  it("forces SFU while recording even with <=2 peers", () => {
+  it("forces SFU when forceSfu is set even with <=2 peers", () => {
+    // forceSfu is true while recording OR while a music caster is present.
     assert.deepEqual(decideMode(2, "p2p", true), { mode: "sfu", action: "switch-to-sfu" });
     assert.deepEqual(decideMode(1, "sfu", true), { mode: "sfu", action: "none" });
   });
 
-  it("never downgrades to P2P while recording", () => {
+  it("never downgrades to P2P while forceSfu holds", () => {
     const d = decideMode(2, "sfu", true);
     assert.equal(d.action, "none");
     assert.equal(d.mode, "sfu");
+  });
+
+  it("a 2-peer room with a caster (user + Ecobox) stays SFU", () => {
+    // user + caster = 2 peers; forceSfu (caster present) keeps it on the SFU.
+    assert.deepEqual(decideMode(2, "p2p", true), { mode: "sfu", action: "switch-to-sfu" });
+    // caster leaves -> 1 peer, not forced -> back to P2P.
+    assert.deepEqual(decideMode(1, "sfu", false), { mode: "p2p", action: "switch-to-p2p" });
   });
 });
 

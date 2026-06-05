@@ -29,6 +29,10 @@ const displayNameSchema = z
 const joinSchema = z.object({
   roomName: roomNameSchema,
   displayName: displayNameSchema,
+  // A "caster" is a send-only media source (e.g. Ecobox streaming music). It
+  // produces a stereo track but never consumes or sets up P2P, so its presence
+  // forces the room onto the SFU.
+  role: z.enum(["caster"]).optional(),
 });
 
 function closeSfuResources(peer: Peer) {
@@ -54,11 +58,18 @@ export function createSignalingServer(httpServer: HttpServer, recordingManager: 
     io.to(roomName).emit("recording-expired", { recordingId });
   };
 
+  // The room must be pinned to the SFU when the server has to see/route the
+  // media itself: while recording, or while a send-only "music caster" peer
+  // (Ecobox) is present (a caster produces but never sets up P2P).
+  function shouldForceSfu(room: Room): boolean {
+    return recordingManager.isRecording(room.name) || room.casters.size > 0;
+  }
+
   // --- Evaluate room mode and trigger switches ---
-  // A recording forces SFU and prevents the usual downgrade to P2P, so the
-  // server keeps seeing the media for the whole recording.
+  // A recording (or an active music caster) forces SFU and prevents the usual
+  // downgrade to P2P, so the server keeps seeing the media.
   function applyModeDecision(room: Room) {
-    const decision = decideMode(room.peers.size, room.mode, recordingManager.isRecording(room.name));
+    const decision = decideMode(room.peers.size, room.mode, shouldForceSfu(room));
     if (decision.action === "none") return;
 
     room.mode = decision.mode;
@@ -84,10 +95,14 @@ export function createSignalingServer(httpServer: HttpServer, recordingManager: 
 
     socket.on("join", async (data: unknown, cb: (res: unknown) => void) => {
       try {
-        const { roomName, displayName } = joinSchema.parse(data);
-        console.log(`[ws] ${socket.id} joined ${roomName} as "${displayName}"`);
+        const { roomName, displayName, role } = joinSchema.parse(data);
+        console.log(`[ws] ${socket.id} joined ${roomName} as "${displayName}"${role ? ` (${role})` : ""}`);
         const room = await getOrCreateRoom(roomName);
         const peer = createPeer(room, socket.id, displayName);
+
+        // Register a caster BEFORE deciding the mode, so the join response (and
+        // the new peer's own setup) already reflects the forced-SFU room.
+        if (role === "caster") room.casters.add(socket.id);
 
         currentRoom = room;
         currentPeer = peer;
@@ -100,22 +115,23 @@ export function createSignalingServer(httpServer: HttpServer, recordingManager: 
           displayName,
         });
 
-        // Send existing peers to the new joiner
+        // Send existing peers to the new joiner. Each producer carries its
+        // `source` ("voice" | "music") so a late joiner can label/treat the
+        // music caster ("🎵") without waiting for a new-producer event.
         const existingPeers = Array.from(room.peers.entries())
           .filter(([id]) => id !== socket.id)
           .map(([id, p]) => ({
             peerId: id,
             displayName: p.displayName,
-            producerIds: Array.from(p.producers.keys()),
+            producers: Array.from(p.producers.values()).map((prod) => ({
+              producerId: prod.id,
+              source: (prod.appData?.source as string) ?? "voice",
+            })),
           }));
 
-        // Determine mode: 3+ peers => SFU, and an active recording also forces
-        // SFU even with <=2 peers.
-        const decision = decideMode(
-          room.peers.size,
-          room.mode,
-          recordingManager.isRecording(room.name),
-        );
+        // Determine mode: 3+ peers => SFU; an active recording or music caster
+        // also forces SFU even with <=2 peers.
+        const decision = decideMode(room.peers.size, room.mode, shouldForceSfu(room));
 
         cb({
           ok: true,
@@ -215,16 +231,19 @@ export function createSignalingServer(httpServer: HttpServer, recordingManager: 
           return;
         }
 
-        const { kind, rtpParameters } = z
+        const { kind, rtpParameters, source } = z
           .object({
             kind: z.enum(["audio", "video"]) as z.ZodType<MediaKind>,
             rtpParameters: z.any() as z.ZodType<RtpParameters>,
+            // "music" for a caster's stereo track, "voice" (default) for mics.
+            source: z.enum(["voice", "music"]).optional(),
           })
           .parse(data);
 
         const producer = await currentPeer.sendTransport.produce({
           kind,
           rtpParameters,
+          appData: { source: source ?? "voice" },
         });
 
         currentPeer.producers.set(producer.id, producer);
@@ -243,6 +262,7 @@ export function createSignalingServer(httpServer: HttpServer, recordingManager: 
           peerId: socket.id,
           producerId: producer.id,
           kind: producer.kind,
+          source: (producer.appData?.source as string) ?? "voice",
         });
 
         cb({ ok: true, producerId: producer.id });
@@ -387,6 +407,11 @@ export function createSignalingServer(httpServer: HttpServer, recordingManager: 
         if (room.peers.size <= 1 && recordingManager.getRecording(room.name)) {
           void recordingManager.discard(room.name).catch(() => {});
         }
+
+        // Drop this peer from the caster set before removePeer (which may
+        // destroy the room) so the mode decision below no longer forces SFU
+        // once the music caster is gone.
+        room.casters.delete(socket.id);
 
         removePeer(room, socket.id);
 

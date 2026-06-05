@@ -232,7 +232,7 @@ export function useMediasoup() {
 
   // --- SFU: consume a producer ---
   const consumeProducer = useCallback(
-    async (peerId: string, producerId: string) => {
+    async (peerId: string, producerId: string, source: string = "voice") => {
       const device = deviceRef.current;
       const recvTransport = recvTransportRef.current;
       if (!device || !recvTransport) return;
@@ -255,8 +255,12 @@ export function useMediasoup() {
 
       const pipeline = createAudioPipeline(consumer.track);
       peerAudiosRef.current.set(peerId, { ...pipeline, consumer });
+
+      // Flag a music-caster peer (e.g. Ecobox) so the UI shows it as a media
+      // source. Stereo is preserved end-to-end by createAudioPipeline.
+      if (source === "music") store.getState().setPeerMusic(peerId, true);
     },
-    [emit],
+    [emit, store],
   );
 
   // --- SFU: set up transports and produce ---
@@ -372,7 +376,11 @@ export function useMediasoup() {
       const joinRes = await emit<{
         ok: boolean;
         rtpCapabilities: Record<string, unknown>;
-        peers: Array<{ peerId: string; displayName: string; producerIds: string[] }>;
+        peers: Array<{
+          peerId: string;
+          displayName: string;
+          producers: Array<{ producerId: string; source: string }>;
+        }>;
         mode: RoomMode;
         recording: { recordingId: string } | null;
       }>("join", { roomName, displayName });
@@ -401,8 +409,8 @@ export function useMediasoup() {
         await setupSfu(joinRes.rtpCapabilities);
         // Consume existing producers
         for (const peer of joinRes.peers) {
-          for (const producerId of peer.producerIds) {
-            await consumeProducer(peer.peerId, producerId);
+          for (const prod of peer.producers) {
+            await consumeProducer(peer.peerId, prod.producerId, prod.source);
           }
         }
       }
@@ -512,9 +520,9 @@ export function useMediasoup() {
       });
 
       // SFU: new producer available
-      socket.on("new-producer", async ({ peerId, producerId }: { peerId: string; producerId: string }) => {
+      socket.on("new-producer", async ({ peerId, producerId, source }: { peerId: string; producerId: string; source?: string }) => {
         if (modeRef.current === "sfu") {
-          await consumeProducer(peerId, producerId);
+          await consumeProducer(peerId, producerId, source ?? "voice");
         }
       });
 

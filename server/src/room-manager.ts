@@ -23,6 +23,9 @@ export interface Room {
   router: Router;
   peers: Map<string, Peer>;
   mode: RoomMode;
+  // Peer ids of send-only "music caster" peers (e.g. Ecobox). While any are
+  // present the room is forced to SFU (see decideMode's forceSfu).
+  casters: Set<string>;
 }
 
 const rooms = new Map<string, Room>();
@@ -52,6 +55,7 @@ export async function getOrCreateRoom(roomName: string): Promise<Room> {
     router,
     peers: new Map(),
     mode: "p2p",
+    casters: new Set(),
   };
   rooms.set(roomName, room);
   return room;

@@ -6,6 +6,9 @@ export interface PeerState {
   isSpeaking: boolean;
   isMuted: boolean;
   volume: number; // 0-4
+  // True for a send-only "music caster" peer (e.g. Ecobox): rendered with a
+  // music icon and treated as a media source rather than a talking participant.
+  isMusic: boolean;
 }
 
 export type RoomMode = "p2p" | "sfu";
@@ -54,6 +57,7 @@ interface RoomState {
   setPeerSpeaking: (peerId: string, speaking: boolean) => void;
   setPeerMuted: (peerId: string, muted: boolean) => void;
   setPeerVolume: (peerId: string, volume: number) => void;
+  setPeerMusic: (peerId: string, isMusic: boolean) => void;
   reset: () => void;
 }
 
@@ -99,6 +103,7 @@ export const useRoomStore = create<RoomState>((set) => ({
         isSpeaking: false,
         isMuted: false,
         volume: 1,
+        isMusic: false,
       });
       return { peers };
     }),
@@ -131,6 +136,14 @@ export const useRoomStore = create<RoomState>((set) => ({
       const peers = new Map(state.peers);
       const peer = peers.get(peerId);
       if (peer) peers.set(peerId, { ...peer, volume });
+      return { peers };
+    }),
+
+  setPeerMusic: (peerId, isMusic) =>
+    set((state) => {
+      const peers = new Map(state.peers);
+      const peer = peers.get(peerId);
+      if (peer) peers.set(peerId, { ...peer, isMusic });
       return { peers };
     }),
 

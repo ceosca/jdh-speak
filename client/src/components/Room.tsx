@@ -154,6 +154,7 @@ export function Room() {
                 isSpeaking: false,
                 isMuted,
                 volume: 1,
+                isMusic: false,
               }}
               isLocal
             />
