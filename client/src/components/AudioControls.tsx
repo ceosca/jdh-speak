@@ -1,13 +1,19 @@
-import { Mic, MicOff, LogOut } from "lucide-react";
+import { Mic, MicOff, LogOut, ScreenShare, ScreenShareOff } from "lucide-react";
 import { useRoomStore } from "../stores/room";
 
 interface AudioControlsProps {
   onToggleMute: () => void;
+  onToggleAudioShare: () => void;
   onLeave: () => void;
 }
 
-export function AudioControls({ onToggleMute, onLeave }: AudioControlsProps) {
+export function AudioControls({
+  onToggleMute,
+  onToggleAudioShare,
+  onLeave,
+}: AudioControlsProps) {
   const isMuted = useRoomStore((s) => s.isMuted);
+  const isSharingAudio = useRoomStore((s) => s.isSharingAudio);
 
   return (
     <div
@@ -27,6 +33,28 @@ export function AudioControls({ onToggleMute, onLeave }: AudioControlsProps) {
         title="Toggle Mute (M)"
       >
         {isMuted ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
+      </button>
+
+      <button
+        onClick={onToggleAudioShare}
+        className={`flex h-11 w-11 items-center justify-center rounded-full transition-all ${
+          isSharingAudio
+            ? "bg-sonic-accent text-white hover:bg-sonic-accent/90"
+            : "bg-sonic-700 text-sonic-200 hover:bg-sonic-600"
+        }`}
+        aria-label={isSharingAudio ? "Stop sharing audio" : "Share audio"}
+        aria-pressed={isSharingAudio}
+        title={
+          isSharingAudio
+            ? "Stop sharing audio"
+            : "Share audio — pick a screen/tab and tick 'Share system audio'"
+        }
+      >
+        {isSharingAudio ? (
+          <ScreenShareOff className="h-5 w-5" />
+        ) : (
+          <ScreenShare className="h-5 w-5" />
+        )}
       </button>
 
       <div className="h-8 w-px bg-sonic-600" role="separator" />

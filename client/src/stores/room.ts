@@ -23,6 +23,7 @@ interface RoomState {
   isDeafened: boolean;
   isPushToTalk: boolean;
   pttActive: boolean;
+  isSharingAudio: boolean;
 
   // Peers
   peers: Map<string, PeerState>;
@@ -35,6 +36,7 @@ interface RoomState {
   setDeafened: (deafened: boolean) => void;
   setPttActive: (active: boolean) => void;
   togglePushToTalk: () => void;
+  setSharingAudio: (sharing: boolean) => void;
   addPeer: (peerId: string, displayName: string) => void;
   removePeer: (peerId: string) => void;
   setPeerSpeaking: (peerId: string, speaking: boolean) => void;
@@ -53,6 +55,7 @@ export const useRoomStore = create<RoomState>((set) => ({
   isDeafened: false,
   isPushToTalk: false,
   pttActive: false,
+  isSharingAudio: false,
   peers: new Map(),
 
   setConnected: (connected) => set({ connected }),
@@ -63,6 +66,7 @@ export const useRoomStore = create<RoomState>((set) => ({
   setDeafened: (isDeafened) => set({ isDeafened }),
   setPttActive: (pttActive) => set({ pttActive }),
   togglePushToTalk: () => set((s) => ({ isPushToTalk: !s.isPushToTalk })),
+  setSharingAudio: (isSharingAudio) => set({ isSharingAudio }),
 
   addPeer: (peerId, displayName) =>
     set((state) => {
@@ -119,6 +123,7 @@ export const useRoomStore = create<RoomState>((set) => ({
       isDeafened: false,
       isPushToTalk: false,
       pttActive: false,
+      isSharingAudio: false,
       peers: new Map(),
     }),
 }));

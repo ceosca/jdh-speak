@@ -11,7 +11,7 @@ type JoinState = "idle" | "joining" | "joined" | "error";
 export function Room() {
   const { roomName } = useParams<{ roomName: string }>();
   const navigate = useNavigate();
-  const { join, leave, toggleMute, setPeerVolume } =
+  const { join, leave, toggleMute, toggleAudioShare, setPeerVolume } =
     useMediasoup();
 
   const [joinState, setJoinState] = useState<JoinState>("idle");
@@ -163,6 +163,7 @@ export function Room() {
       <footer className="flex justify-center border-t border-sonic-700 p-4">
         <AudioControls
           onToggleMute={toggleMute}
+          onToggleAudioShare={toggleAudioShare}
           onLeave={handleLeave}
         />
       </footer>

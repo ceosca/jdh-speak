@@ -104,6 +104,12 @@ export function useMediasoup() {
   // P2P
   const p2pConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const modeRef = useRef<RoomMode>("p2p");
+  // Audio share (system / tab audio mixed with mic)
+  const displayStreamRef = useRef<MediaStream | null>(null);
+  const mixContextRef = useRef<AudioContext | null>(null);
+  const mixDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const mixMicSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const mixDisplaySourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
 
   const store = useRoomStore;
 
@@ -497,15 +503,23 @@ export function useMediasoup() {
   );
 
   const mute = useCallback(async () => {
-    // Mute the local track directly (works for both P2P and SFU)
+    // Mute the local mic track directly. When audio sharing is active the
+    // outgoing track is the mixer output, so we only want to silence the
+    // mic — system audio should keep flowing.
     const track = localStreamRef.current?.getAudioTracks()[0];
     if (track) track.enabled = false;
 
-    // Also pause the SFU producer if in SFU mode
-    if (modeRef.current === "sfu" && producerRef.current) {
-      producerRef.current.pause();
+    const sharing = store.getState().isSharingAudio;
+
+    // Only pause the producer/peer-mute signal when the mic is the
+    // outgoing track. Pausing while sharing audio would also stop the
+    // shared system audio.
+    if (!sharing) {
+      if (modeRef.current === "sfu" && producerRef.current) {
+        producerRef.current.pause();
+      }
+      await emit("producer-pause", {}).catch(() => {});
     }
-    await emit("producer-pause", {}).catch(() => {});
     store.getState().setMuted(true);
   }, [emit, store]);
 
@@ -513,10 +527,13 @@ export function useMediasoup() {
     const track = localStreamRef.current?.getAudioTracks()[0];
     if (track) track.enabled = true;
 
-    if (modeRef.current === "sfu" && producerRef.current) {
-      producerRef.current.resume();
+    const sharing = store.getState().isSharingAudio;
+    if (!sharing) {
+      if (modeRef.current === "sfu" && producerRef.current) {
+        producerRef.current.resume();
+      }
+      await emit("producer-resume", {}).catch(() => {});
     }
-    await emit("producer-resume", {}).catch(() => {});
     store.getState().setMuted(false);
   }, [emit, store]);
 
@@ -544,7 +561,123 @@ export function useMediasoup() {
     [store],
   );
 
+  // --- Audio share: replace outgoing track in both P2P senders and the SFU producer ---
+  const swapOutgoingAudioTrack = useCallback(async (track: MediaStreamTrack) => {
+    for (const pc of p2pConnectionsRef.current.values()) {
+      const sender = pc.getSenders().find((s) => s.track?.kind === "audio");
+      if (sender) {
+        try {
+          await sender.replaceTrack(track);
+        } catch (e) {
+          console.error("[audio-share] replaceTrack failed on P2P sender", e);
+        }
+      }
+    }
+    if (producerRef.current) {
+      try {
+        await producerRef.current.replaceTrack({ track });
+      } catch (e) {
+        console.error("[audio-share] replaceTrack failed on SFU producer", e);
+      }
+    }
+  }, []);
+
+  const tearDownAudioShare = useCallback(() => {
+    mixMicSourceRef.current?.disconnect();
+    mixMicSourceRef.current = null;
+    mixDisplaySourceRef.current?.disconnect();
+    mixDisplaySourceRef.current = null;
+    mixDestinationRef.current?.disconnect();
+    mixDestinationRef.current = null;
+    mixContextRef.current?.close().catch(() => {});
+    mixContextRef.current = null;
+    displayStreamRef.current?.getTracks().forEach((t) => t.stop());
+    displayStreamRef.current = null;
+  }, []);
+
+  const stopAudioShare = useCallback(async () => {
+    if (!store.getState().isSharingAudio) return;
+
+    // Restore the raw mic track on all outgoing senders/producer
+    const micTrack = localStreamRef.current?.getAudioTracks()[0];
+    if (micTrack) {
+      // Re-apply current mute state to the underlying track
+      micTrack.enabled = !store.getState().isMuted;
+      await swapOutgoingAudioTrack(micTrack);
+    }
+
+    tearDownAudioShare();
+    store.getState().setSharingAudio(false);
+  }, [store, swapOutgoingAudioTrack, tearDownAudioShare]);
+
+  const startAudioShare = useCallback(async () => {
+    if (store.getState().isSharingAudio) return;
+    if (!localStreamRef.current) return;
+
+    // Chrome requires `video: true` to expose system/tab audio. We discard
+    // the video track immediately — we only want the audio.
+    let displayStream: MediaStream;
+    try {
+      displayStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        } as MediaTrackConstraints,
+      });
+    } catch {
+      // User cancelled the picker, or the browser refused
+      return;
+    }
+
+    const audioTracks = displayStream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      displayStream.getTracks().forEach((t) => t.stop());
+      alert(
+        "No audio was shared. When choosing what to share, tick \"Share system audio\" (entire screen) or \"Share tab audio\" (Chrome tab). On Firefox/Safari this is not supported.",
+      );
+      return;
+    }
+
+    // Discard the video track — we don't need to send any video
+    displayStream.getVideoTracks().forEach((t) => t.stop());
+
+    // Build the mixer graph
+    const ctx = new AudioContext({ sampleRate: 48000, latencyHint: "interactive" });
+    const destination = ctx.createMediaStreamDestination();
+
+    const micSource = ctx.createMediaStreamSource(localStreamRef.current);
+    micSource.connect(destination);
+
+    const displayAudioOnly = new MediaStream(audioTracks);
+    const displaySource = ctx.createMediaStreamSource(displayAudioOnly);
+    displaySource.connect(destination);
+
+    mixContextRef.current = ctx;
+    mixDestinationRef.current = destination;
+    mixMicSourceRef.current = micSource;
+    mixDisplaySourceRef.current = displaySource;
+    displayStreamRef.current = displayStream;
+
+    const mixedTrack = destination.stream.getAudioTracks()[0];
+
+    // Fire when the user hits the browser's "Stop sharing" UI
+    audioTracks[0].addEventListener("ended", () => {
+      stopAudioShare();
+    });
+
+    await swapOutgoingAudioTrack(mixedTrack);
+    store.getState().setSharingAudio(true);
+  }, [store, swapOutgoingAudioTrack, stopAudioShare]);
+
+  const toggleAudioShare = useCallback(async () => {
+    if (store.getState().isSharingAudio) await stopAudioShare();
+    else await startAudioShare();
+  }, [store, startAudioShare, stopAudioShare]);
+
   const leave = useCallback(() => {
+    tearDownAudioShare();
     teardownP2p();
     teardownSfu();
     localStreamRef.current?.getTracks().forEach((t) => t.stop());
@@ -553,7 +686,7 @@ export function useMediasoup() {
     socketRef.current = null;
     deviceRef.current = null;
     store.getState().reset();
-  }, [teardownP2p, teardownSfu, store]);
+  }, [teardownP2p, teardownSfu, tearDownAudioShare, store]);
 
   useEffect(() => {
     return () => {
@@ -568,6 +701,7 @@ export function useMediasoup() {
     unmute,
     toggleMute,
     toggleDeafen,
+    toggleAudioShare,
     setPeerVolume,
     peerAudiosRef,
   };
