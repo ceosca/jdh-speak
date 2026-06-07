@@ -6,6 +6,9 @@ interface ParticipantCardProps {
   peer: PeerState;
   isLocal: boolean;
   onVolumeChange?: (volume: number) => void;
+  // Local card only: your outgoing mic gain (send-side), and its setter.
+  micGain?: number;
+  onMicGainChange?: (gain: number) => void;
 }
 
 function getInitials(name: string): string {
@@ -17,12 +20,25 @@ function getInitials(name: string): string {
     .slice(0, 2);
 }
 
-export function ParticipantCard({ peer, isLocal, onVolumeChange }: ParticipantCardProps) {
+export function ParticipantCard({
+  peer,
+  isLocal,
+  onVolumeChange,
+  micGain,
+  onMicGainChange,
+}: ParticipantCardProps) {
   const handleVolume = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onVolumeChange?.(parseFloat(e.target.value));
     },
     [onVolumeChange],
+  );
+
+  const handleMicGain = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      onMicGainChange?.(parseFloat(e.target.value));
+    },
+    [onMicGainChange],
   );
 
   return (
@@ -65,7 +81,7 @@ export function ParticipantCard({ peer, isLocal, onVolumeChange }: ParticipantCa
         )}
       </div>
 
-      {/* Volume slider (only for remote peers) */}
+      {/* Volume slider (remote peers): how loud you hear them — receive-side. */}
       {!isLocal && (
         <div className="flex w-full items-center gap-2">
           <Volume2 className="h-3.5 w-3.5 shrink-0 text-sonic-400" />
@@ -78,6 +94,25 @@ export function ParticipantCard({ peer, isLocal, onVolumeChange }: ParticipantCa
             onChange={handleVolume}
             className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-sonic-600 accent-sonic-accent"
             aria-label={`Volume for ${peer.displayName}`}
+          />
+        </div>
+      )}
+
+      {/* Mic-level slider (your own card): your outgoing gain — send-side, so it
+          changes how loud everyone hears you. Distinct from the volume sliders. */}
+      {isLocal && onMicGainChange && (
+        <div className="flex w-full items-center gap-2">
+          <Mic className="h-3.5 w-3.5 shrink-0 text-sonic-400" />
+          <input
+            type="range"
+            min="0"
+            max="4"
+            step="0.01"
+            value={micGain ?? 1}
+            onChange={handleMicGain}
+            className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-sonic-600 accent-sonic-accent"
+            aria-label="Your microphone level"
+            title={`Mic level: ${(micGain ?? 1).toFixed(1)}×`}
           />
         </div>
       )}

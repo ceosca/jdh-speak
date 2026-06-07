@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useRef, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { Headphones, Users, Loader2, Circle } from "lucide-react";
 import { useRoomStore } from "../stores/room";
 import { useMediasoup } from "../hooks/useMediasoup";
@@ -8,10 +8,20 @@ import { AudioControls } from "./AudioControls";
 
 type JoinState = "idle" | "joining" | "joined" | "error";
 
+// `?p2p=off` (also accepts false/0/no/disable/disabled) pins the room to the
+// SFU even with two participants, instead of the usual P2P mesh.
+function isP2pDisabled(value: string | null): boolean {
+  if (value == null) return false;
+  const v = value.toLowerCase();
+  return ["off", "false", "0", "no", "disable", "disabled"].includes(v);
+}
+
 export function Room() {
   const { roomName } = useParams<{ roomName: string }>();
+  const [searchParams] = useSearchParams();
+  const disableP2p = isP2pDisabled(searchParams.get("p2p"));
   const navigate = useNavigate();
-  const { join, leave, toggleMute, toggleAudioShare, toggleRecording, setPeerVolume } =
+  const { join, leave, toggleMute, toggleAudioShare, toggleRecording, setPeerVolume, setMicGain } =
     useMediasoup();
 
   const [joinState, setJoinState] = useState<JoinState>("idle");
@@ -22,6 +32,7 @@ export function Room() {
   const displayName = useRoomStore((s) => s.displayName);
   const peers = useRoomStore((s) => s.peers);
   const isMuted = useRoomStore((s) => s.isMuted);
+  const micGain = useRoomStore((s) => s.micGain);
   const mode = useRoomStore((s) => s.mode);
   const isRecording = useRoomStore((s) => s.isRecording);
   const announcement = useRoomStore((s) => s.announcement);
@@ -39,13 +50,13 @@ export function Room() {
     joinedRef.current = true;
     setJoinState("joining");
 
-    join(roomName, name)
+    join(roomName, name, { disableP2p })
       .then(() => setJoinState("joined"))
       .catch((err) => {
         setJoinState("error");
         setErrorMsg(err instanceof Error ? err.message : "Failed to join");
       });
-  }, [roomName, join, navigate]);
+  }, [roomName, join, navigate, disableP2p]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -157,6 +168,8 @@ export function Room() {
                 isMusic: false,
               }}
               isLocal
+              micGain={micGain}
+              onMicGainChange={setMicGain}
             />
           )}
 

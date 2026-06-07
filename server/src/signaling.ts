@@ -33,6 +33,9 @@ const joinSchema = z.object({
   // produces a stereo track but never consumes or sets up P2P, so its presence
   // forces the room onto the SFU.
   role: z.enum(["caster"]).optional(),
+  // Explicitly disable P2P for this room (the `?p2p=off` room URL param). Pins
+  // the room to the SFU even with <=2 peers; sticky once any joiner sets it.
+  disableP2p: z.boolean().optional(),
 });
 
 function closeSfuResources(peer: Peer) {
@@ -60,9 +63,10 @@ export function createSignalingServer(httpServer: HttpServer, recordingManager: 
 
   // The room must be pinned to the SFU when the server has to see/route the
   // media itself: while recording, or while a send-only "music caster" peer
-  // (Ecobox) is present (a caster produces but never sets up P2P).
+  // (Ecobox) is present (a caster produces but never sets up P2P). P2P can also
+  // be disabled outright for the room via the `?p2p=off` URL param.
   function shouldForceSfu(room: Room): boolean {
-    return recordingManager.isRecording(room.name) || room.casters.size > 0;
+    return recordingManager.isRecording(room.name) || room.casters.size > 0 || room.disableP2p;
   }
 
   // Auto-ducking: the room's AudioLevelObserver watches VOICE producers only
@@ -115,15 +119,17 @@ export function createSignalingServer(httpServer: HttpServer, recordingManager: 
 
     socket.on("join", async (data: unknown, cb: (res: unknown) => void) => {
       try {
-        const { roomName, displayName, role } = joinSchema.parse(data);
-        console.log(`[ws] ${socket.id} joined ${roomName} as "${displayName}"${role ? ` (${role})` : ""}`);
+        const { roomName, displayName, role, disableP2p } = joinSchema.parse(data);
+        console.log(`[ws] ${socket.id} joined ${roomName} as "${displayName}"${role ? ` (${role})` : ""}${disableP2p ? " (p2p disabled)" : ""}`);
         const room = await getOrCreateRoom(roomName);
         wireDucking(room);
         const peer = createPeer(room, socket.id, displayName);
 
-        // Register a caster BEFORE deciding the mode, so the join response (and
-        // the new peer's own setup) already reflects the forced-SFU room.
+        // Register a caster / P2P-disable BEFORE deciding the mode, so the join
+        // response (and the new peer's own setup) already reflects the
+        // forced-SFU room. disableP2p is sticky for the room's lifetime.
         if (role === "caster") room.casters.add(socket.id);
+        if (disableP2p) room.disableP2p = true;
 
         currentRoom = room;
         currentPeer = peer;

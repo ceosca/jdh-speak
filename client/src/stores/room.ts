@@ -1,5 +1,20 @@
 import { create } from "zustand";
 
+// Outgoing mic gain is a per-device preference, so it's persisted and survives
+// reloads — and carries from the lobby's mic preview into the room.
+const MIC_GAIN_KEY = "sonicroom:micGain";
+export const MAX_MIC_GAIN = 4;
+
+function loadMicGain(): number {
+  try {
+    const v = parseFloat(localStorage.getItem(MIC_GAIN_KEY) ?? "");
+    if (Number.isFinite(v)) return Math.min(MAX_MIC_GAIN, Math.max(0, v));
+  } catch {
+    // localStorage unavailable (e.g. private mode) — fall back to unity.
+  }
+  return 1;
+}
+
 export interface PeerState {
   peerId: string;
   displayName: string;
@@ -27,6 +42,10 @@ interface RoomState {
   isPushToTalk: boolean;
   pttActive: boolean;
   isSharingAudio: boolean;
+  // Outgoing (send-side) mic gain applied before the track reaches peers/SFU,
+  // 0–MAX_MIC_GAIN. 1 = unity (raw mic). Lets a quiet/cheap mic be boosted for
+  // everyone, independent of each listener's per-peer playback volume.
+  micGain: number;
 
   // Recording (a recording belongs to the room; visible to everyone)
   isRecording: boolean;
@@ -50,6 +69,7 @@ interface RoomState {
   setPttActive: (active: boolean) => void;
   togglePushToTalk: () => void;
   setSharingAudio: (sharing: boolean) => void;
+  setMicGain: (gain: number) => void;
   setRecording: (recording: boolean, recordingId?: string | null) => void;
   announce: (message: string) => void;
   addPeer: (peerId: string, displayName: string) => void;
@@ -72,6 +92,7 @@ export const useRoomStore = create<RoomState>((set) => ({
   isPushToTalk: false,
   pttActive: false,
   isSharingAudio: false,
+  micGain: loadMicGain(),
   isRecording: false,
   recordingId: null,
   announcement: "",
@@ -87,6 +108,14 @@ export const useRoomStore = create<RoomState>((set) => ({
   setPttActive: (pttActive) => set({ pttActive }),
   togglePushToTalk: () => set((s) => ({ isPushToTalk: !s.isPushToTalk })),
   setSharingAudio: (isSharingAudio) => set({ isSharingAudio }),
+  setMicGain: (micGain) => {
+    try {
+      localStorage.setItem(MIC_GAIN_KEY, String(micGain));
+    } catch {
+      // Persistence is best-effort; keep the in-memory value regardless.
+    }
+    set({ micGain });
+  },
   setRecording: (isRecording, recordingId) =>
     set((s) => ({
       isRecording,

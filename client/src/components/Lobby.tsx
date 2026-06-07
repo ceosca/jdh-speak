@@ -1,9 +1,17 @@
 import { useState, useCallback, useRef, useEffect, type FormEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Headphones, ArrowRight } from "lucide-react";
+import { MicPreview } from "./MicPreview";
 
 function sanitize(input: string): string {
   return input.replace(/[^a-zA-Z0-9_-]/g, "");
+}
+
+// `?p2p=off` (also accepts false/0/no/disable/disabled) means P2P is disabled —
+// used to seed the checkbox from a shared link.
+function isP2pDisabled(value: string | null): boolean {
+  if (value == null) return false;
+  return ["off", "false", "0", "no", "disable", "disabled"].includes(value.toLowerCase());
 }
 
 export function Lobby() {
@@ -12,6 +20,7 @@ export function Lobby() {
   const prefillRoom = searchParams.get("room") || "";
   const [roomName, setRoomName] = useState(sanitize(prefillRoom));
   const [displayName, setDisplayName] = useState("");
+  const [disableP2p, setDisableP2p] = useState(() => isP2pDisabled(searchParams.get("p2p")));
   const roomInputRef = useRef<HTMLInputElement>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
 
@@ -49,9 +58,10 @@ export function Lobby() {
 
       // Store display name for the Room component
       sessionStorage.setItem("sonicroom:displayName", trimmedName);
-      navigate(`/room/${sanitizedRoom}`);
+      // Pass `?p2p=off` to the room so it stays on the SFU instead of P2P.
+      navigate(disableP2p ? `/room/${sanitizedRoom}?p2p=off` : `/room/${sanitizedRoom}`);
     },
-    [roomName, displayName, navigate],
+    [roomName, displayName, navigate, disableP2p],
   );
 
   return (
@@ -117,6 +127,24 @@ export function Lobby() {
               autoComplete="off"
             />
           </div>
+
+          <MicPreview />
+
+          <label className="flex cursor-pointer select-none items-start gap-2.5">
+            <input
+              type="checkbox"
+              checked={disableP2p}
+              onChange={(e) => setDisableP2p(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-sonic-600 bg-sonic-700 accent-sonic-accent"
+            />
+            <span className="text-sm font-medium text-sonic-200">
+              Disable P2P
+              <span className="mt-0.5 block text-xs font-normal text-sonic-400">
+                Always relay audio through the SFU instead of a direct peer-to-peer
+                connection, even with two participants.
+              </span>
+            </span>
+          </label>
 
           {error && (
             <p id="lobby-error" className="text-sm text-muted" role="alert">

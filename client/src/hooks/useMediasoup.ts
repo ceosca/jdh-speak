@@ -60,6 +60,11 @@ const DUCK_FACTOR = 0.22;
 const DUCK_RAMP = 0.18;
 const GAIN_RAMP = 0.03;
 
+// Soft limiter sitting after the outgoing mic gain so boosting a quiet/cheap
+// mic doesn't clip: transparent until peaks approach 0 dBFS, then ~20:1 with a
+// fast attack. Adds ~5 ms of look-ahead latency, negligible for voice.
+const MIC_LIMITER = { threshold: -3, knee: 0, ratio: 20, attack: 0.003, release: 0.25 };
+
 // Resume shared context on first user interaction (iOS requirement)
 function resumeSharedContext() {
   if (sharedAudioContext.state === "suspended") {
@@ -112,12 +117,20 @@ export function useMediasoup() {
   // P2P
   const p2pConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const modeRef = useRef<RoomMode>("p2p");
-  // Audio share (system / tab audio mixed with mic)
+  // Outgoing audio graph: mic → micGain → limiter → outDest → outgoing track.
+  // The track added to peers / produced to the SFU is always outDest's, so the
+  // mic slider just rides `micGain` and shared system audio is mixed straight
+  // into `outDest` (bypassing the gain/limiter so the music keeps its dynamics).
+  const outGraphRef = useRef<{
+    micSource: MediaStreamAudioSourceNode | null;
+    micGain: GainNode;
+    limiter: DynamicsCompressorNode;
+    outDest: MediaStreamAudioDestinationNode;
+    displaySource: MediaStreamAudioSourceNode | null;
+    micStream: MediaStream | null;
+  } | null>(null);
+  // Audio share (system / tab audio mixed into the outgoing graph)
   const displayStreamRef = useRef<MediaStream | null>(null);
-  const mixContextRef = useRef<AudioContext | null>(null);
-  const mixDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
-  const mixMicSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const mixDisplaySourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
 
   const store = useRoomStore;
 
@@ -168,6 +181,51 @@ export function useMediasoup() {
     peerAudiosRef.current.clear();
   }, []);
 
+  // --- Outgoing audio graph (mic gain + soft limiter, + optional shared audio) ---
+  // Built lazily and reused for the whole session. The produced/added track is
+  // always `outDest`'s, so we never have to swap tracks on senders/producer.
+  const ensureOutGraph = useCallback(() => {
+    if (outGraphRef.current) return outGraphRef.current;
+    // The mic now flows through the shared context, so it must be running
+    // (it starts suspended on iOS until a user gesture).
+    resumeSharedContext();
+    const ctx = sharedAudioContext;
+    const micGain = ctx.createGain();
+    micGain.gain.value = store.getState().micGain;
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = MIC_LIMITER.threshold;
+    limiter.knee.value = MIC_LIMITER.knee;
+    limiter.ratio.value = MIC_LIMITER.ratio;
+    limiter.attack.value = MIC_LIMITER.attack;
+    limiter.release.value = MIC_LIMITER.release;
+    const outDest = ctx.createMediaStreamDestination();
+    micGain.connect(limiter);
+    limiter.connect(outDest);
+    outGraphRef.current = {
+      micSource: null,
+      micGain,
+      limiter,
+      outDest,
+      displaySource: null,
+      micStream: null,
+    };
+    return outGraphRef.current;
+  }, [store]);
+
+  // (Re)route the raw mic into the outgoing graph. Idempotent for a given
+  // stream; re-runs when the mic is re-acquired (track died / device change).
+  const connectMicToGraph = useCallback(
+    (stream: MediaStream) => {
+      const g = ensureOutGraph();
+      if (g.micStream === stream && g.micSource) return;
+      g.micSource?.disconnect();
+      g.micSource = sharedAudioContext.createMediaStreamSource(stream);
+      g.micSource.connect(g.micGain);
+      g.micStream = stream;
+    },
+    [ensureOutGraph],
+  );
+
   // --- P2P: create a peer connection ---
   const ensureLocalStream = useCallback(async () => {
     const existing = localStreamRef.current;
@@ -185,8 +243,9 @@ export function useMediasoup() {
       },
     });
     localStreamRef.current = stream;
+    connectMicToGraph(stream);
     return stream;
-  }, []);
+  }, [connectMicToGraph]);
 
   const createP2pConnection = useCallback(
     async (peerId: string, isOfferer: boolean) => {
@@ -194,14 +253,16 @@ export function useMediasoup() {
       if (!socket) return;
 
       const localStream = await ensureLocalStream();
+      connectMicToGraph(localStream);
 
       const pc = new RTCPeerConnection({
         iceServers: ICE_SERVERS,
       });
 
-      // Add local audio track
-      const audioTrack = localStream.getAudioTracks()[0];
-      pc.addTrack(audioTrack, localStream);
+      // Send the processed outgoing track (mic gain + limiter, + shared audio),
+      // not the raw mic.
+      const g = ensureOutGraph();
+      pc.addTrack(g.outDest.stream.getAudioTracks()[0], g.outDest.stream);
 
       // ICE candidates → relay via server
       pc.onicecandidate = (e) => {
@@ -241,7 +302,7 @@ export function useMediasoup() {
 
       return pc;
     },
-    [],
+    [ensureLocalStream, connectMicToGraph, ensureOutGraph],
   );
 
   // --- P2P: tear down all connections ---
@@ -306,6 +367,7 @@ export function useMediasoup() {
     async (rtpCapabilities: Record<string, unknown>) => {
       const localStream = localStreamRef.current;
       if (!localStream) return;
+      connectMicToGraph(localStream);
 
       // Load device if needed
       let device = deviceRef.current;
@@ -372,10 +434,9 @@ export function useMediasoup() {
 
       recvTransportRef.current = recvTransport;
 
-      // Produce audio
-      const audioTrack = localStream.getAudioTracks()[0];
+      // Produce the processed outgoing track (mic gain + limiter, + shared audio)
       const producer = await sendTransport.produce({
-        track: audioTrack,
+        track: ensureOutGraph().outDest.stream.getAudioTracks()[0],
         codecOptions: {
           opusStereo: false,
           opusDtx: false,
@@ -386,12 +447,12 @@ export function useMediasoup() {
       });
       producerRef.current = producer;
     },
-    [emit],
+    [emit, connectMicToGraph, ensureOutGraph],
   );
 
   // --- Main join ---
   const join = useCallback(
-    async (roomName: string, displayName: string) => {
+    async (roomName: string, displayName: string, opts?: { disableP2p?: boolean }) => {
       const socket = io({ transports: ["websocket"] });
       socketRef.current = socket;
 
@@ -409,6 +470,9 @@ export function useMediasoup() {
         },
       });
       localStreamRef.current = stream;
+      // Build the outgoing graph and route the mic through it, so the gained +
+      // limited track is what every peer / the SFU receives.
+      connectMicToGraph(stream);
 
       // Join room
       const joinRes = await emit<{
@@ -421,7 +485,7 @@ export function useMediasoup() {
         }>;
         mode: RoomMode;
         recording: { recordingId: string } | null;
-      }>("join", { roomName, displayName });
+      }>("join", { roomName, displayName, disableP2p: opts?.disableP2p });
 
       store.getState().setRoom(roomName, displayName, socket.id!);
       store.getState().setMode(joinRes.mode);
@@ -645,54 +709,22 @@ export function useMediasoup() {
     [store, effectiveGain],
   );
 
-  // --- Audio share: replace outgoing track in both P2P senders and the SFU producer ---
-  const swapOutgoingAudioTrack = useCallback(async (track: MediaStreamTrack) => {
-    for (const pc of p2pConnectionsRef.current.values()) {
-      const sender = pc.getSenders().find((s) => s.track?.kind === "audio");
-      if (sender) {
-        try {
-          await sender.replaceTrack(track);
-        } catch (e) {
-          console.error("[audio-share] replaceTrack failed on P2P sender", e);
-        }
-      }
-    }
-    if (producerRef.current) {
-      try {
-        await producerRef.current.replaceTrack({ track });
-      } catch (e) {
-        console.error("[audio-share] replaceTrack failed on SFU producer", e);
-      }
-    }
-  }, []);
-
-  const tearDownAudioShare = useCallback(() => {
-    mixMicSourceRef.current?.disconnect();
-    mixMicSourceRef.current = null;
-    mixDisplaySourceRef.current?.disconnect();
-    mixDisplaySourceRef.current = null;
-    mixDestinationRef.current?.disconnect();
-    mixDestinationRef.current = null;
-    mixContextRef.current?.close().catch(() => {});
-    mixContextRef.current = null;
+  // --- Audio share: mix system/tab audio into the persistent outgoing graph ---
+  // The outgoing track never changes — we just connect/disconnect the display
+  // branch — so there's no track-swapping on senders/producer.
+  const detachSharedAudio = useCallback(() => {
+    const g = outGraphRef.current;
+    g?.displaySource?.disconnect();
+    if (g) g.displaySource = null;
     displayStreamRef.current?.getTracks().forEach((t) => t.stop());
     displayStreamRef.current = null;
   }, []);
 
   const stopAudioShare = useCallback(async () => {
     if (!store.getState().isSharingAudio) return;
-
-    // Restore the raw mic track on all outgoing senders/producer
-    const micTrack = localStreamRef.current?.getAudioTracks()[0];
-    if (micTrack) {
-      // Re-apply current mute state to the underlying track
-      micTrack.enabled = !store.getState().isMuted;
-      await swapOutgoingAudioTrack(micTrack);
-    }
-
-    tearDownAudioShare();
+    detachSharedAudio();
     store.getState().setSharingAudio(false);
-  }, [store, swapOutgoingAudioTrack, tearDownAudioShare]);
+  }, [store, detachSharedAudio]);
 
   const startAudioShare = useCallback(async () => {
     if (store.getState().isSharingAudio) return;
@@ -727,33 +759,21 @@ export function useMediasoup() {
     // Discard the video track — we don't need to send any video
     displayStream.getVideoTracks().forEach((t) => t.stop());
 
-    // Build the mixer graph
-    const ctx = new AudioContext({ sampleRate: 48000, latencyHint: "interactive" });
-    const destination = ctx.createMediaStreamDestination();
-
-    const micSource = ctx.createMediaStreamSource(localStreamRef.current);
-    micSource.connect(destination);
-
-    const displayAudioOnly = new MediaStream(audioTracks);
-    const displaySource = ctx.createMediaStreamSource(displayAudioOnly);
-    displaySource.connect(destination);
-
-    mixContextRef.current = ctx;
-    mixDestinationRef.current = destination;
-    mixMicSourceRef.current = micSource;
-    mixDisplaySourceRef.current = displaySource;
+    // Mix the shared audio straight into the outgoing destination, bypassing
+    // the mic gain/limiter so the music keeps its full dynamics.
+    const g = ensureOutGraph();
+    const displaySource = sharedAudioContext.createMediaStreamSource(new MediaStream(audioTracks));
+    displaySource.connect(g.outDest);
+    g.displaySource = displaySource;
     displayStreamRef.current = displayStream;
-
-    const mixedTrack = destination.stream.getAudioTracks()[0];
 
     // Fire when the user hits the browser's "Stop sharing" UI
     audioTracks[0].addEventListener("ended", () => {
       stopAudioShare();
     });
 
-    await swapOutgoingAudioTrack(mixedTrack);
     store.getState().setSharingAudio(true);
-  }, [store, swapOutgoingAudioTrack, stopAudioShare]);
+  }, [store, ensureOutGraph, stopAudioShare]);
 
   const toggleAudioShare = useCallback(async () => {
     if (store.getState().isSharingAudio) await stopAudioShare();
@@ -792,17 +812,37 @@ export function useMediasoup() {
     else await startRecording();
   }, [startRecording, stopRecording, store]);
 
+  // Live mic-gain control: persists the value and ramps the outgoing gain node.
+  const setMicGain = useCallback(
+    (gain: number) => {
+      store.getState().setMicGain(gain);
+      const g = outGraphRef.current;
+      if (g) g.micGain.gain.setTargetAtTime(gain, sharedAudioContext.currentTime, GAIN_RAMP);
+    },
+    [store],
+  );
+
   const leave = useCallback(() => {
-    tearDownAudioShare();
+    detachSharedAudio();
     teardownP2p();
     teardownSfu();
+    // Tear down the outgoing graph (nodes live in the shared context, so just
+    // disconnect them — the context itself is reused for the next room).
+    const g = outGraphRef.current;
+    if (g) {
+      g.micSource?.disconnect();
+      g.micGain.disconnect();
+      g.limiter.disconnect();
+      g.displaySource?.disconnect();
+      outGraphRef.current = null;
+    }
     localStreamRef.current?.getTracks().forEach((t) => t.stop());
     localStreamRef.current = null;
     socketRef.current?.disconnect();
     socketRef.current = null;
     deviceRef.current = null;
     store.getState().reset();
-  }, [teardownP2p, teardownSfu, tearDownAudioShare, store]);
+  }, [teardownP2p, teardownSfu, detachSharedAudio, store]);
 
   useEffect(() => {
     return () => {
@@ -822,6 +862,7 @@ export function useMediasoup() {
     startRecording,
     stopRecording,
     setPeerVolume,
+    setMicGain,
     peerAudiosRef,
   };
 }
