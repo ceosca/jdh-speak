@@ -16,6 +16,16 @@ function isP2pDisabled(value: string | null): boolean {
   return ["off", "false", "0", "no", "disable", "disabled"].includes(v);
 }
 
+// When embedded in an iframe (e.g. jitchat), mirror room lifecycle events to the
+// host page via postMessage so it can play sounds / reset its view. The event
+// names match the Jitsi External API events the host previously relied on. No-op
+// when sonic runs as a top-level page.
+function postToHost(type: string, payload?: Record<string, unknown>) {
+  if (typeof window !== "undefined" && window.parent !== window) {
+    window.parent.postMessage({ source: "sonicroom", type, ...payload }, "*");
+  }
+}
+
 export function Room() {
   const { roomName } = useParams<{ roomName: string }>();
   const [searchParams] = useSearchParams();
@@ -27,6 +37,7 @@ export function Room() {
   const [joinState, setJoinState] = useState<JoinState>("idle");
   const [errorMsg, setErrorMsg] = useState("");
   const joinedRef = useRef(false);
+  const knownPeersRef = useRef<Set<string>>(new Set());
 
   const localPeerId = useRoomStore((s) => s.localPeerId);
   const displayName = useRoomStore((s) => s.displayName);
@@ -38,14 +49,18 @@ export function Room() {
   const announcement = useRoomStore((s) => s.announcement);
   const announceSeq = useRoomStore((s) => s.announceSeq);
 
-  // Join on mount
+  // Join on mount. An embedder (e.g. jitchat) can deep-link straight into a
+  // room with ?displayName=... to skip the lobby name prompt; otherwise we fall
+  // back to the name the Lobby stashed in sessionStorage.
   useEffect(() => {
     if (joinedRef.current || !roomName) return;
-    const name = sessionStorage.getItem("sonicroom:displayName");
+    const fromQuery = searchParams.get("displayName")?.replace(/[<>"'&]/g, "").trim();
+    const name = fromQuery || sessionStorage.getItem("sonicroom:displayName");
     if (!name) {
       navigate(`/?room=${encodeURIComponent(roomName)}`);
       return;
     }
+    sessionStorage.setItem("sonicroom:displayName", name);
 
     joinedRef.current = true;
     setJoinState("joining");
@@ -56,7 +71,25 @@ export function Room() {
         setJoinState("error");
         setErrorMsg(err instanceof Error ? err.message : "Failed to join");
       });
-  }, [roomName, join, navigate, disableP2p]);
+  }, [roomName, join, navigate, disableP2p, searchParams]);
+
+  // Mirror room lifecycle to the host page when embedded (see postToHost).
+  useEffect(() => {
+    if (joinState === "joined") postToHost("videoConferenceJoined");
+  }, [joinState]);
+
+  useEffect(() => {
+    if (joinState !== "joined") return;
+    const known = knownPeersRef.current;
+    const current = new Set(peers.keys());
+    for (const id of current) {
+      if (!known.has(id)) postToHost("participantJoined", { peerId: id });
+    }
+    for (const id of known) {
+      if (!current.has(id)) postToHost("participantLeft", { peerId: id });
+    }
+    knownPeersRef.current = current;
+  }, [peers, joinState]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -82,6 +115,7 @@ export function Room() {
   }, [joinState, toggleMute]);
 
   const handleLeave = useCallback(() => {
+    postToHost("readyToClose");
     leave();
     navigate("/");
   }, [leave, navigate]);
