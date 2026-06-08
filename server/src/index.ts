@@ -27,13 +27,33 @@ async function main() {
   console.log(`Created ${workers.length} mediasoup worker(s)`);
 
   const app = express();
+  app.use(express.json({ limit: "64kb" }));
   const httpServer = createServer(app);
 
   const recordingManager = new RecordingManager();
+  const { postChatMessage } = createSignalingServer(httpServer, recordingManager);
 
   // Health check
   app.get("/health", (_req, res) => {
     res.json({ status: "ok", workers: workers.length });
+  });
+
+  // Post a chat message into a live room from outside the browser (e.g. Ecobox
+  // announcing the now-playing track). Body: { text, sender? }. Rate-limited
+  // and validated identically to an in-room peer; 404 if the room isn't live.
+  app.post("/api/rooms/:roomName/messages", (req, res) => {
+    const body = (req.body ?? {}) as { text?: unknown; sender?: unknown };
+    if (typeof body.text !== "string") {
+      res.status(400).json({ error: "Body must include a string `text`" });
+      return;
+    }
+    const sender = typeof body.sender === "string" ? body.sender : "System";
+    const result = postChatMessage(req.params.roomName, sender, body.text);
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+    res.status(201).json({ ok: true, message: result.message });
   });
 
   // Recording download — mixes all participants' captured audio into a single
@@ -72,8 +92,6 @@ async function main() {
   app.get("/{*splat}", (_req, res) => {
     res.sendFile(path.join(clientDist, "index.html"));
   });
-
-  createSignalingServer(httpServer, recordingManager);
 
   httpServer.listen(PORT, () => {
     console.log(`SonicRoom server listening on port ${PORT}`);

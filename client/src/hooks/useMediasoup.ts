@@ -4,6 +4,18 @@ import { Device } from "mediasoup-client";
 import type { Transport, Producer, Consumer } from "mediasoup-client/types";
 import { forceOpusParams } from "../lib/sdp-munger";
 import { playCue } from "../lib/sounds";
+import { formatMessage, RateLimiter, type ChatMessage } from "../lib/chat";
+import {
+  announce_joined,
+  announce_left,
+  announce_a_participant,
+  announce_recording_started,
+  announce_recording_stopped,
+  announce_recording_unavailable,
+  announce_recording_failed,
+  announce_mic_muted,
+  announce_mic_unmuted,
+} from "../paraglide/messages.js";
 import { useRoomStore, type RoomMode } from "../stores/room";
 
 interface ConsumeResult {
@@ -135,6 +147,9 @@ export function useMediasoup() {
   } | null>(null);
   // Audio share (system / tab audio mixed into the outgoing graph)
   const displayStreamRef = useRef<MediaStream | null>(null);
+  // Local anti-spam guard for instant "thunk" feedback (the server enforces the
+  // same 5-per-10s budget authoritatively).
+  const chatLimiterRef = useRef(new RateLimiter());
 
   const store = useRoomStore;
 
@@ -490,11 +505,15 @@ export function useMediasoup() {
         }>;
         mode: RoomMode;
         recording: { recordingId: string } | null;
+        messages: ChatMessage[];
       }>("join", { roomName, displayName, disableP2p: opts?.disableP2p });
 
       store.getState().setRoom(roomName, displayName, socket.id!);
       store.getState().setMode(joinRes.mode);
       modeRef.current = joinRes.mode;
+
+      // Seed any chat history (silent — no chime/announce for backlog).
+      for (const m of joinRes.messages ?? []) store.getState().addMessage(m);
 
       // The room may already be recording when we join.
       if (joinRes.recording) {
@@ -525,13 +544,13 @@ export function useMediasoup() {
       // --- Socket event handlers ---
       socket.on("peer-joined", ({ peerId, displayName: name }: { peerId: string; displayName: string }) => {
         store.getState().addPeer(peerId, name);
-        store.getState().announce(`${name} joined the room`);
+        store.getState().announce(announce_joined({ name }));
         playCue(sharedAudioContext, "join");
         // In P2P mode, the new peer will send us an offer — we wait for it
       });
 
       socket.on("peer-left", ({ peerId }: { peerId: string }) => {
-        const name = store.getState().peers.get(peerId)?.displayName ?? "A participant";
+        const name = store.getState().peers.get(peerId)?.displayName ?? announce_a_participant();
         // Clean up P2P connection if any
         const pc = p2pConnectionsRef.current.get(peerId);
         if (pc) {
@@ -545,26 +564,26 @@ export function useMediasoup() {
           peerAudiosRef.current.delete(peerId);
         }
         store.getState().removePeer(peerId);
-        store.getState().announce(`${name} left the room`);
+        store.getState().announce(announce_left({ name }));
         playCue(sharedAudioContext, "leave");
       });
 
       // --- Recording (room-wide; the server forces SFU while recording) ---
       socket.on("recording-started", ({ recordingId, by }: { recordingId: string; by: string }) => {
         store.getState().setRecording(true, recordingId);
-        store.getState().announce(`Recording started by ${by}`);
+        store.getState().announce(announce_recording_started({ name: by }));
       });
 
       socket.on("recording-stopped", () => {
         // Keep recordingId so the download link stays available after stopping.
         store.getState().setRecording(false);
-        store.getState().announce("Recording stopped — still available to download");
+        store.getState().announce(announce_recording_stopped());
       });
 
       // The finished recording was cleaned up server-side (TTL) — drop the link.
       socket.on("recording-expired", () => {
         store.getState().setRecording(false, null);
-        store.getState().announce("Recording is no longer available");
+        store.getState().announce(announce_recording_unavailable());
       });
 
       // P2P signaling relay
@@ -647,6 +666,14 @@ export function useMediasoup() {
       socket.on("peer-unmuted", ({ peerId }: { peerId: string }) => {
         store.getState().setPeerMuted(peerId, false);
       });
+
+      // Incoming chat (including the echo of our own messages): render it, chime
+      // a distinct cue, and announce it on the polite ARIA region.
+      socket.on("chat-message", (msg: ChatMessage) => {
+        store.getState().addMessage(msg);
+        store.getState().announce(formatMessage(msg, Date.now()));
+        playCue(sharedAudioContext, "message");
+      });
     },
     [emit, consumeProducer, setupSfu, createP2pConnection, teardownP2p, teardownSfu, applyDuck, store],
   );
@@ -670,7 +697,7 @@ export function useMediasoup() {
       await emit("producer-pause", {}).catch(() => {});
     }
     store.getState().setMuted(true);
-    store.getState().announce("Microphone muted");
+    store.getState().announce(announce_mic_muted());
     playCue(sharedAudioContext, "mute");
   }, [emit, store]);
 
@@ -686,7 +713,7 @@ export function useMediasoup() {
       await emit("producer-resume", {}).catch(() => {});
     }
     store.getState().setMuted(false);
-    store.getState().announce("Microphone unmuted");
+    store.getState().announce(announce_mic_unmuted());
     playCue(sharedAudioContext, "unmute");
   }, [emit, store]);
 
@@ -802,7 +829,7 @@ export function useMediasoup() {
       store.getState().setRecording(true, res.recordingId);
     } catch (err) {
       console.error("[recording] failed to start:", err);
-      store.getState().announce("Could not start recording");
+      store.getState().announce(announce_recording_failed());
     }
   }, [emit, store]);
 
@@ -831,6 +858,30 @@ export function useMediasoup() {
       if (g) g.micGain.gain.setTargetAtTime(gain, sharedAudioContext.currentTime, GAIN_RAMP);
     },
     [store],
+  );
+
+  // Send a chat message. Returns why it didn't go out so the caller can keep
+  // the text in the box ("empty"/"rate_limited" — never cleared on failure).
+  // A blocked send plays the "thunk" cue; the delivered message comes back via
+  // the `chat-message` echo, which is what renders/announces/chimes it.
+  const sendChatMessage = useCallback(
+    async (text: string): Promise<{ ok: boolean; reason?: "empty" | "rate_limited" }> => {
+      const trimmed = text.trim();
+      if (!trimmed) return { ok: false, reason: "empty" };
+      if (!chatLimiterRef.current.tryConsume()) {
+        playCue(sharedAudioContext, "thunk");
+        return { ok: false, reason: "rate_limited" };
+      }
+      try {
+        await emit("chat-message", { text: trimmed });
+        return { ok: true };
+      } catch {
+        // Server rejected (its budget was also spent via the API, or transient).
+        playCue(sharedAudioContext, "thunk");
+        return { ok: false, reason: "rate_limited" };
+      }
+    },
+    [emit],
   );
 
   const leave = useCallback(() => {
@@ -874,6 +925,7 @@ export function useMediasoup() {
     stopRecording,
     setPeerVolume,
     setMicGain,
+    sendChatMessage,
     peerAudiosRef,
   };
 }

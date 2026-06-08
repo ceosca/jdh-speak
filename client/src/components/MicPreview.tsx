@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Mic, MicOff } from "lucide-react";
 import { useRoomStore, MAX_MIC_GAIN } from "../stores/room";
+import { m } from "../paraglide/messages.js";
 
 // Mirror the room's outgoing soft limiter so the previewed level matches what
 // peers will actually hear (see MIC_LIMITER in useMediasoup).
@@ -16,13 +17,34 @@ function levelBand(level: number): Band {
   if (level <= 0.9) return "good";
   return "high";
 }
-// Empty message = not spoken (you can hear your own silence via the monitor).
-const BAND_MESSAGE: Record<Band, string> = {
-  silent: "",
-  low: "Microphone level low — speak up or raise the slider",
-  good: "Microphone level good",
-  high: "Microphone level too high — lower the slider",
-};
+// Spoken band feedback, resolved at call time so it tracks the active locale.
+// Empty for "silent" — not spoken (you hear your own silence via the monitor).
+function bandMessage(band: Band): string {
+  switch (band) {
+    case "low":
+      return m.mic_band_low();
+    case "good":
+      return m.mic_band_good();
+    case "high":
+      return m.mic_band_high();
+    default:
+      return "";
+  }
+}
+
+// Short, localized band name used in the meter's aria-valuetext.
+function bandName(band: Band): string {
+  switch (band) {
+    case "silent":
+      return m.mic_band_name_silent();
+    case "low":
+      return m.mic_band_name_low();
+    case "good":
+      return m.mic_band_name_good();
+    default:
+      return m.mic_band_name_high();
+  }
+}
 
 // Test your mic before joining and set a send-side gain (handy for a quiet or
 // cheap mic). The value lives in the room store + localStorage, so it carries
@@ -86,7 +108,7 @@ export function MicPreview() {
         },
       });
     } catch {
-      setError("Couldn't access your microphone — check the browser permission.");
+      setError(m.mic_permission_error());
       return;
     }
     streamRef.current = stream;
@@ -141,13 +163,14 @@ export function MicPreview() {
       const box = meterBoxRef.current;
       if (box) {
         box.setAttribute("aria-valuenow", String(pct));
-        box.setAttribute("aria-valuetext", `${pct}%, ${band} level`);
+        box.setAttribute("aria-valuetext", m.mic_valuetext({ pct, band: bandName(band) }));
       }
       if (band !== lastBand && now - lastAnnounceAt > 1200) {
         lastBand = band;
         lastAnnounceAt = now;
         const status = statusRef.current;
-        if (status && BAND_MESSAGE[band]) status.textContent = BAND_MESSAGE[band];
+        const message = bandMessage(band);
+        if (status && message) status.textContent = message;
       }
 
       rafRef.current = requestAnimationFrame(loop);
@@ -162,7 +185,7 @@ export function MicPreview() {
   return (
     <div className="rounded-lg border border-sonic-600 bg-sonic-700/40 p-3">
       <div className="mb-2 flex items-center justify-between">
-        <span className="text-sm font-medium text-sonic-200">Mic level</span>
+        <span className="text-sm font-medium text-sonic-200">{m.mic_level_heading()}</span>
         <span className="font-mono text-xs text-sonic-400">{micGain.toFixed(1)}×</span>
       </div>
 
@@ -178,7 +201,7 @@ export function MicPreview() {
           aria-pressed={testing}
         >
           {testing ? <MicOff className="h-3.5 w-3.5" /> : <Mic className="h-3.5 w-3.5" />}
-          {testing ? "Stop" : "Test"}
+          {testing ? m.mic_stop() : m.mic_test()}
         </button>
         <input
           type="range"
@@ -188,7 +211,7 @@ export function MicPreview() {
           value={micGain}
           onChange={(e) => setMicGain(parseFloat(e.target.value))}
           className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-sonic-600 accent-sonic-accent"
-          aria-label="Microphone level"
+          aria-label={m.mic_slider_label()}
         />
       </div>
 
@@ -197,7 +220,7 @@ export function MicPreview() {
       <div
         ref={meterBoxRef}
         role="meter"
-        aria-label="Microphone input level"
+        aria-label={m.mic_meter_label()}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={0}
@@ -215,11 +238,7 @@ export function MicPreview() {
       <div ref={statusRef} role="status" aria-live="polite" className="sr-only" />
 
       <p className="mt-1.5 text-xs text-sonic-400">
-        {error
-          ? error
-          : testing
-            ? "You should hear yourself — use headphones to avoid echo. Raise the slider until the bar sits around the middle."
-            : "Quiet or cheap mic? Test it and boost — you'll hear yourself, and the level carries into the room."}
+        {error ? error : testing ? m.mic_help_testing() : m.mic_help_idle()}
       </p>
     </div>
   );

@@ -1,10 +1,14 @@
 import { useEffect, useCallback, useRef, useState } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { Headphones, Users, Loader2, Circle } from "lucide-react";
+import { Headphones, Users, Loader2, Circle, MessageSquare } from "lucide-react";
 import { useRoomStore } from "../stores/room";
 import { useMediasoup } from "../hooks/useMediasoup";
+import { formatMessage } from "../lib/chat";
 import { ParticipantCard } from "./ParticipantCard";
 import { AudioControls } from "./AudioControls";
+import { Chat } from "./Chat";
+import { LanguageSelect } from "./LanguageSelect";
+import { m } from "../paraglide/messages.js";
 
 type JoinState = "idle" | "joining" | "joined" | "error";
 
@@ -31,13 +35,32 @@ export function Room() {
   const [searchParams] = useSearchParams();
   const disableP2p = isP2pDisabled(searchParams.get("p2p"));
   const navigate = useNavigate();
-  const { join, leave, toggleMute, toggleAudioShare, toggleRecording, setPeerVolume, setMicGain } =
-    useMediasoup();
+  const {
+    join,
+    leave,
+    toggleMute,
+    toggleAudioShare,
+    toggleRecording,
+    setPeerVolume,
+    setMicGain,
+    sendChatMessage,
+  } = useMediasoup();
 
   const [joinState, setJoinState] = useState<JoinState>("idle");
   const [errorMsg, setErrorMsg] = useState("");
+  const [chatOpen, setChatOpen] = useState(false);
   const joinedRef = useRef(false);
   const knownPeersRef = useRef<Set<string>>(new Set());
+  // How many messages had arrived last time chat was open, to badge unread.
+  const seenCountRef = useRef(0);
+  // The header chat toggle — focus returns here when the panel closes, so
+  // keyboard/SR focus is never dropped onto <body>.
+  const chatToggleRef = useRef<HTMLButtonElement>(null);
+
+  const closeChat = useCallback(() => {
+    setChatOpen(false);
+    chatToggleRef.current?.focus();
+  }, []);
 
   const localPeerId = useRoomStore((s) => s.localPeerId);
   const displayName = useRoomStore((s) => s.displayName);
@@ -46,8 +69,25 @@ export function Room() {
   const micGain = useRoomStore((s) => s.micGain);
   const mode = useRoomStore((s) => s.mode);
   const isRecording = useRoomStore((s) => s.isRecording);
+  const messages = useRoomStore((s) => s.messages);
   const announcement = useRoomStore((s) => s.announcement);
   const announceSeq = useRoomStore((s) => s.announceSeq);
+
+  // Reflect the room name in the document/tab title while in (or joining) the
+  // room, restoring the default when we leave.
+  useEffect(() => {
+    if (!roomName) return;
+    document.title = `${roomName} · SonicRoom`;
+    return () => {
+      document.title = "SonicRoom";
+    };
+  }, [roomName]);
+
+  // Unread count for the chat toggle badge; resets whenever the panel is open.
+  useEffect(() => {
+    if (chatOpen) seenCountRef.current = messages.length;
+  }, [chatOpen, messages.length]);
+  const unread = chatOpen ? 0 : Math.max(0, messages.length - seenCountRef.current);
 
   // Join on mount. An embedder (e.g. jitchat) can deep-link straight into a
   // room with ?displayName=... to skip the lobby name prompt; otherwise we fall
@@ -69,7 +109,7 @@ export function Room() {
       .then(() => setJoinState("joined"))
       .catch((err) => {
         setJoinState("error");
-        setErrorMsg(err instanceof Error ? err.message : "Failed to join");
+        setErrorMsg(err instanceof Error ? err.message : m.room_failed_to_join());
       });
   }, [roomName, join, navigate, disableP2p, searchParams]);
 
@@ -96,6 +136,18 @@ export function Room() {
     if (joinState !== "joined") return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Alt+1..9 and Alt+0 read the last 10 messages aloud via the ARIA region:
+      // 1 = newest, 2 = next, … 0 = the 10th most recent. Works even while
+      // typing in the composer, so it's checked before the input guard below.
+      if (e.altKey && !e.ctrlKey && !e.metaKey && /^[0-9]$/.test(e.key)) {
+        e.preventDefault();
+        const n = e.key === "0" ? 10 : Number(e.key);
+        const { messages: msgs, announce } = useRoomStore.getState();
+        const msg = msgs[msgs.length - n];
+        announce(msg ? formatMessage(msg, Date.now()) : m.room_no_message({ n }));
+        return;
+      }
+
       if (
         e.target instanceof HTMLInputElement ||
         e.target instanceof HTMLTextAreaElement
@@ -126,7 +178,7 @@ export function Room() {
       <div className="flex min-h-dvh items-center justify-center bg-sonic-900">
         <div className="flex flex-col items-center gap-4">
           <Loader2 className="h-8 w-8 animate-spin text-sonic-accent" />
-          <p className="text-sonic-300">Connecting to room...</p>
+          <p className="text-sonic-300">{m.room_connecting()}</p>
         </div>
       </div>
     );
@@ -142,7 +194,7 @@ export function Room() {
             onClick={() => navigate("/")}
             className="rounded-lg bg-sonic-accent px-4 py-2 text-sm text-white hover:bg-sonic-accent/90"
           >
-            Back to Lobby
+            {m.room_back_to_lobby()}
           </button>
         </div>
       </div>
@@ -160,10 +212,11 @@ export function Room() {
           <h1 className="text-lg font-semibold text-sonic-100">{roomName}</h1>
         </div>
         <div className="flex items-center gap-3 text-sm text-sonic-300">
+          <LanguageSelect />
           {isRecording && (
             <span
               className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs font-medium bg-red-500/20 text-red-400"
-              title="This call is being recorded"
+              title={m.room_recording_title()}
             >
               <Circle className="h-2.5 w-2.5 animate-pulse fill-red-500 text-red-500" />
               REC
@@ -180,44 +233,78 @@ export function Room() {
             <Users className="h-4 w-4" />
             <span>{peerList.length + 1}</span>
           </div>
+          <button
+            ref={chatToggleRef}
+            onClick={() => (chatOpen ? closeChat() : setChatOpen(true))}
+            className={`relative flex h-8 items-center gap-1.5 rounded-full px-3 transition-all ${
+              chatOpen
+                ? "bg-sonic-accent text-white hover:bg-sonic-accent/90"
+                : "bg-sonic-700 text-sonic-200 hover:bg-sonic-600"
+            }`}
+            aria-label={
+              unread > 0
+                ? chatOpen
+                  ? m.room_chat_close_unread({ count: unread })
+                  : m.room_chat_open_unread({ count: unread })
+                : chatOpen
+                  ? m.room_chat_close()
+                  : m.room_chat_open()
+            }
+            aria-expanded={chatOpen}
+            title={m.room_toggle_chat_title()}
+          >
+            <MessageSquare className="h-4 w-4" />
+            {unread > 0 && (
+              <span
+                className="flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold text-white"
+                aria-hidden="true"
+              >
+                {unread > 9 ? "9+" : unread}
+              </span>
+            )}
+          </button>
         </div>
       </header>
 
-      {/* Participants grid */}
-      <main className="flex flex-1 items-center justify-center p-6">
-        <div
-          className="grid w-full max-w-4xl grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4"
-          role="list"
-          aria-label="Room participants"
-        >
-          {/* Local user */}
-          {localPeerId && displayName && (
-            <ParticipantCard
-              peer={{
-                peerId: localPeerId,
-                displayName,
-                isSpeaking: false,
-                isMuted,
-                volume: 1,
-                isMusic: false,
-              }}
-              isLocal
-              micGain={micGain}
-              onMicGainChange={setMicGain}
-            />
-          )}
+      {/* Participants grid + optional chat side panel */}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <main className="flex min-w-0 flex-1 items-center justify-center overflow-y-auto p-6">
+          <div
+            className="grid w-full max-w-4xl grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4"
+            role="list"
+            aria-label={m.room_participants_label()}
+          >
+            {/* Local user */}
+            {localPeerId && displayName && (
+              <ParticipantCard
+                peer={{
+                  peerId: localPeerId,
+                  displayName,
+                  isSpeaking: false,
+                  isMuted,
+                  volume: 1,
+                  isMusic: false,
+                }}
+                isLocal
+                micGain={micGain}
+                onMicGainChange={setMicGain}
+              />
+            )}
 
-          {/* Remote peers */}
-          {peerList.map((peer) => (
-            <ParticipantCard
-              key={peer.peerId}
-              peer={peer}
-              isLocal={false}
-              onVolumeChange={(v) => setPeerVolume(peer.peerId, v)}
-            />
-          ))}
-        </div>
-      </main>
+            {/* Remote peers */}
+            {peerList.map((peer) => (
+              <ParticipantCard
+                key={peer.peerId}
+                peer={peer}
+                isLocal={false}
+                onVolumeChange={(v) => setPeerVolume(peer.peerId, v)}
+              />
+            ))}
+          </div>
+        </main>
+
+        {chatOpen && <Chat onSend={sendChatMessage} onClose={closeChat} />}
+      </div>
 
       {/* Bottom controls */}
       <footer className="flex justify-center border-t border-sonic-700 p-4">

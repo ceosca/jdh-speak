@@ -1,0 +1,6 @@
+# Paraglide compiler output (generated from messages/ + project.inlang)
+src/paraglide/
+
+# inlang local cache
+project.inlang/cache/
+project.inlang/.cache/

@@ -1,5 +1,6 @@
 import { Mic, MicOff, LogOut, ScreenShare, ScreenShareOff, Circle, Square, Download } from "lucide-react";
 import { useRoomStore } from "../stores/room";
+import { m } from "../paraglide/messages.js";
 
 interface AudioControlsProps {
   onToggleMute: () => void;
@@ -23,7 +24,7 @@ export function AudioControls({
     <div
       className="flex items-center justify-center gap-3 rounded-2xl border border-sonic-600 bg-sonic-800 p-3"
       role="toolbar"
-      aria-label="Audio controls"
+      aria-label={m.controls_toolbar_label()}
     >
       <button
         onClick={onToggleMute}
@@ -32,8 +33,8 @@ export function AudioControls({
             ? "bg-muted/20 text-muted hover:bg-muted/30"
             : "bg-sonic-700 text-sonic-200 hover:bg-sonic-600"
         }`}
-        aria-label={isMuted ? "Unmute microphone" : "Mute microphone"}
-        title="Toggle Mute (M)"
+        aria-label={isMuted ? m.controls_unmute() : m.controls_mute()}
+        title={m.controls_mute_title()}
       >
         {isMuted ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
       </button>
@@ -45,13 +46,9 @@ export function AudioControls({
             ? "bg-sonic-accent text-white hover:bg-sonic-accent/90"
             : "bg-sonic-700 text-sonic-200 hover:bg-sonic-600"
         }`}
-        aria-label={isSharingAudio ? "Stop sharing audio" : "Share audio"}
+        aria-label={isSharingAudio ? m.controls_stop_share() : m.controls_share()}
         aria-pressed={isSharingAudio}
-        title={
-          isSharingAudio
-            ? "Stop sharing audio"
-            : "Share audio — pick a screen/tab and tick 'Share system audio'"
-        }
+        title={isSharingAudio ? m.controls_stop_share_title() : m.controls_share_title()}
       >
         {isSharingAudio ? (
           <ScreenShareOff className="h-5 w-5" />
@@ -67,9 +64,9 @@ export function AudioControls({
             ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
             : "bg-sonic-700 text-sonic-200 hover:bg-sonic-600"
         }`}
-        aria-label={isRecording ? "Stop recording" : "Record call"}
+        aria-label={isRecording ? m.controls_stop_recording() : m.controls_record()}
         aria-pressed={isRecording}
-        title={isRecording ? "Stop recording" : "Record the call (everyone's audio)"}
+        title={isRecording ? m.controls_stop_recording_title() : m.controls_record_title()}
       >
         {isRecording ? (
           <Square className="h-4 w-4 fill-current" />
@@ -83,15 +80,11 @@ export function AudioControls({
           href={`/api/recordings/${encodeURIComponent(recordingId)}/download`}
           download={`sonicroom-${recordingId}.ogg`}
           className="flex h-11 items-center gap-2 rounded-full bg-sonic-700 px-4 text-sonic-200 transition-all hover:bg-sonic-600"
-          aria-label="Download recording"
-          title={
-            isRecording
-              ? "Download everything recorded so far (recording keeps going)"
-              : "Download the recording"
-          }
+          aria-label={m.controls_download_recording()}
+          title={isRecording ? m.controls_download_active_title() : m.controls_download_title()}
         >
           <Download className="h-4 w-4" />
-          <span className="text-sm font-medium">Download</span>
+          <span className="text-sm font-medium">{m.controls_download()}</span>
         </a>
       )}
 
@@ -100,10 +93,10 @@ export function AudioControls({
       <button
         onClick={onLeave}
         className="flex h-11 items-center gap-2 rounded-full bg-muted/20 px-4 text-muted transition-all hover:bg-muted/30"
-        aria-label="Leave room"
+        aria-label={m.controls_leave_room()}
       >
         <LogOut className="h-4 w-4" />
-        <span className="text-sm font-medium">Leave</span>
+        <span className="text-sm font-medium">{m.controls_leave()}</span>
       </button>
     </div>
   );

@@ -1,9 +1,21 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { paraglideVitePlugin } from "@inlang/paraglide-js";
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    paraglideVitePlugin({
+      project: "./project.inlang",
+      outdir: "./src/paraglide",
+      // Locale resolution order (first hit wins): a stored choice from the
+      // language picker, then the browser's preferred language, then English.
+      // A ?lang= URL override is applied imperatively in src/lib/i18n.ts.
+      strategy: ["localStorage", "preferredLanguage", "baseLocale"],
+    }),
+    react(),
+    tailwindcss(),
+  ],
   server: {
     port: 5173,
     proxy: {

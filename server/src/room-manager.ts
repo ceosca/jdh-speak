@@ -7,6 +7,7 @@ import type {
   AudioLevelObserver,
 } from "mediasoup/types";
 import { routerOptions, transportOptions } from "./mediasoup-config.js";
+import type { ChatMessage } from "./chat-util.js";
 
 export interface Peer {
   id: string;
@@ -38,6 +39,9 @@ export interface Room {
   // observer's events have been wired (done once per room in signaling).
   voiceActive: boolean;
   observerWired: boolean;
+  // Rolling chat history (bounded to CHAT_HISTORY_MAX) so late joiners receive
+  // recent messages on join. Newest last.
+  messages: ChatMessage[];
 }
 
 const rooms = new Map<string, Room>();
@@ -80,6 +84,7 @@ export async function getOrCreateRoom(roomName: string): Promise<Room> {
     audioLevelObserver,
     voiceActive: false,
     observerWired: false,
+    messages: [],
   };
   rooms.set(roomName, room);
   return room;

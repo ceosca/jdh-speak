@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { Mic, MicOff, Volume2, Music } from "lucide-react";
 import type { PeerState } from "../stores/room";
+import { m } from "../paraglide/messages.js";
 
 interface ParticipantCardProps {
   peer: PeerState;
@@ -45,7 +46,7 @@ export function ParticipantCard({
     <div
       className="flex flex-col items-center gap-3 rounded-xl border border-sonic-600 bg-sonic-800 p-4 transition-all hover:border-sonic-500"
       role="listitem"
-      aria-label={`${peer.displayName}${isLocal ? " (you)" : ""}${peer.isMuted ? ", muted" : ""}${peer.isSpeaking ? ", speaking" : ""}`}
+      aria-label={`${peer.displayName}${isLocal ? ` (${m.card_you()})` : ""}${peer.isMuted ? `, ${m.card_muted_fragment()}` : ""}${peer.isSpeaking ? `, ${m.card_speaking_fragment()}` : ""}`}
     >
       {/* Avatar */}
       <div
@@ -69,15 +70,15 @@ export function ParticipantCard({
         </span>
         {isLocal && (
           <span className="rounded bg-sonic-accent/20 px-1.5 py-0.5 text-xs text-sonic-accent">
-            you
+            {m.card_you()}
           </span>
         )}
         {peer.isMusic ? (
-          <Music className="h-3.5 w-3.5 text-sonic-accent" aria-label="Music stream" />
+          <Music className="h-3.5 w-3.5 text-sonic-accent" aria-label={m.card_music_stream()} />
         ) : peer.isMuted ? (
-          <MicOff className="h-3.5 w-3.5 text-muted" aria-label="Muted" />
+          <MicOff className="h-3.5 w-3.5 text-muted" aria-label={m.card_muted_status()} />
         ) : (
-          <Mic className="h-3.5 w-3.5 text-sonic-300" aria-label="Unmuted" />
+          <Mic className="h-3.5 w-3.5 text-sonic-300" aria-label={m.card_unmuted_status()} />
         )}
       </div>
 
@@ -93,7 +94,7 @@ export function ParticipantCard({
             value={peer.volume}
             onChange={handleVolume}
             className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-sonic-600 accent-sonic-accent"
-            aria-label={`Volume for ${peer.displayName}`}
+            aria-label={m.card_volume_for({ name: peer.displayName })}
           />
         </div>
       )}
@@ -111,8 +112,8 @@ export function ParticipantCard({
             value={micGain ?? 1}
             onChange={handleMicGain}
             className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-sonic-600 accent-sonic-accent"
-            aria-label="Your microphone level"
-            title={`Mic level: ${(micGain ?? 1).toFixed(1)}×`}
+            aria-label={m.card_your_mic_level()}
+            title={m.card_mic_level_title({ gain: (micGain ?? 1).toFixed(1) })}
           />
         </div>
       )}

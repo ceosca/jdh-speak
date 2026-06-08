@@ -9,7 +9,7 @@ SonicRoom — low-latency browser audio conferencing (voice) with hi-fi stereo m
 - `client/` — React 19 + Vite + Tailwind v4 + zustand, using `mediasoup-client` and `socket.io-client`.
 - `server/` — Express 5 + socket.io + `mediasoup` (SFU) + `zod`. Runs TypeScript **directly via `tsx`** (no build artifact).
 
-**Use pnpm, never npm.** It's a pnpm workspace, and `onlyBuiltDependencies` (in `pnpm-workspace.yaml`) builds esbuild and mediasoup's native worker. Reinstalling/adding deps can purge `node_modules` and drop the prebuilt `mediasoup-worker` binary — if the server then fails with a worker error on startup, run `pnpm install` to rebuild it.
+**Use pnpm, never npm.** It's a pnpm workspace, and `onlyBuiltDependencies` (in `pnpm-workspace.yaml`) builds esbuild and mediasoup's native worker. Reinstalling/adding deps can purge `node_modules` and drop the prebuilt `mediasoup-worker` binary — if the server then fails with a worker error on startup, run `pnpm install` to rebuild it. Also: `pnpm add` (v11) may write a malformed `allowBuilds:` stub into `pnpm-workspace.yaml` that then breaks every `pnpm` run with `ERR_PNPM_IGNORED_BUILDS` on the deps-status check — **delete that stub** (esbuild/mediasoup are already approved via `onlyBuiltDependencies`).
 
 ## Commands
 
@@ -66,7 +66,16 @@ Recording is server-side and forces SFU. Per producer: a mediasoup `PlainTranspo
 
 ### Client routing
 
-Two routes (`client/src/main.tsx`): `/` → `Lobby`, `/room/:roomName` → `Room`. Room URL params: `?p2p=off` (also false/0/no/disable/disabled) pins SFU; `?displayName=…` deep-links past the lobby name prompt. State lives in a single zustand store (`client/src/stores/room.ts`); mic gain persists to localStorage.
+Two routes (`client/src/main.tsx`): `/` → `Lobby`, `/room/:roomName` → `Room`. Room URL params: `?p2p=off` (also false/0/no/disable/disabled) pins SFU; `?displayName=…` deep-links past the lobby name prompt; `?lang=` overrides the UI language (see i18n below). State lives in a single zustand store (`client/src/stores/room.ts`); mic gain persists to localStorage. The room name is reflected into `document.title` from the `Room` component.
+
+### Localization / i18n (Paraglide JS)
+
+UI strings live in `client/messages/{en,es,fr}.json` (flat key→string, `{var}` interpolation). The **inlang Vite plugin** (`paraglideVitePlugin` in `vite.config.ts`) compiles them into tree-shakeable, type-safe functions under `client/src/paraglide/` — **generated, gitignored, never hand-edit** (regenerated on every `pnpm dev`/`pnpm build`; or `pnpm --filter client exec paraglide-js compile --project ./project.inlang --outdir ./src/paraglide`). `tsconfig` has `allowJs` on so `tsc` reads the JSDoc-typed output. Import message functions from `../paraglide/messages.js` (`m.some_key(...)` or named exports) and call them at render/event time — they read the active locale, so they work in non-React code too.
+
+- **Locale resolution** (`strategy` in `vite.config.ts`, first hit wins): `localStorage` (the picker's choice) → `preferredLanguage` (browser) → `baseLocale` (`en`). On top of that, a **`?lang=` override** is applied imperatively in `client/src/lib/i18n.ts` *before* anything reads the locale (so the store/`main.tsx` import `i18n` to force that ordering), then persisted.
+- **Switch without reload**: the locale is mirrored in the store (`locale` + `setLanguage`, which calls Paraglide's `setLocale(…, { reload: false })`). `<App>` in `main.tsx` subscribes to `locale` so a change re-renders the whole tree **in place** — every `m.*()` re-evaluates, but nothing remounts, so an active call survives a mid-session language switch. `setLanguage` also updates `<html lang>`.
+- Non-component strings are localized via the same functions: SR announcements in `useMediasoup.ts`, and `client/src/lib/chat.ts` (`formatMessage` stays the single source for both the visible message and its ARIA announcement; `relativeTime` builds a per-locale `Intl.RelativeTimeFormat`).
+- **Add a language**: add the code to `locales` in `client/project.inlang/settings.json`, add `messages/<code>.json` (keys at parity with `en.json`), and add its native name to `LOCALE_NAMES` in `client/src/lib/i18n.ts`. The picker (`LanguageSelect`) and detection pick it up automatically.
 
 ## Deployment / runtime
 

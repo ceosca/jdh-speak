@@ -3,7 +3,7 @@
 // routed into the outgoing mic graph, so peers don't hear them. Tones use a
 // quick exponential gain envelope so they never click.
 
-export type Cue = "mute" | "unmute" | "join" | "leave";
+export type Cue = "mute" | "unmute" | "join" | "leave" | "message" | "thunk";
 
 interface ToneSpec {
   freq: number;
@@ -37,8 +37,10 @@ function tone(ctx: AudioContext, spec: ToneSpec) {
   osc.stop(t0 + dur + 0.02);
 }
 
-// Each cue is one or two short tones. Rising = positive (unmute/join),
-// falling = negative (mute/leave).
+// Each cue has its own contour AND timbre so they're tellable apart by ear
+// without looking. Rising sine = positive (unmute/join), falling sine =
+// negative (mute/leave); chat uses a brighter triangle, and the spam "thunk"
+// is a low dull square — neither can be confused with the voice/presence cues.
 export function playCue(ctx: AudioContext, cue: Cue) {
   if (ctx.state === "suspended") ctx.resume();
 
@@ -56,6 +58,18 @@ export function playCue(ctx: AudioContext, cue: Cue) {
     case "leave":
       tone(ctx, { freq: 587, dur: 0.1 });
       tone(ctx, { freq: 392, dur: 0.14, delay: 0.1 });
+      break;
+    // Incoming chat: two quick bright triangle blips a fifth apart — clearly a
+    // "notification", distinct from the rounder sine presence cues.
+    case "message":
+      tone(ctx, { freq: 784, dur: 0.07, type: "triangle", gain: 0.1 });
+      tone(ctx, { freq: 1175, dur: 0.1, type: "triangle", gain: 0.1, delay: 0.075 });
+      break;
+    // Blocked (rate-limited) send: one low, short, dull square "thunk" with a
+    // small downward glide — reads as a soft "nope", not a tone you'd confuse
+    // with anything positive.
+    case "thunk":
+      tone(ctx, { freq: 170, glideTo: 120, dur: 0.13, type: "square", gain: 0.09 });
       break;
   }
 }

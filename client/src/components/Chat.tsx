@@ -1,0 +1,195 @@
+import { useEffect, useRef, useState } from "react";
+import { Send, X } from "lucide-react";
+import { useRoomStore } from "../stores/room";
+import { relativeTime } from "../lib/chat";
+import { m } from "../paraglide/messages.js";
+
+interface ChatProps {
+  // Returns ok:false with a reason when nothing was sent, so we keep the text
+  // in the box (the hook already played the "thunk" cue for rate_limited).
+  onSend: (text: string) => Promise<{ ok: boolean; reason?: "empty" | "rate_limited" }>;
+  onClose: () => void;
+}
+
+// In-room chat. Order matters for accessibility: the message list (a listbox
+// you arrow through) comes BEFORE the composer, so screen-reader users land on
+// history first. New messages are announced and chimed elsewhere (the hook);
+// this panel is just the visible list + editor.
+export function Chat({ onSend, onClose }: ChatProps) {
+  const messages = useRoomStore((s) => s.messages);
+  const [text, setText] = useState("");
+  // Active listbox option (roving via aria-activedescendant). -1 = none yet.
+  const [activeIdx, setActiveIdx] = useState(-1);
+  // Ticks so "x minutes ago" stays roughly fresh without per-message timers.
+  const [now, setNow] = useState(() => Date.now());
+
+  const listRef = useRef<HTMLUListElement>(null);
+  const optionRefs = useRef<Map<string, HTMLLIElement>>(new Map());
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Drop focus into the composer when the panel opens.
+  useEffect(() => {
+    textareaRef.current?.focus();
+  }, []);
+
+  // Keep the active option valid as messages arrive or clear.
+  useEffect(() => {
+    setActiveIdx((i) => (i < 0 ? -1 : Math.min(i, messages.length - 1)));
+  }, [messages.length]);
+
+  // While navigating, keep the active option visible; otherwise pin the newest.
+  useEffect(() => {
+    if (activeIdx >= 0 && messages[activeIdx]) {
+      optionRefs.current.get(messages[activeIdx].id)?.scrollIntoView({ block: "nearest" });
+    } else if (listRef.current) {
+      listRef.current.scrollTop = listRef.current.scrollHeight;
+    }
+  }, [activeIdx, messages]);
+
+  const activeId =
+    activeIdx >= 0 && messages[activeIdx] ? `chat-opt-${messages[activeIdx].id}` : undefined;
+
+  const onListKeyDown = (e: React.KeyboardEvent<HTMLUListElement>) => {
+    if (messages.length === 0) return;
+    const last = messages.length - 1;
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        setActiveIdx((i) => Math.min((i < 0 ? -1 : i) + 1, last));
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        setActiveIdx((i) => Math.max((i < 0 ? messages.length : i) - 1, 0));
+        break;
+      case "Home":
+        e.preventDefault();
+        setActiveIdx(0);
+        break;
+      case "End":
+        e.preventDefault();
+        setActiveIdx(last);
+        break;
+    }
+  };
+
+  const submit = async () => {
+    const res = await onSend(text);
+    if (res.ok) setText(""); // keep the text on empty / rate_limited
+  };
+
+  const onComposerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Enter sends; Shift+Enter inserts a newline (it's a multiline editor).
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      void submit();
+    }
+  };
+
+  return (
+    <aside
+      className="flex w-full flex-col border-l border-sonic-700 bg-sonic-800 sm:w-80"
+      aria-label={m.chat_panel_label()}
+      // Escape from anywhere in the panel closes it (Room restores focus to the
+      // toggle). Bubbles up from the listbox/composer/buttons.
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          onClose();
+        }
+      }}
+    >
+      <header className="flex items-center justify-between border-b border-sonic-700 px-4 py-2.5">
+        <h2 className="text-sm font-semibold text-sonic-100">{m.chat_heading()}</h2>
+        <button
+          onClick={onClose}
+          className="flex h-7 w-7 items-center justify-center rounded-full text-sonic-300 hover:bg-sonic-700 hover:text-sonic-100"
+          aria-label={m.chat_close()}
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </header>
+
+      {/* Message list FIRST (before the composer). A focusable listbox you can
+          arrow up/down; each message is an option read as the {sender}: {text}
+          sent {when} format. */}
+      {messages.length === 0 ? (
+        <p className="flex-1 px-4 py-6 text-sm text-sonic-400">{m.chat_empty()}</p>
+      ) : (
+        <ul
+          ref={listRef}
+          role="listbox"
+          tabIndex={0}
+          aria-label={m.chat_messages_label()}
+          aria-activedescendant={activeId}
+          aria-keyshortcuts="ArrowUp ArrowDown Home End"
+          onKeyDown={onListKeyDown}
+          onFocus={() => setActiveIdx((i) => (i < 0 ? messages.length - 1 : i))}
+          className="flex-1 space-y-1 overflow-y-auto px-2 py-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-sonic-accent/60"
+        >
+          {messages.map((msg, i) => (
+            <li
+              key={msg.id}
+              id={`chat-opt-${msg.id}`}
+              role="option"
+              aria-selected={i === activeIdx}
+              ref={(el) => {
+                if (el) optionRefs.current.set(msg.id, el);
+                else optionRefs.current.delete(msg.id);
+              }}
+              className={`rounded-md px-2 py-1.5 text-sm leading-snug ${
+                i === activeIdx ? "bg-sonic-accent/20 text-sonic-50" : "text-sonic-200"
+              }`}
+            >
+              <span className="font-medium text-sonic-100">{msg.sender}:</span>{" "}
+              <span>{msg.text}</span>{" "}
+              <span className="text-xs text-sonic-400">
+                {m.chat_sent({ time: relativeTime(msg.ts, now) })}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {/* Composer (after the list). Multiline; Enter sends, Shift+Enter newline. */}
+      <form
+        className="flex items-end gap-2 border-t border-sonic-700 p-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+      >
+        <label className="sr-only" htmlFor="chat-input">
+          {m.chat_composer_label()}
+        </label>
+        <textarea
+          id="chat-input"
+          ref={textareaRef}
+          rows={2}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={onComposerKeyDown}
+          aria-describedby="chat-input-help"
+          placeholder={m.chat_placeholder()}
+          className="flex-1 resize-none rounded-lg border border-sonic-600 bg-sonic-900 px-3 py-2 text-sm text-sonic-100 placeholder:text-sonic-500 focus:border-sonic-accent focus:outline-none"
+        />
+        <button
+          type="submit"
+          disabled={text.trim().length === 0}
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sonic-accent text-white transition-all hover:bg-sonic-accent/90 disabled:opacity-40"
+          aria-label={m.chat_send()}
+          title={m.chat_send_title()}
+        >
+          <Send className="h-4 w-4" />
+        </button>
+        <p id="chat-input-help" className="sr-only">
+          {m.chat_help()}
+        </p>
+      </form>
+    </aside>
+  );
+}

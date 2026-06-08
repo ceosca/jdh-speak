@@ -1,9 +1,11 @@
 import type { Server as HttpServer } from "node:http";
+import { randomUUID } from "node:crypto";
 import { Server } from "socket.io";
 import { z } from "zod";
 import type { DtlsParameters, MediaKind, RtpCapabilities, RtpParameters } from "mediasoup/types";
 import {
   getOrCreateRoom,
+  getRooms,
   createPeer,
   createWebRtcTransport,
   removePeer,
@@ -11,6 +13,12 @@ import {
   type Peer,
 } from "./room-manager.js";
 import { decideMode } from "./recording-util.js";
+import {
+  RateLimiter,
+  CHAT_HISTORY_MAX,
+  CHAT_TEXT_MAX,
+  type ChatMessage,
+} from "./chat-util.js";
 import type { RecordingManager } from "./recording.js";
 
 // --- Validation schemas ---
@@ -25,6 +33,14 @@ const displayNameSchema = z
   .min(1)
   .max(256)
   .transform((s) => s.replace(/[<>"'&]/g, ""));
+
+// A chat message body: trimmed, non-empty, capped. React escapes it on render
+// and it's only ever used as text content (list + ARIA announcement), so the
+// content itself isn't sanitized beyond trimming/length.
+const chatTextSchema = z
+  .string()
+  .transform((s) => s.trim())
+  .pipe(z.string().min(1, "Message is empty").max(CHAT_TEXT_MAX));
 
 const joinSchema = z.object({
   roomName: roomNameSchema,
@@ -60,6 +76,46 @@ export function createSignalingServer(httpServer: HttpServer, recordingManager: 
   recordingManager.onExpire = (roomName, recordingId) => {
     io.to(roomName).emit("recording-expired", { recordingId });
   };
+
+  // Anti-spam: 5 messages / 10s per sender. Keyed by socket id for in-room
+  // chat, and by `api:<room>` for HTTP posts. Blocked sends are dropped (the
+  // client keeps the unsent text and plays a "thunk"), never queued.
+  const chatLimiter = new RateLimiter();
+
+  // Append a message to the room's bounded history and fan it out to everyone
+  // in the room — INCLUDING the original sender, so the sender's own client
+  // also gets the echo to render, announce, and chime on.
+  function deliverChatMessage(room: Room, sender: string, text: string): ChatMessage {
+    const msg: ChatMessage = { id: randomUUID(), sender, text, ts: Date.now() };
+    room.messages.push(msg);
+    if (room.messages.length > CHAT_HISTORY_MAX) {
+      room.messages.splice(0, room.messages.length - CHAT_HISTORY_MAX);
+    }
+    io.to(room.name).emit("chat-message", msg);
+    return msg;
+  }
+
+  // HTTP entrypoint (see the POST /api/rooms/:room/messages route): post a
+  // message into a live room from outside the socket world (e.g. Ecobox
+  // announcing the now-playing track). Same validation + rate limit as a peer.
+  function postChatMessage(
+    roomName: string,
+    sender: string,
+    rawText: string,
+  ): { ok: true; message: ChatMessage } | { ok: false; error: string; status: number } {
+    const room = getRooms().get(roomName);
+    if (!room) return { ok: false, error: "Room not found or empty", status: 404 };
+
+    const parsed = chatTextSchema.safeParse(rawText);
+    if (!parsed.success) {
+      return { ok: false, error: parsed.error.issues[0]?.message ?? "Invalid message", status: 400 };
+    }
+    const cleanSender = sender.replace(/[<>"'&]/g, "").trim().slice(0, 256) || "System";
+    if (!chatLimiter.tryConsume(`api:${roomName}`, Date.now())) {
+      return { ok: false, error: "Rate limited", status: 429 };
+    }
+    return { ok: true, message: deliverChatMessage(room, cleanSender, parsed.data) };
+  }
 
   // The room must be pinned to the SFU when the server has to see/route the
   // media itself: while recording, or while a send-only "music caster" peer
@@ -168,6 +224,8 @@ export function createSignalingServer(httpServer: HttpServer, recordingManager: 
           recording: recordingManager.isRecording(room.name)
             ? { recordingId: recordingManager.getRecording(room.name)!.id }
             : null,
+          // Recent chat so a late joiner can read/announce the last messages.
+          messages: room.messages,
         });
 
         if (decision.action === "switch-to-sfu") {
@@ -197,6 +255,29 @@ export function createSignalingServer(httpServer: HttpServer, recordingManager: 
         type,
         payload,
       });
+    });
+
+    // --- Chat ---
+    // Broadcast a text message to the room. Rate-limited per socket; a blocked
+    // send returns `rate_limited` and is NOT delivered (the client keeps the
+    // text and plays a thunk). The accepted message echoes back to the sender
+    // too, so every client renders/announces it through one code path.
+    socket.on("chat-message", (data: unknown, cb: (res: unknown) => void) => {
+      if (!currentRoom || !currentPeer) {
+        cb?.({ ok: false, error: "Not in a room" });
+        return;
+      }
+      const parsed = z.object({ text: chatTextSchema }).safeParse(data);
+      if (!parsed.success) {
+        cb?.({ ok: false, error: parsed.error.issues[0]?.message ?? "Invalid message" });
+        return;
+      }
+      if (!chatLimiter.tryConsume(socket.id, Date.now())) {
+        cb?.({ ok: false, error: "rate_limited" });
+        return;
+      }
+      const msg = deliverChatMessage(currentRoom, currentPeer.displayName, parsed.data.text);
+      cb?.({ ok: true, message: msg });
     });
 
     // --- SFU transport/produce/consume (same as before) ---
@@ -427,6 +508,7 @@ export function createSignalingServer(httpServer: HttpServer, recordingManager: 
 
     socket.on("disconnect", (reason) => {
       console.log(`[ws] disconnected: ${socket.id} (${reason})`);
+      chatLimiter.forget(socket.id);
       if (currentRoom && currentPeer) {
         const room = currentRoom;
         socket.to(room.name).emit("peer-left", { peerId: socket.id });
@@ -459,5 +541,5 @@ export function createSignalingServer(httpServer: HttpServer, recordingManager: 
     });
   });
 
-  return io;
+  return { io, postChatMessage };
 }

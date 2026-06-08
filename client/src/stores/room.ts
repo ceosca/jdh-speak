@@ -1,4 +1,9 @@
 import { create } from "zustand";
+import type { ChatMessage } from "../lib/chat";
+import { getLocale, setLocale as applyParaglideLocale, type Locale } from "../lib/i18n";
+
+// Keep the in-memory chat bounded; the server caps history too. Newest last.
+const CHAT_MESSAGES_MAX = 200;
 
 // Outgoing mic gain is a per-device preference, so it's persisted and survives
 // reloads — and carries from the lobby's mic preview into the room.
@@ -29,6 +34,11 @@ export interface PeerState {
 export type RoomMode = "p2p" | "sfu";
 
 interface RoomState {
+  // Active UI language. Mirrors Paraglide's runtime locale so a change here
+  // re-renders the tree (see main.tsx's App); the actual messages are resolved
+  // by the generated m.*() functions, not from this field.
+  locale: Locale;
+
   // Connection
   connected: boolean;
   roomName: string | null;
@@ -60,7 +70,12 @@ interface RoomState {
   // Peers
   peers: Map<string, PeerState>;
 
+  // Chat messages in arrival order (newest last). Seeded with room history on
+  // join, then appended as `chat-message` events arrive (including our own).
+  messages: ChatMessage[];
+
   // Actions
+  setLanguage: (locale: Locale) => void;
   setConnected: (connected: boolean) => void;
   setRoom: (roomName: string, displayName: string, localPeerId: string) => void;
   setMode: (mode: RoomMode) => void;
@@ -72,6 +87,7 @@ interface RoomState {
   setMicGain: (gain: number) => void;
   setRecording: (recording: boolean, recordingId?: string | null) => void;
   announce: (message: string) => void;
+  addMessage: (message: ChatMessage) => void;
   addPeer: (peerId: string, displayName: string) => void;
   removePeer: (peerId: string) => void;
   setPeerSpeaking: (peerId: string, speaking: boolean) => void;
@@ -82,6 +98,7 @@ interface RoomState {
 }
 
 export const useRoomStore = create<RoomState>((set) => ({
+  locale: getLocale(),
   connected: false,
   roomName: null,
   displayName: null,
@@ -98,7 +115,15 @@ export const useRoomStore = create<RoomState>((set) => ({
   announcement: "",
   announceSeq: 0,
   peers: new Map(),
+  messages: [],
 
+  setLanguage: (locale) => {
+    // reload:false — App re-renders in place on the store change below, so a
+    // language switch (even mid-call) never tears down the connection.
+    applyParaglideLocale(locale, { reload: false });
+    document.documentElement.lang = locale;
+    set({ locale });
+  },
   setConnected: (connected) => set({ connected }),
   setRoom: (roomName, displayName, localPeerId) =>
     set({ roomName, displayName, localPeerId }),
@@ -122,6 +147,16 @@ export const useRoomStore = create<RoomState>((set) => ({
       recordingId: recordingId !== undefined ? recordingId : s.recordingId,
     })),
   announce: (message) => set((s) => ({ announcement: message, announceSeq: s.announceSeq + 1 })),
+
+  addMessage: (message) =>
+    set((s) => {
+      // De-dupe: the sender receives its own message via the room broadcast,
+      // and join history may overlap with an in-flight message.
+      if (s.messages.some((m) => m.id === message.id)) return s;
+      const messages = [...s.messages, message];
+      if (messages.length > CHAT_MESSAGES_MAX) messages.splice(0, messages.length - CHAT_MESSAGES_MAX);
+      return { messages };
+    }),
 
   addPeer: (peerId, displayName) =>
     set((state) => {
@@ -193,5 +228,6 @@ export const useRoomStore = create<RoomState>((set) => ({
       announcement: "",
       announceSeq: 0,
       peers: new Map(),
+      messages: [],
     }),
 }));
