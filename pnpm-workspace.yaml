@@ -2,9 +2,14 @@ packages:
   - "client"
   - "server"
 
+# pnpm 11.4+ gates native build scripts behind an explicit allow-list and
+# exits 1 (ERR_PNPM_IGNORED_BUILDS) on any install/run until each is decided.
+# esbuild (client bundler) and mediasoup (native SFU worker binary) are trusted
+# and MUST build, so they're set true here. Keep them true after a pnpm bump —
+# if pnpm rewrites these to "set this to true or false", just set them back.
 allowBuilds:
-  esbuild: set this to true or false
-  mediasoup: set this to true or false
+  esbuild: true
+  mediasoup: true
 
 onlyBuiltDependencies:
   - esbuild
