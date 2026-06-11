@@ -26,7 +26,10 @@ export interface SpawnedProcess {
   stdout: NodeJS.ReadableStream | null;
   stderr: NodeJS.ReadableStream | null;
   kill(signal?: NodeJS.Signals | number): boolean;
-  on(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
+  on(
+    event: "exit",
+    listener: (code: number | null, signal: NodeJS.Signals | null) => void,
+  ): unknown;
 }
 
 export interface RtpConsumer {

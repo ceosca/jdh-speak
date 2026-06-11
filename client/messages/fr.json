@@ -85,6 +85,15 @@
   "mic_help_testing": "Vous devriez vous entendre — utilisez un casque pour éviter l'écho. Montez le curseur jusqu'à ce que la barre soit à peu près au milieu.",
   "mic_help_idle": "Micro faible ou bas de gamme ? Testez-le et augmentez-le — vous vous entendrez, et le niveau est conservé dans le salon.",
 
+  "settings_heading": "Réglages audio",
+  "settings_open": "Réglages audio",
+  "settings_mic_label": "Microphone",
+  "settings_speaker_label": "Haut-parleurs",
+  "settings_default_device": "Par défaut",
+  "settings_mic_fallback": "Microphone {n}",
+  "settings_speaker_fallback": "Haut-parleurs {n}",
+  "settings_labels_hint": "Les noms des appareils apparaissent une fois l'accès au micro accordé.",
+
   "card_you": "vous",
   "card_muted_fragment": "micro coupé",
   "card_speaking_fragment": "parle",

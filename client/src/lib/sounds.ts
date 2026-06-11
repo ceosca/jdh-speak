@@ -35,7 +35,16 @@ interface ToneSpec {
 }
 
 function tone(ctx: AudioContext, spec: ToneSpec) {
-  const { freq, glideTo, dur, type = "sine", gain = 0.14, delay = 0, attack = 0.012, release } = spec;
+  const {
+    freq,
+    glideTo,
+    dur,
+    type = "sine",
+    gain = 0.14,
+    delay = 0,
+    attack = 0.012,
+    release,
+  } = spec;
   const t0 = ctx.currentTime + delay;
 
   const osc = ctx.createOscillator();
@@ -119,7 +128,16 @@ interface NoiseSpec {
 // Filtered white-noise burst — the raw material for non-pitched sounds (the
 // door's air whoosh, wood thud, and latch click).
 function noise(ctx: AudioContext, spec: NoiseSpec) {
-  const { dur, gain = 0.2, delay = 0, type = "lowpass", freq, freqEnd, q = 1, attack = 0.005 } = spec;
+  const {
+    dur,
+    gain = 0.2,
+    delay = 0,
+    type = "lowpass",
+    freq,
+    freqEnd,
+    q = 1,
+    attack = 0.005,
+  } = spec;
   const t0 = ctx.currentTime + delay;
 
   const frames = Math.max(1, Math.floor(ctx.sampleRate * dur));
@@ -166,7 +184,17 @@ interface CreakSpec {
 // bandpass for the "eee" vowel, while a fast square LFO chops its amplitude —
 // that ratchety amplitude modulation is the wood's stick-slip "creeeak".
 function creak(ctx: AudioContext, spec: CreakSpec) {
-  const { freq, glideTo, dur, gain = 0.16, delay = 0, lfoRate = 24, depth = 0.45, filterFreq = 760, q = 5 } = spec;
+  const {
+    freq,
+    glideTo,
+    dur,
+    gain = 0.16,
+    delay = 0,
+    lfoRate = 24,
+    depth = 0.45,
+    filterFreq = 760,
+    q = 5,
+  } = spec;
   const t0 = ctx.currentTime + delay;
 
   const osc = ctx.createOscillator();
@@ -216,12 +244,44 @@ export function playCue(ctx: AudioContext, cue: Cue) {
     // triangle sweeps the whole range while it sounds, with a faint octave on
     // top for body. Up = unmute, down = mute.
     case "unmute":
-      tone(ctx, { freq: 320, glideTo: 680, dur: 0.22, type: "triangle", gain: 0.22, attack: 0.02, release: 0.06 });
-      tone(ctx, { freq: 640, glideTo: 1360, dur: 0.22, type: "sine", gain: 0.06, attack: 0.02, release: 0.06 });
+      tone(ctx, {
+        freq: 320,
+        glideTo: 680,
+        dur: 0.22,
+        type: "triangle",
+        gain: 0.22,
+        attack: 0.02,
+        release: 0.06,
+      });
+      tone(ctx, {
+        freq: 640,
+        glideTo: 1360,
+        dur: 0.22,
+        type: "sine",
+        gain: 0.06,
+        attack: 0.02,
+        release: 0.06,
+      });
       break;
     case "mute":
-      tone(ctx, { freq: 680, glideTo: 300, dur: 0.22, type: "triangle", gain: 0.22, attack: 0.02, release: 0.06 });
-      tone(ctx, { freq: 1360, glideTo: 600, dur: 0.22, type: "sine", gain: 0.06, attack: 0.02, release: 0.06 });
+      tone(ctx, {
+        freq: 680,
+        glideTo: 300,
+        dur: 0.22,
+        type: "triangle",
+        gain: 0.22,
+        attack: 0.02,
+        release: 0.06,
+      });
+      tone(ctx, {
+        freq: 1360,
+        glideTo: 600,
+        dur: 0.22,
+        type: "sine",
+        gain: 0.06,
+        attack: 0.02,
+        release: 0.06,
+      });
       break;
     // Someone enters → doorbell. Classic descending two-tone "ding-dong",
     // inharmonic FM bells with a long ring.
@@ -234,11 +294,36 @@ export function playCue(ctx: AudioContext, cue: Cue) {
     // wooden thunk of the door meeting the frame plus a bright metallic latch
     // click and the strike-plate rattle.
     case "leave":
-      creak(ctx, { freq: 300, glideTo: 150, dur: 0.42, gain: 0.26, lfoRate: 22, depth: 0.5, filterFreq: 900, q: 6 });
+      creak(ctx, {
+        freq: 300,
+        glideTo: 150,
+        dur: 0.42,
+        gain: 0.26,
+        lfoRate: 22,
+        depth: 0.5,
+        filterFreq: 900,
+        q: 6,
+      });
       // The hit, landing as the creak ends (t≈0.42):
       // hard wooden thunk (door into frame)…
-      tone(ctx, { freq: 175, glideTo: 70, dur: 0.09, type: "sine", gain: 0.32, delay: 0.42, attack: 0.002 });
-      noise(ctx, { dur: 0.06, freq: 320, gain: 0.22, type: "lowpass", q: 0.8, delay: 0.42, attack: 0.002 });
+      tone(ctx, {
+        freq: 175,
+        glideTo: 70,
+        dur: 0.09,
+        type: "sine",
+        gain: 0.32,
+        delay: 0.42,
+        attack: 0.002,
+      });
+      noise(ctx, {
+        dur: 0.06,
+        freq: 320,
+        gain: 0.22,
+        type: "lowpass",
+        q: 0.8,
+        delay: 0.42,
+        attack: 0.002,
+      });
       // …bright latch click…
       noise(ctx, { dur: 0.018, freq: 2900, gain: 0.3, type: "bandpass", q: 3, delay: 0.43 });
       // …and the strike-plate rattle.

@@ -4,13 +4,7 @@
 // (language picker) → the browser's preferred language → English. On top of
 // that, a `?lang=` URL param (e.g. shared on a room link alongside `?p2p=off`)
 // wins and is applied here, once, before anything reads the locale.
-import {
-  getLocale,
-  setLocale,
-  isLocale,
-  locales,
-  baseLocale,
-} from "../paraglide/runtime.js";
+import { getLocale, setLocale, isLocale, locales, baseLocale } from "../paraglide/runtime.js";
 
 // "en" | "es" | "fr", derived from the generated `locales` tuple.
 export type Locale = (typeof locales)[number];

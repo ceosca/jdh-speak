@@ -100,7 +100,10 @@ export function Room() {
   // back to the name the Lobby stashed in sessionStorage.
   useEffect(() => {
     if (joinedRef.current || !roomName) return;
-    const fromQuery = searchParams.get("displayName")?.replace(/[<>"'&]/g, "").trim();
+    const fromQuery = searchParams
+      .get("displayName")
+      ?.replace(/[<>"'&]/g, "")
+      .trim();
     const name = fromQuery || sessionStorage.getItem("sonicroom:displayName");
     if (!name) {
       navigate(`/?room=${encodeURIComponent(roomName)}`);
@@ -156,8 +159,7 @@ export function Room() {
       // it also works while typing in the composer.
       if (e.altKey && !e.ctrlKey && !e.metaKey) {
         const digit =
-          /^(?:Digit|Numpad)([0-9])$/.exec(e.code)?.[1] ??
-          (/^[0-9]$/.test(e.key) ? e.key : null);
+          /^(?:Digit|Numpad)([0-9])$/.exec(e.code)?.[1] ?? (/^[0-9]$/.test(e.key) ? e.key : null);
         if (digit != null) {
           e.preventDefault();
           const n = digit === "0" ? 10 : Number(digit);
@@ -168,11 +170,7 @@ export function Room() {
         }
       }
 
-      if (
-        e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement
-      )
-        return;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
       if (e.key === "m" || e.key === "M") {
         e.preventDefault();
@@ -247,11 +245,11 @@ export function Room() {
               REC
             </span>
           )}
-          <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${
-            mode === "p2p"
-              ? "bg-green-500/20 text-green-400"
-              : "bg-blue-500/20 text-blue-400"
-          }`}>
+          <span
+            className={`rounded px-1.5 py-0.5 text-xs font-medium ${
+              mode === "p2p" ? "bg-green-500/20 text-green-400" : "bg-blue-500/20 text-blue-400"
+            }`}
+          >
             {mode === "p2p" ? "P2P" : "SFU"}
           </span>
           <div className="flex items-center gap-1">

@@ -21,6 +21,9 @@ pnpm dev:client              # client only — vite proxies /socket.io and /api 
 pnpm build                   # builds the CLIENT only -> client/dist (server needs no build)
 pnpm start                   # prod: server runs signaling AND serves client/dist statically
 pnpm --filter server test    # server tests (node:test via tsx)
+pnpm lint                    # eslint (flat config in eslint.config.mjs, whole workspace)
+pnpm format                  # prettier --write (printWidth 100; generated/dist ignored)
+pnpm format:check            # prettier in CI/check mode
 ```
 
 Run a single server test file / single test:
@@ -41,7 +44,7 @@ A room dynamically switches transport based on size and needs. **`decideMode(pee
 
 - ≤2 peers → **P2P mesh**: clients connect WebRTC directly; the server only relays signaling (`p2p-signal`). Media never touches the server.
 - 3+ peers → **mediasoup SFU**.
-- `forceSfu` pins the SFU even with ≤2 peers when the server *must* see the media: while **recording** (P2P media is invisible to the server), when a **music caster** is present, or when **`?p2p=off`** was set (`shouldForceSfu` in `signaling.ts`).
+- `forceSfu` pins the SFU even with ≤2 peers when the server _must_ see the media: while **recording** (P2P media is invisible to the server), when a **music caster** is present, or when **`?p2p=off`** was set (`shouldForceSfu` in `signaling.ts`).
 
 On transitions the server emits `switch-to-sfu` / `switch-to-p2p`; the client (`useMediasoup.ts`) tears down one transport stack and builds the other. The outgoing audio graph (below) survives the switch — only senders/producers are rebuilt.
 
@@ -72,7 +75,7 @@ Two routes (`client/src/main.tsx`): `/` → `Lobby`, `/room/:roomName` → `Room
 
 UI strings live in `client/messages/{en,es,fr}.json` (flat key→string, `{var}` interpolation). The **inlang Vite plugin** (`paraglideVitePlugin` in `vite.config.ts`) compiles them into tree-shakeable, type-safe functions under `client/src/paraglide/` — **generated, gitignored, never hand-edit** (regenerated on every `pnpm dev`/`pnpm build`; or `pnpm --filter client exec paraglide-js compile --project ./project.inlang --outdir ./src/paraglide`). `tsconfig` has `allowJs` on so `tsc` reads the JSDoc-typed output. Import message functions from `../paraglide/messages.js` (`m.some_key(...)` or named exports) and call them at render/event time — they read the active locale, so they work in non-React code too.
 
-- **Locale resolution** (`strategy` in `vite.config.ts`, first hit wins): `localStorage` (the picker's choice) → `preferredLanguage` (browser) → `baseLocale` (`en`). On top of that, a **`?lang=` override** is applied imperatively in `client/src/lib/i18n.ts` *before* anything reads the locale (so the store/`main.tsx` import `i18n` to force that ordering), then persisted.
+- **Locale resolution** (`strategy` in `vite.config.ts`, first hit wins): `localStorage` (the picker's choice) → `preferredLanguage` (browser) → `baseLocale` (`en`). On top of that, a **`?lang=` override** is applied imperatively in `client/src/lib/i18n.ts` _before_ anything reads the locale (so the store/`main.tsx` import `i18n` to force that ordering), then persisted.
 - **Switch without reload**: the locale is mirrored in the store (`locale` + `setLanguage`, which calls Paraglide's `setLocale(…, { reload: false })`). `<App>` in `main.tsx` subscribes to `locale` so a change re-renders the whole tree **in place** — every `m.*()` re-evaluates, but nothing remounts, so an active call survives a mid-session language switch. `setLanguage` also updates `<html lang>`.
 - Non-component strings are localized via the same functions: SR announcements in `useMediasoup.ts`, and `client/src/lib/chat.ts` (`formatMessage` stays the single source for both the visible message and its ARIA announcement; `relativeTime` builds a per-locale `Intl.RelativeTimeFormat`).
 - **Add a language**: add the code to `locales` in `client/project.inlang/settings.json`, add `messages/<code>.json` (keys at parity with `en.json`), and add its native name to `LOCALE_NAMES` in `client/src/lib/i18n.ts`. The picker (`LanguageSelect`) and detection pick it up automatically.

@@ -20,6 +20,27 @@ function loadMicGain(): number {
   return 1;
 }
 
+// Selected audio devices ("" = browser default). Per-device preferences like
+// micGain: persisted, and carried from the lobby preview into the call.
+const MIC_DEVICE_KEY = "sonicroom:micDeviceId";
+const SPEAKER_DEVICE_KEY = "sonicroom:speakerDeviceId";
+
+function loadString(key: string): string {
+  try {
+    return localStorage.getItem(key) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveString(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Persistence is best-effort; keep the in-memory value regardless.
+  }
+}
+
 export interface PeerState {
   peerId: string;
   displayName: string;
@@ -56,6 +77,10 @@ interface RoomState {
   // 0–MAX_MIC_GAIN. 1 = unity (raw mic). Lets a quiet/cheap mic be boosted for
   // everyone, independent of each listener's per-peer playback volume.
   micGain: number;
+  // Selected input/output devices ("" = browser default). The lobby preview
+  // and the in-call media graph both follow these (see DeviceSettings).
+  micDeviceId: string;
+  speakerDeviceId: string;
 
   // Recording (a recording belongs to the room; visible to everyone)
   isRecording: boolean;
@@ -85,6 +110,8 @@ interface RoomState {
   togglePushToTalk: () => void;
   setSharingAudio: (sharing: boolean) => void;
   setMicGain: (gain: number) => void;
+  setMicDeviceId: (deviceId: string) => void;
+  setSpeakerDeviceId: (deviceId: string) => void;
   setRecording: (recording: boolean, recordingId?: string | null) => void;
   announce: (message: string) => void;
   addMessage: (message: ChatMessage) => void;
@@ -110,6 +137,8 @@ export const useRoomStore = create<RoomState>((set) => ({
   pttActive: false,
   isSharingAudio: false,
   micGain: loadMicGain(),
+  micDeviceId: loadString(MIC_DEVICE_KEY),
+  speakerDeviceId: loadString(SPEAKER_DEVICE_KEY),
   isRecording: false,
   recordingId: null,
   announcement: "",
@@ -125,8 +154,7 @@ export const useRoomStore = create<RoomState>((set) => ({
     set({ locale });
   },
   setConnected: (connected) => set({ connected }),
-  setRoom: (roomName, displayName, localPeerId) =>
-    set({ roomName, displayName, localPeerId }),
+  setRoom: (roomName, displayName, localPeerId) => set({ roomName, displayName, localPeerId }),
   setMode: (mode) => set({ mode }),
   setMuted: (isMuted) => set({ isMuted }),
   setDeafened: (isDeafened) => set({ isDeafened }),
@@ -141,6 +169,14 @@ export const useRoomStore = create<RoomState>((set) => ({
     }
     set({ micGain });
   },
+  setMicDeviceId: (micDeviceId) => {
+    saveString(MIC_DEVICE_KEY, micDeviceId);
+    set({ micDeviceId });
+  },
+  setSpeakerDeviceId: (speakerDeviceId) => {
+    saveString(SPEAKER_DEVICE_KEY, speakerDeviceId);
+    set({ speakerDeviceId });
+  },
   setRecording: (isRecording, recordingId) =>
     set((s) => ({
       isRecording,
@@ -154,7 +190,8 @@ export const useRoomStore = create<RoomState>((set) => ({
       // and join history may overlap with an in-flight message.
       if (s.messages.some((m) => m.id === message.id)) return s;
       const messages = [...s.messages, message];
-      if (messages.length > CHAT_MESSAGES_MAX) messages.splice(0, messages.length - CHAT_MESSAGES_MAX);
+      if (messages.length > CHAT_MESSAGES_MAX)
+        messages.splice(0, messages.length - CHAT_MESSAGES_MAX);
       return { messages };
     }),
 

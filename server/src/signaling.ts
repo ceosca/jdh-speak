@@ -13,12 +13,7 @@ import {
   type Peer,
 } from "./room-manager.js";
 import { decideMode } from "./recording-util.js";
-import {
-  RateLimiter,
-  CHAT_HISTORY_MAX,
-  CHAT_TEXT_MAX,
-  type ChatMessage,
-} from "./chat-util.js";
+import { RateLimiter, CHAT_HISTORY_MAX, CHAT_TEXT_MAX, type ChatMessage } from "./chat-util.js";
 import type { RecordingManager, ProducerInfo } from "./recording.js";
 
 // --- Validation schemas ---
@@ -112,9 +107,17 @@ export function createSignalingServer(httpServer: HttpServer, recordingManager: 
 
     const parsed = chatTextSchema.safeParse(rawText);
     if (!parsed.success) {
-      return { ok: false, error: parsed.error.issues[0]?.message ?? "Invalid message", status: 400 };
+      return {
+        ok: false,
+        error: parsed.error.issues[0]?.message ?? "Invalid message",
+        status: 400,
+      };
     }
-    const cleanSender = sender.replace(/[<>"'&]/g, "").trim().slice(0, 256) || "System";
+    const cleanSender =
+      sender
+        .replace(/[<>"'&]/g, "")
+        .trim()
+        .slice(0, 256) || "System";
     if (!chatLimiter.tryConsume(`api:${roomName}`, Date.now())) {
       return { ok: false, error: "Rate limited", status: 429 };
     }
@@ -167,9 +170,7 @@ export function createSignalingServer(httpServer: HttpServer, recordingManager: 
     if (decision.action === "none") return;
 
     room.mode = decision.mode;
-    const targets = exceptSocketId
-      ? io.to(room.name).except(exceptSocketId)
-      : io.to(room.name);
+    const targets = exceptSocketId ? io.to(room.name).except(exceptSocketId) : io.to(room.name);
     if (decision.action === "switch-to-sfu") {
       console.log(`[room:${room.name}] switching to SFU (${room.peers.size} peers)`);
       targets.emit("switch-to-sfu", {
@@ -193,7 +194,9 @@ export function createSignalingServer(httpServer: HttpServer, recordingManager: 
     socket.on("join", async (data: unknown, cb: (res: unknown) => void) => {
       try {
         const { roomName, displayName, role, disableP2p, sharing } = joinSchema.parse(data);
-        console.log(`[ws] ${socket.id} joined ${roomName} as "${displayName}"${role ? ` (${role})` : ""}${disableP2p ? " (p2p disabled)" : ""}`);
+        console.log(
+          `[ws] ${socket.id} joined ${roomName} as "${displayName}"${role ? ` (${role})` : ""}${disableP2p ? " (p2p disabled)" : ""}`,
+        );
         const room = await getOrCreateRoom(roomName);
         wireDucking(room);
         const peer = createPeer(room, socket.id, displayName);

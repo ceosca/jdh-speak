@@ -1,0 +1,6 @@
+# Generated Paraglide output (regenerated on every dev/build — never hand-edit)
+client/src/paraglide/
+client/dist/
+server/dist/
+node_modules/
+pnpm-lock.yaml

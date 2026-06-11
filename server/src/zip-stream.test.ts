@@ -6,9 +6,7 @@ import { createZipStream, crc32, type ZipEntry } from "./zip-stream.js";
 function collect(stream: Readable): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    stream.on("data", (c: Buffer | string) =>
-      chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)),
-    );
+    stream.on("data", (c: Buffer | string) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
     stream.on("end", () => resolve(Buffer.concat(chunks)));
     stream.on("error", reject);
   });

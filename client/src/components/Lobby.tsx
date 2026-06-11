@@ -76,21 +76,14 @@ export function Lobby() {
           <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-sonic-accent/20">
             <Headphones className="h-6 w-6 text-sonic-accent" />
           </div>
-          <h1 className="text-3xl font-bold tracking-tight text-sonic-100">
-            SonicRoom
-          </h1>
+          <h1 className="text-3xl font-bold tracking-tight text-sonic-100">SonicRoom</h1>
         </div>
 
-        <p className="mb-6 text-center text-sm text-sonic-300">
-          {m.lobby_tagline()}
-        </p>
+        <p className="mb-6 text-center text-sm text-sonic-300">{m.lobby_tagline()}</p>
 
         <form onSubmit={handleJoin} className="space-y-4">
           <div>
-            <label
-              htmlFor="room-name"
-              className="mb-1.5 block text-sm font-medium text-sonic-200"
-            >
+            <label htmlFor="room-name" className="mb-1.5 block text-sm font-medium text-sonic-200">
               {m.lobby_room_name_label()}
             </label>
             <input

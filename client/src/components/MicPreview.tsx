@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Mic, MicOff } from "lucide-react";
 import { useRoomStore, MAX_MIC_GAIN } from "../stores/room";
+import { applySpeakerToContext } from "../lib/audio-devices";
+import { DeviceSettings } from "./DeviceSettings";
 import { m } from "../paraglide/messages.js";
 
 // Mirror the room's outgoing soft limiter so the previewed level matches what
@@ -52,6 +54,8 @@ function bandName(band: Band): string {
 export function MicPreview() {
   const micGain = useRoomStore((s) => s.micGain);
   const setMicGain = useRoomStore((s) => s.setMicGain);
+  const micDeviceId = useRoomStore((s) => s.micDeviceId);
+  const speakerDeviceId = useRoomStore((s) => s.speakerDeviceId);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState("");
 
@@ -97,6 +101,10 @@ export function MicPreview() {
 
   const start = useCallback(async () => {
     setError("");
+    // Device ids are read at call time (not closed over) so a restart after a
+    // picker change always captures/plays on the current selection. `ideal`
+    // lets an unplugged remembered mic fall back to the default.
+    const { micDeviceId: micId, speakerDeviceId: speakerId } = useRoomStore.getState();
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
@@ -105,6 +113,7 @@ export function MicPreview() {
           echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: false,
+          ...(micId ? { deviceId: { ideal: micId } } : {}),
         },
       });
     } catch {
@@ -114,6 +123,7 @@ export function MicPreview() {
     streamRef.current = stream;
 
     const ctx = new AudioContext();
+    if (speakerId) applySpeakerToContext(ctx, speakerId);
     const source = ctx.createMediaStreamSource(stream);
     const gain = ctx.createGain();
     gain.gain.value = micGain;
@@ -182,6 +192,25 @@ export function MicPreview() {
   // Stop the preview on unmount (e.g. when navigating into the room).
   useEffect(() => () => stop(), [stop]);
 
+  // Restart an active preview on the newly picked mic. Guarded by a prev-ref
+  // so unrelated dep identity changes (the gain slider re-creating `start`)
+  // never restart the test mid-adjustment.
+  const prevMicDeviceRef = useRef(micDeviceId);
+  useEffect(() => {
+    if (prevMicDeviceRef.current === micDeviceId) return;
+    prevMicDeviceRef.current = micDeviceId;
+    if (streamRef.current) {
+      stop();
+      void start();
+    }
+  }, [micDeviceId, stop, start]);
+
+  // Live-apply a speaker change to an active preview's context.
+  useEffect(() => {
+    const ctx = ctxRef.current;
+    if (ctx) applySpeakerToContext(ctx, speakerDeviceId);
+  }, [speakerDeviceId]);
+
   return (
     <div className="rounded-lg border border-sonic-600 bg-sonic-700/40 p-3">
       <div className="mb-2 flex items-center justify-between">
@@ -240,6 +269,12 @@ export function MicPreview() {
       <p className="mt-1.5 text-xs text-sonic-400">
         {error ? error : testing ? m.mic_help_testing() : m.mic_help_idle()}
       </p>
+
+      {/* Device pickers — applied live to the preview and carried into the
+          call (the selection persists via the store/localStorage). */}
+      <div className="mt-3 border-t border-sonic-600 pt-3">
+        <DeviceSettings />
+      </div>
     </div>
   );
 }

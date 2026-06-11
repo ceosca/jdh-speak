@@ -6,6 +6,17 @@
     "dev:server": "pnpm --filter server dev",
     "dev:client": "pnpm --filter client dev",
     "build": "pnpm --filter client build",
-    "start": "pnpm --filter server start"
+    "start": "pnpm --filter server start",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.4.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.6.0",
+    "prettier": "^3.8.4",
+    "typescript-eslint": "^8.61.0"
   }
 }

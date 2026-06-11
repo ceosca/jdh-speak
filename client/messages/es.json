@@ -85,6 +85,15 @@
   "mic_help_testing": "Deberías oírte a ti mismo: usa auriculares para evitar eco. Sube el control hasta que la barra quede hacia la mitad.",
   "mic_help_idle": "¿Micrófono flojo o de baja calidad? Pruébalo y súbelo: te oirás a ti mismo y el nivel se mantiene en la sala.",
 
+  "settings_heading": "Ajustes de audio",
+  "settings_open": "Ajustes de audio",
+  "settings_mic_label": "Micrófono",
+  "settings_speaker_label": "Altavoces",
+  "settings_default_device": "Predeterminado",
+  "settings_mic_fallback": "Micrófono {n}",
+  "settings_speaker_fallback": "Altavoces {n}",
+  "settings_labels_hint": "Los nombres de los dispositivos aparecen al conceder acceso al micrófono.",
+
   "card_you": "tú",
   "card_muted_fragment": "silenciado",
   "card_speaking_fragment": "hablando",

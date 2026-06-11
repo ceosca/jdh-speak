@@ -3,6 +3,7 @@ import { io, type Socket } from "socket.io-client";
 import { Device } from "mediasoup-client";
 import type { Transport, Producer, Consumer } from "mediasoup-client/types";
 import { forceOpusParams } from "../lib/sdp-munger";
+import { applySpeakerToContext } from "../lib/audio-devices";
 import { playCue } from "../lib/sounds";
 import { formatMessage, RateLimiter, type ChatMessage } from "../lib/chat";
 import {
@@ -81,13 +82,16 @@ const isIOS =
 // Mic constraints. On iOS we drop the sample-rate hint: forcing a rate the
 // current route can't honour (e.g. a Bluetooth headset locked to 16 kHz) yields
 // garbled/pitched capture. WebRTC/Opus negotiates its own rate regardless.
-function micConstraints(channelCount: 1 | 2): MediaTrackConstraints {
+// The selected mic is `ideal`, not `exact`, so a remembered-but-unplugged
+// device falls back to the default instead of failing the join.
+function micConstraints(channelCount: 1 | 2, deviceId?: string): MediaTrackConstraints {
   return {
     channelCount,
     ...(isIOS ? {} : { sampleRate: 48000 }),
     echoCancellation: false,
     noiseSuppression: false,
     autoGainControl: false,
+    ...(deviceId ? { deviceId: { ideal: deviceId } } : {}),
   };
 }
 
@@ -189,7 +193,9 @@ export function useMediasoup() {
   const modeRef = useRef<RoomMode>("p2p");
   // Producers announced while the SFU transports were still being built —
   // consumed at the end of setupSfu instead of being silently dropped.
-  const pendingProducersRef = useRef<Array<{ peerId: string; producerId: string; source: string }>>([]);
+  const pendingProducersRef = useRef<Array<{ peerId: string; producerId: string; source: string }>>(
+    [],
+  );
   // P2P↔SFU transitions (and reconnect rebuilds) are serialized through this
   // promise chain so an in-flight transition always finishes tearing down /
   // building up before the next starts — overlapping async handlers could
@@ -226,7 +232,7 @@ export function useMediasoup() {
   // Queue `fn` behind any in-flight mode transition. The chain itself never
   // breaks (failures are surfaced to the caller's promise, then swallowed for
   // the next link), so one failed transition can't wedge all later ones.
-  const runTransition = useCallback(<T,>(fn: () => Promise<T>): Promise<T> => {
+  const runTransition = useCallback(<T>(fn: () => Promise<T>): Promise<T> => {
     const run = transitionChainRef.current.then(fn);
     transitionChainRef.current = run.then(
       () => undefined,
@@ -244,11 +250,13 @@ export function useMediasoup() {
         // an ack is pending, socket.io NEVER invokes the callback — an
         // un-timed-out emit inside a queued transition would leave the
         // transition chain pending forever and block the reconnect rejoin.
-        socket.timeout(10_000).emit(event, data, (err: Error | null, res: T & { ok: boolean; error?: string }) => {
-          if (err) return reject(err);
-          if (res.ok) resolve(res);
-          else reject(new Error(res.error || "Unknown error"));
-        });
+        socket
+          .timeout(10_000)
+          .emit(event, data, (err: Error | null, res: T & { ok: boolean; error?: string }) => {
+            if (err) return reject(err);
+            if (res.ok) resolve(res);
+            else reject(new Error(res.error || "Unknown error"));
+          });
       }),
     [],
   );
@@ -337,15 +345,61 @@ export function useMediasoup() {
     [ensureOutGraph],
   );
 
+  // --- Device selection (set in the lobby or via the in-call settings) ---
+  const micDeviceId = useRoomStore((s) => s.micDeviceId);
+  const speakerDeviceId = useRoomStore((s) => s.speakerDeviceId);
+
+  // All incoming audio plays through the shared context, so the speaker pick
+  // is one setSinkId there — it covers every peer, current and future.
+  useEffect(() => {
+    applySpeakerToContext(sharedAudioContext, speakerDeviceId);
+  }, [speakerDeviceId]);
+
+  // Mid-call mic switch: re-acquire the mic on the new device and reroute it
+  // into the outgoing graph. Senders/producers never see the swap — they
+  // always carry outDest's track. Guarded by a prev-ref so it only runs on an
+  // actual change; before a call (no local stream) join() picks the device up.
+  const prevMicDeviceRef = useRef(micDeviceId);
+  useEffect(() => {
+    if (prevMicDeviceRef.current === micDeviceId) return;
+    prevMicDeviceRef.current = micDeviceId;
+    if (!localStreamRef.current) return;
+    let cancelled = false;
+    void (async () => {
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: micConstraints(2, micDeviceId),
+        });
+      } catch (err) {
+        console.error("[mic] device switch failed:", err);
+        return;
+      }
+      if (cancelled) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      // Carry an active mute onto the fresh track before it can leak audio.
+      if (store.getState().isMuted) stream.getAudioTracks().forEach((t) => (t.enabled = false));
+      const old = localStreamRef.current;
+      localStreamRef.current = stream;
+      connectMicToGraph(stream);
+      old?.getTracks().forEach((t) => t.stop());
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [micDeviceId, connectMicToGraph, store]);
+
   // --- P2P: create a peer connection ---
   const ensureLocalStream = useCallback(async () => {
     const existing = localStreamRef.current;
     const track = existing?.getAudioTracks()[0];
     if (track && track.readyState === "live") return existing!;
 
-    // Re-acquire mic
+    // Re-acquire mic (on the user's selected device, if any)
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: micConstraints(1),
+      audio: micConstraints(1, useRoomStore.getState().micDeviceId),
     });
     localStreamRef.current = stream;
     connectMicToGraph(stream);
@@ -487,7 +541,9 @@ export function useMediasoup() {
         id: res.consumerId,
         producerId: res.producerId,
         kind: res.kind as "audio",
-        rtpParameters: res.rtpParameters as Parameters<typeof recvTransport.consume>[0]["rtpParameters"],
+        rtpParameters: res.rtpParameters as Parameters<
+          typeof recvTransport.consume
+        >[0]["rtpParameters"],
       });
 
       if ("playoutDelayHint" in consumer.track) {
@@ -502,7 +558,8 @@ export function useMediasoup() {
       // produces BOTH voice and a share never collides in the peer/audio maps.
       // Stereo is preserved end-to-end by createAudioPipeline.
       if (source === "share") {
-        const ownerName = store.getState().peers.get(peerId)?.displayName ?? announce_a_participant();
+        const ownerName =
+          store.getState().peers.get(peerId)?.displayName ?? announce_a_participant();
         store.getState().addPeer(producerId, share_stream_name({ name: ownerName }));
         store.getState().setPeerMusic(producerId, true);
         shareOwnersRef.current.set(producerId, peerId);
@@ -658,7 +715,9 @@ export function useMediasoup() {
           opusFec: true,
           opusMaxPlaybackRate: 48000,
         },
-        codec: device.rtpCapabilities.codecs?.find((c) => c.mimeType.toLowerCase() === "audio/opus"),
+        codec: device.rtpCapabilities.codecs?.find(
+          (c) => c.mimeType.toLowerCase() === "audio/opus",
+        ),
         // outDest is an app-owned, long-lived Web Audio track reused for the
         // whole session and across P2P↔SFU switches; mediasoup-client must NOT
         // stop it when this producer closes (default stopTracks:true would kill
@@ -680,7 +739,15 @@ export function useMediasoup() {
         });
       }
     },
-    [emit, connectMicToGraph, ensureLocalStream, ensureOutGraph, produceShare, consumeProducer, store],
+    [
+      emit,
+      connectMicToGraph,
+      ensureLocalStream,
+      ensureOutGraph,
+      produceShare,
+      consumeProducer,
+      store,
+    ],
   );
 
   // setupSfu never leaves a half-built SFU behind on failure — a live-but-
@@ -706,7 +773,7 @@ export function useMediasoup() {
       // track are reused for the whole session and survive reconnects, so a
       // network blip never re-prompts for the mic or rebuilds the send chain.
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: micConstraints(2),
+        audio: micConstraints(2, store.getState().micDeviceId),
       });
       localStreamRef.current = stream;
       connectMicToGraph(stream);
@@ -753,10 +820,12 @@ export function useMediasoup() {
         for (const m of joinRes.messages ?? []) store.getState().addMessage(m);
 
         // Sync recording state — it may have started/stopped while we were away.
-        store.getState().setRecording(
-          !!joinRes.recording,
-          joinRes.recording ? joinRes.recording.recordingId : null,
-        );
+        store
+          .getState()
+          .setRecording(
+            !!joinRes.recording,
+            joinRes.recording ? joinRes.recording.recordingId : null,
+          );
 
         // Reconcile the peer list: drop anyone who left while we were
         // disconnected, add newcomers. addPeer resets per-peer state, so only
@@ -839,14 +908,23 @@ export function useMediasoup() {
       });
 
       // --- Socket event handlers (attached once; persist across reconnects) ---
-      socket.on("peer-joined", ({ peerId, displayName: name }: { peerId: string; displayName: string }) => {
-        store.getState().addPeer(peerId, name);
-        store.getState().announce(announce_joined({ name }));
-        const joinTs = Date.now();
-        store.getState().addMessage({ id: `sys-join-${peerId}-${joinTs}`, sender: name, text: "", ts: joinTs, kind: "join" });
-        playCue(sharedAudioContext, "join");
-        // In P2P mode, the new peer will send us an offer — we wait for it
-      });
+      socket.on(
+        "peer-joined",
+        ({ peerId, displayName: name }: { peerId: string; displayName: string }) => {
+          store.getState().addPeer(peerId, name);
+          store.getState().announce(announce_joined({ name }));
+          const joinTs = Date.now();
+          store.getState().addMessage({
+            id: `sys-join-${peerId}-${joinTs}`,
+            sender: name,
+            text: "",
+            ts: joinTs,
+            kind: "join",
+          });
+          playCue(sharedAudioContext, "join");
+          // In P2P mode, the new peer will send us an offer — we wait for it
+        },
+      );
 
       socket.on("peer-left", ({ peerId }: { peerId: string }) => {
         const name = store.getState().peers.get(peerId)?.displayName ?? announce_a_participant();
@@ -871,7 +949,13 @@ export function useMediasoup() {
         store.getState().removePeer(peerId);
         store.getState().announce(announce_left({ name }));
         const leaveTs = Date.now();
-        store.getState().addMessage({ id: `sys-leave-${peerId}-${leaveTs}`, sender: name, text: "", ts: leaveTs, kind: "leave" });
+        store.getState().addMessage({
+          id: `sys-leave-${peerId}-${leaveTs}`,
+          sender: name,
+          text: "",
+          ts: leaveTs,
+          kind: "leave",
+        });
         playCue(sharedAudioContext, "leave");
       });
 
@@ -898,79 +982,93 @@ export function useMediasoup() {
       });
 
       // P2P signaling relay
-      socket.on("p2p-signal", async ({ fromPeerId, type, payload }: {
-        fromPeerId: string;
-        type: "offer" | "answer" | "ice-candidate";
-        payload: RTCSessionDescriptionInit | RTCIceCandidateInit;
-      }) => {
-        if (type === "offer") {
-          // Candidates already queued for this peer belong to a previous
-          // session — a session's candidates always arrive after its offer —
-          // so clear them NOW, at offer arrival; everything queued from this
-          // point on belongs to the session this offer starts.
-          pendingCandidatesRef.current.delete(fromPeerId);
-          const seq = (offerSeqRef.current.get(fromPeerId) ?? 0) + 1;
-          offerSeqRef.current.set(fromPeerId, seq);
-          // Serialized behind any in-flight transition: answering immediately
-          // could build a pipeline that a queued teardown then destroys.
-          void runTransition(async () => {
-            // Re-checked at run time — ignore offers from a stale P2P epoch
-            // (relayed just before a switch-to-sfu), and offers superseded by
-            // a newer one from the same peer while this waited in the chain.
-            if (modeRef.current !== "p2p") return;
-            if (offerSeqRef.current.get(fromPeerId) !== seq) return;
-            // We received an offer — create connection as answerer
-            const pc = await createP2pConnection(fromPeerId, false);
-            if (!pc) return;
-            await pc.setRemoteDescription(new RTCSessionDescription(payload as RTCSessionDescriptionInit));
-            await flushPendingCandidates(fromPeerId, pc);
-            const answer = await pc.createAnswer();
-            answer.sdp = forceOpusParams(answer.sdp!);
-            await pc.setLocalDescription(answer);
-            socket.emit("p2p-signal", {
-              targetPeerId: fromPeerId,
-              type: "answer",
-              payload: answer,
-            });
-          }).catch((err) => console.error("[p2p] offer handling failed:", err));
-        } else if (type === "answer") {
-          const pc = p2pConnectionsRef.current.get(fromPeerId);
-          if (pc) {
-            await pc.setRemoteDescription(new RTCSessionDescription(payload as RTCSessionDescriptionInit));
-            await flushPendingCandidates(fromPeerId, pc);
+      socket.on(
+        "p2p-signal",
+        async ({
+          fromPeerId,
+          type,
+          payload,
+        }: {
+          fromPeerId: string;
+          type: "offer" | "answer" | "ice-candidate";
+          payload: RTCSessionDescriptionInit | RTCIceCandidateInit;
+        }) => {
+          if (type === "offer") {
+            // Candidates already queued for this peer belong to a previous
+            // session — a session's candidates always arrive after its offer —
+            // so clear them NOW, at offer arrival; everything queued from this
+            // point on belongs to the session this offer starts.
+            pendingCandidatesRef.current.delete(fromPeerId);
+            const seq = (offerSeqRef.current.get(fromPeerId) ?? 0) + 1;
+            offerSeqRef.current.set(fromPeerId, seq);
+            // Serialized behind any in-flight transition: answering immediately
+            // could build a pipeline that a queued teardown then destroys.
+            void runTransition(async () => {
+              // Re-checked at run time — ignore offers from a stale P2P epoch
+              // (relayed just before a switch-to-sfu), and offers superseded by
+              // a newer one from the same peer while this waited in the chain.
+              if (modeRef.current !== "p2p") return;
+              if (offerSeqRef.current.get(fromPeerId) !== seq) return;
+              // We received an offer — create connection as answerer
+              const pc = await createP2pConnection(fromPeerId, false);
+              if (!pc) return;
+              await pc.setRemoteDescription(
+                new RTCSessionDescription(payload as RTCSessionDescriptionInit),
+              );
+              await flushPendingCandidates(fromPeerId, pc);
+              const answer = await pc.createAnswer();
+              answer.sdp = forceOpusParams(answer.sdp!);
+              await pc.setLocalDescription(answer);
+              socket.emit("p2p-signal", {
+                targetPeerId: fromPeerId,
+                type: "answer",
+                payload: answer,
+              });
+            }).catch((err) => console.error("[p2p] offer handling failed:", err));
+          } else if (type === "answer") {
+            const pc = p2pConnectionsRef.current.get(fromPeerId);
+            if (pc) {
+              await pc.setRemoteDescription(
+                new RTCSessionDescription(payload as RTCSessionDescriptionInit),
+              );
+              await flushPendingCandidates(fromPeerId, pc);
+            }
+          } else if (type === "ice-candidate") {
+            const pc = p2pConnectionsRef.current.get(fromPeerId);
+            if (pc?.remoteDescription) {
+              await pc.addIceCandidate(new RTCIceCandidate(payload as RTCIceCandidateInit));
+            } else {
+              // No remote description yet (its offer/answer is still being
+              // processed) — addIceCandidate would throw and lose the
+              // candidate. Queue it; flushed right after setRemoteDescription.
+              const pending = pendingCandidatesRef.current.get(fromPeerId) ?? [];
+              pending.push(payload as RTCIceCandidateInit);
+              pendingCandidatesRef.current.set(fromPeerId, pending);
+            }
           }
-        } else if (type === "ice-candidate") {
-          const pc = p2pConnectionsRef.current.get(fromPeerId);
-          if (pc?.remoteDescription) {
-            await pc.addIceCandidate(new RTCIceCandidate(payload as RTCIceCandidateInit));
-          } else {
-            // No remote description yet (its offer/answer is still being
-            // processed) — addIceCandidate would throw and lose the
-            // candidate. Queue it; flushed right after setRemoteDescription.
-            const pending = pendingCandidatesRef.current.get(fromPeerId) ?? [];
-            pending.push(payload as RTCIceCandidateInit);
-            pendingCandidatesRef.current.set(fromPeerId, pending);
-          }
-        }
-      });
+        },
+      );
 
       // Switch to SFU (3+ peers)
-      socket.on("switch-to-sfu", ({ rtpCapabilities }: { rtpCapabilities: Record<string, unknown> }) => {
-        console.log("[mode] switching to SFU");
-        // Mode flips synchronously (event arrival order = server truth) so
-        // other handlers route correctly even while the rebuild is queued.
-        modeRef.current = "sfu";
-        store.getState().setMode("sfu");
-        void runTransition(async () => {
-          // Already on a live SFU (e.g. our own join response said "sfu" and
-          // this broadcast raced it) — rebuilding would duplicate transports
-          // and producers, so peers would hear us twice.
-          if (sendTransportRef.current && !sendTransportRef.current.closed) return;
-          teardownP2p();
-          await setupSfu(rtpCapabilities);
-          // The server will send new-producer events for all existing producers after they also set up
-        }).catch((err) => console.error("[mode] switch to SFU failed:", err));
-      });
+      socket.on(
+        "switch-to-sfu",
+        ({ rtpCapabilities }: { rtpCapabilities: Record<string, unknown> }) => {
+          console.log("[mode] switching to SFU");
+          // Mode flips synchronously (event arrival order = server truth) so
+          // other handlers route correctly even while the rebuild is queued.
+          modeRef.current = "sfu";
+          store.getState().setMode("sfu");
+          void runTransition(async () => {
+            // Already on a live SFU (e.g. our own join response said "sfu" and
+            // this broadcast raced it) — rebuilding would duplicate transports
+            // and producers, so peers would hear us twice.
+            if (sendTransportRef.current && !sendTransportRef.current.closed) return;
+            teardownP2p();
+            await setupSfu(rtpCapabilities);
+            // The server will send new-producer events for all existing producers after they also set up
+          }).catch((err) => console.error("[mode] switch to SFU failed:", err));
+        },
+      );
 
       // Switch to P2P (back to 2 peers)
       socket.on("switch-to-p2p", ({ peerIds }: { peerIds: string[] }) => {
@@ -1000,14 +1098,25 @@ export function useMediasoup() {
       });
 
       // SFU: new producer available
-      socket.on("new-producer", async ({ peerId, producerId, source }: { peerId: string; producerId: string; source?: string }) => {
-        if (modeRef.current !== "sfu") return;
-        try {
-          await consumeProducer(peerId, producerId, source ?? "voice");
-        } catch (err) {
-          console.error("[sfu] consume failed:", err);
-        }
-      });
+      socket.on(
+        "new-producer",
+        async ({
+          peerId,
+          producerId,
+          source,
+        }: {
+          peerId: string;
+          producerId: string;
+          source?: string;
+        }) => {
+          if (modeRef.current !== "sfu") return;
+          try {
+            await consumeProducer(peerId, producerId, source ?? "voice");
+          } catch (err) {
+            console.error("[sfu] consume failed:", err);
+          }
+        },
+      );
 
       // Auto-ducking: server says whether anyone is talking right now.
       socket.on("duck", ({ active }: { active: boolean }) => {
@@ -1016,20 +1125,26 @@ export function useMediasoup() {
 
       // A peer started sharing system/tab audio — announce it + play a cue.
       // Their stereo "share" stream arrives separately via new-producer.
-      socket.on("share-started", ({ displayName: name }: { peerId: string; displayName: string }) => {
-        store.getState().announce(announce_share_started({ name }));
-        playCue(sharedAudioContext, "share-start");
-      });
+      socket.on(
+        "share-started",
+        ({ displayName: name }: { peerId: string; displayName: string }) => {
+          store.getState().announce(announce_share_started({ name }));
+          playCue(sharedAudioContext, "share-start");
+        },
+      );
 
       // A peer stopped sharing — tear down their share "music stream" tile(s),
       // announce it, and play a cue.
-      socket.on("share-stopped", ({ peerId, displayName: name }: { peerId: string; displayName: string }) => {
-        for (const [producerId, owner] of shareOwnersRef.current) {
-          if (owner === peerId) removeShareStream(producerId);
-        }
-        store.getState().announce(announce_share_stopped({ name }));
-        playCue(sharedAudioContext, "share-stop");
-      });
+      socket.on(
+        "share-stopped",
+        ({ peerId, displayName: name }: { peerId: string; displayName: string }) => {
+          for (const [producerId, owner] of shareOwnersRef.current) {
+            if (owner === peerId) removeShareStream(producerId);
+          }
+          store.getState().announce(announce_share_stopped({ name }));
+          playCue(sharedAudioContext, "share-stop");
+        },
+      );
 
       socket.on("peer-muted", ({ peerId }: { peerId: string }) => {
         store.getState().setPeerMuted(peerId, true);
@@ -1051,7 +1166,20 @@ export function useMediasoup() {
       // reject if that initial join fails), so callers can flip to "joined".
       await ready;
     },
-    [emit, consumeProducer, setupSfu, createP2pConnection, teardownP2p, teardownSfu, applyDuck, removeShareStream, runTransition, flushPendingCandidates, store],
+    [
+      emit,
+      consumeProducer,
+      setupSfu,
+      createP2pConnection,
+      connectMicToGraph,
+      teardownP2p,
+      teardownSfu,
+      applyDuck,
+      removeShareStream,
+      runTransition,
+      flushPendingCandidates,
+      store,
+    ],
   );
 
   const mute = useCallback(async () => {
@@ -1174,7 +1302,7 @@ export function useMediasoup() {
     if (audioTracks.length === 0) {
       displayStream.getTracks().forEach((t) => t.stop());
       alert(
-        "No audio was shared. When choosing what to share, tick \"Share system audio\" (entire screen) or \"Share tab audio\" (Chrome tab). On Firefox/Safari this is not supported.",
+        'No audio was shared. When choosing what to share, tick "Share system audio" (entire screen) or "Share tab audio" (Chrome tab). On Firefox/Safari this is not supported.',
       );
       return;
     }

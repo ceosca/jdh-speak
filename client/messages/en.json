@@ -85,6 +85,15 @@
   "mic_help_testing": "You should hear yourself — use headphones to avoid echo. Raise the slider until the bar sits around the middle.",
   "mic_help_idle": "Quiet or cheap mic? Test it and boost — you'll hear yourself, and the level carries into the room.",
 
+  "settings_heading": "Audio settings",
+  "settings_open": "Audio settings",
+  "settings_mic_label": "Microphone",
+  "settings_speaker_label": "Speakers",
+  "settings_default_device": "Default",
+  "settings_mic_fallback": "Microphone {n}",
+  "settings_speaker_fallback": "Speakers {n}",
+  "settings_labels_hint": "Device names appear once microphone access is granted.",
+
   "card_you": "you",
   "card_muted_fragment": "muted",
   "card_speaking_fragment": "speaking",

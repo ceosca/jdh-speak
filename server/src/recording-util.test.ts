@@ -164,7 +164,9 @@ describe("buildMixArgs", () => {
     ]);
     const fc = args[args.indexOf("-filter_complex") + 1];
     assert.ok(fc.includes("[0:a]aformat=channel_layouts=stereo,aresample=async=1[a0]"));
-    assert.ok(fc.includes("[1:a]aformat=channel_layouts=stereo,aresample=async=1,adelay=1500:all=1[a1]"));
+    assert.ok(
+      fc.includes("[1:a]aformat=channel_layouts=stereo,aresample=async=1,adelay=1500:all=1[a1]"),
+    );
     assert.ok(fc.includes("amix=inputs=2:normalize=0[out]"));
     assert.deepEqual(args.slice(-2), ["ogg", "pipe:1"]);
     assert.ok(args.includes("libopus"));
@@ -231,8 +233,14 @@ describe("trackFileName", () => {
 
   it("appends the source only when it isn't plain voice", () => {
     assert.equal(trackFileName({ peerId: "x", label: "Al", source: "voice" }, 0), "01-Al.ogg");
-    assert.equal(trackFileName({ peerId: "x", label: "Al", source: "share" }, 0), "01-Al-share.ogg");
-    assert.equal(trackFileName({ peerId: "x", label: "Eco", source: "music" }, 2), "03-Eco-music.ogg");
+    assert.equal(
+      trackFileName({ peerId: "x", label: "Al", source: "share" }, 0),
+      "01-Al-share.ogg",
+    );
+    assert.equal(
+      trackFileName({ peerId: "x", label: "Eco", source: "music" }, 2),
+      "03-Eco-music.ogg",
+    );
   });
 
   it("falls back to the peer id when there is no label", () => {
