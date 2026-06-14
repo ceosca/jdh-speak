@@ -7,6 +7,7 @@ import { formatMessage } from "../lib/chat";
 import { ParticipantCard } from "./ParticipantCard";
 import { AudioControls } from "./AudioControls";
 import { Chat } from "./Chat";
+import { JoinRequests } from "./JoinRequests";
 import { LanguageSelect } from "./LanguageSelect";
 import { m } from "../paraglide/messages.js";
 
@@ -62,6 +63,7 @@ export function Room() {
     setPeerVolume,
     setMicGain,
     sendChatMessage,
+    decideJoinRequest,
   } = useMediasoup();
 
   const [joinState, setJoinState] = useState<JoinState>("idle");
@@ -91,6 +93,8 @@ export function Room() {
   const messages = useRoomStore((s) => s.messages);
   const announcement = useRoomStore((s) => s.announcement);
   const announceSeq = useRoomStore((s) => s.announceSeq);
+  // True while we're knocking on a public room and waiting to be let in.
+  const awaitingApproval = useRoomStore((s) => s.awaitingApproval);
 
   // Reflect the room name in the document/tab title while in (or joining) the
   // room, restoring the default when we leave.
@@ -135,7 +139,10 @@ export function Room() {
       .then(() => setJoinState("joined"))
       .catch((err) => {
         setJoinState("error");
-        setErrorMsg(err instanceof Error ? err.message : m.room_failed_to_join());
+        // A declined knock-to-join request gets a friendlier, localized message
+        // than the raw sentinel the hook rejects with.
+        const msg = err instanceof Error ? err.message : "";
+        setErrorMsg(msg === "join_denied" ? m.room_join_denied() : msg || m.room_failed_to_join());
       });
   }, [roomName, join, navigate, disableP2p, makePublic, p2pStorageKey, searchParams]);
 
@@ -209,13 +216,27 @@ export function Room() {
     navigate("/");
   }, [leave, navigate]);
 
-  // Loading state
+  // Loading state — or, for a public room, waiting to be let in (knock-to-join).
   if (joinState === "joining") {
     return (
       <div className="flex min-h-dvh items-center justify-center bg-sonic-900">
-        <div className="flex flex-col items-center gap-4">
+        <div
+          className="flex max-w-sm flex-col items-center gap-4 px-4 text-center"
+          role="status"
+          aria-live="polite"
+        >
           <Loader2 className="h-8 w-8 animate-spin text-sonic-accent" />
-          <p className="text-sonic-300">{m.room_connecting()}</p>
+          <p className="text-sonic-300">
+            {awaitingApproval ? m.room_awaiting_approval() : m.room_connecting()}
+          </p>
+          {awaitingApproval && (
+            <button
+              onClick={handleLeave}
+              className="rounded-lg bg-sonic-700 px-4 py-2 text-sm text-sonic-100 hover:bg-sonic-600"
+            >
+              {m.room_cancel_request()}
+            </button>
+          )}
         </div>
       </div>
     );
@@ -369,6 +390,10 @@ export function Room() {
       <div aria-live="polite" role="status" className="sr-only" id="sr-announcements">
         <span key={announceSeq}>{announcement}</span>
       </div>
+
+      {/* Knock-to-join: allow/deny people asking to enter this public room.
+          Self-hides when nobody is waiting. */}
+      <JoinRequests onDecide={decideJoinRequest} />
     </div>
   );
 }

@@ -16,7 +16,8 @@ export type Cue =
   | "message"
   | "thunk"
   | "share-start"
-  | "share-stop";
+  | "share-stop"
+  | "knock";
 
 interface ToneSpec {
   freq: number;
@@ -350,6 +351,31 @@ export function playCue(ctx: AudioContext, cue: Cue) {
       tone(ctx, { freq: 784, dur: 0.09, type: "triangle", gain: 0.12 });
       tone(ctx, { freq: 659, dur: 0.09, type: "triangle", gain: 0.12, delay: 0.08 });
       tone(ctx, { freq: 523, dur: 0.13, type: "triangle", gain: 0.12, delay: 0.16 });
+      break;
+    // Someone is asking to be let in → two soft wooden knocks (a knuckle on the
+    // door): a low pitch-dropping thud with a lowpassed noise body. Subtle but
+    // recognizable; the hook loops it while a request is pending.
+    case "knock":
+      for (const delay of [0, 0.17]) {
+        tone(ctx, {
+          freq: 190,
+          glideTo: 90,
+          dur: 0.07,
+          type: "sine",
+          gain: 0.22,
+          delay,
+          attack: 0.002,
+        });
+        noise(ctx, {
+          dur: 0.05,
+          freq: 360,
+          gain: 0.16,
+          type: "lowpass",
+          q: 0.8,
+          delay,
+          attack: 0.002,
+        });
+      }
       break;
   }
 }

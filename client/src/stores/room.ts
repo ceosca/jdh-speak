@@ -91,6 +91,13 @@ export interface PeerState {
 
 export type RoomMode = "p2p" | "sfu";
 
+// A pending "ask to join" request shown to people already in the room. `id` is
+// the requester's socket id — the target a participant's allow/deny references.
+export interface JoinRequest {
+  id: string;
+  displayName: string;
+}
+
 interface RoomState {
   // Active UI language. Mirrors Paraglide's runtime locale so a change here
   // re-renders the tree (see main.tsx's App); the actual messages are resolved
@@ -139,6 +146,14 @@ interface RoomState {
   announcement: string;
   announceSeq: number;
 
+  // "Ask to join" (knock-to-join) for public rooms:
+  // - joinRequests: people waiting at the door, shown to participants in a modal
+  //   (with a looping knock cue) so they can allow/deny. Empty when nobody waits.
+  // - awaitingApproval: set on OUR side while we're the one knocking and waiting
+  //   to be let in, so the Room shows a "waiting" screen instead of the spinner.
+  joinRequests: JoinRequest[];
+  awaitingApproval: boolean;
+
   // Peers
   peers: Map<string, PeerState>;
 
@@ -165,6 +180,8 @@ interface RoomState {
   setStreamError: (error: string | null) => void;
   announce: (message: string) => void;
   announceEvent: (message: string) => void;
+  setJoinRequests: (requests: JoinRequest[]) => void;
+  setAwaitingApproval: (awaiting: boolean) => void;
   addMessage: (message: ChatMessage) => void;
   addPeer: (peerId: string, displayName: string) => void;
   removePeer: (peerId: string) => void;
@@ -197,6 +214,8 @@ export const useRoomStore = create<RoomState>((set) => ({
   streamError: null,
   announcement: "",
   announceSeq: 0,
+  joinRequests: [],
+  awaitingApproval: false,
   peers: new Map(),
   messages: [],
 
@@ -247,6 +266,8 @@ export const useRoomStore = create<RoomState>((set) => ({
   },
   setStreamError: (streamError) => set({ streamError }),
   announce: (message) => set((s) => ({ announcement: message, announceSeq: s.announceSeq + 1 })),
+  setJoinRequests: (joinRequests) => set({ joinRequests }),
+  setAwaitingApproval: (awaitingApproval) => set({ awaitingApproval }),
 
   // Room-event announcement (recording/share/music/mute…): speak it AND log it
   // into the chat history as a "system" entry, so chat is the single timeline
@@ -354,6 +375,8 @@ export const useRoomStore = create<RoomState>((set) => ({
       streamError: null,
       announcement: "",
       announceSeq: 0,
+      joinRequests: [],
+      awaitingApproval: false,
       peers: new Map(),
       messages: [],
     }),

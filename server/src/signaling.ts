@@ -82,6 +82,10 @@ const joinSchema = z.object({
   // server re-pins SFU for the rejoin (the share producer is rebuilt right
   // after, in setupSfu). On a first join it's always false.
   sharing: z.boolean().optional(),
+  // Per-session, per-room random token the client persists (sessionStorage).
+  // Identifies an already-admitted session so a reconnect/refresh skips the
+  // knock gate, and is what an approval records as "admitted".
+  joinToken: z.string().min(1).max(128).optional(),
 });
 
 function closeSfuResources(peer: Peer) {
@@ -231,23 +235,66 @@ export function createSignalingServer(
     }
   }
 
+  // Push the room's current "ask to join" queue to everyone already inside, so
+  // each participant's modal reflects who is waiting at the door right now. The
+  // requesters themselves aren't in the socket.io room yet, so they never see
+  // their own knock. Keyed by socket id, which is also the decision target.
+  function broadcastJoinRequests(room: Room) {
+    io.to(room.name).emit("join-requests", {
+      requests: Array.from(room.pendingJoins.entries()).map(([id, p]) => ({
+        id,
+        displayName: p.displayName,
+      })),
+    });
+  }
+
   io.on("connection", (socket) => {
     console.log(`[ws] connected: ${socket.id}`);
     let currentRoom: Room | null = null;
     let currentPeer: Peer | null = null;
+    // The public room this socket is currently knocking on but hasn't been
+    // admitted to (null once admitted or if no knock is pending). Lets the
+    // disconnect handler retract a pending request even though the visitor was
+    // never added as a peer.
+    let pendingRequest: Room | null = null;
 
     socket.on("join", async (data: unknown, cb: (res: unknown) => void) => {
       try {
-        const { roomName, displayName, role, disableP2p, isPublic, sharing } =
+        const { roomName, displayName, role, disableP2p, isPublic, sharing, joinToken } =
           joinSchema.parse(data);
+        const room = await getOrCreateRoom(roomName);
+        // Captured before this join can flip the (sticky) public flag below, so
+        // we can tell "this join just made the room public" (a public room is
+        // born) apart from "joined an already-public room", and so the knock
+        // gate sees the room's public state as the visitor saw it in the lobby.
+        const wasPublic = room.isPublic;
+
+        // Knock-to-join: a newcomer to an ALREADY-public, occupied room must be
+        // let in by someone inside. Casters (infra, e.g. Ecobox) and returning
+        // sessions (reconnect/refresh, recognized by their join token) skip the
+        // gate; a private room reached by name still joins openly.
+        const alreadyAdmitted = joinToken != null && room.admittedTokens.has(joinToken);
+        if (wasPublic && room.peers.size > 0 && role !== "caster" && !alreadyAdmitted) {
+          room.pendingJoins.set(socket.id, { displayName, token: joinToken ?? "" });
+          pendingRequest = room;
+          console.log(`[ws] ${socket.id} knocking on ${roomName} as "${displayName}"`);
+          broadcastJoinRequests(room);
+          // Reply immediately: a held ack would trip the client's emit timeout.
+          // The actual decision arrives later as a pushed join-approved/-denied,
+          // after which the client re-joins (now token-admitted).
+          cb({ ok: true, status: "pending" });
+          return;
+        }
+
         console.log(
           `[ws] ${socket.id} joined ${roomName} as "${displayName}"${role ? ` (${role})` : ""}${disableP2p ? " (p2p disabled)" : ""}${isPublic ? " (public)" : ""}`,
         );
-        const room = await getOrCreateRoom(roomName);
-        // Capture before this join can flip the (sticky) public flag below, so
-        // we can tell "this join just made the room public" (a public room is
-        // born) apart from "joined an already-public room".
-        const wasPublic = room.isPublic;
+
+        // Admitted (open join, reconnect, or just-approved): remember the token
+        // so a later reconnect/refresh skips the gate, and clear any knock state.
+        if (joinToken != null) room.admittedTokens.add(joinToken);
+        pendingRequest = null;
+
         wireDucking(room);
         const peer = createPeer(room, socket.id, displayName);
 
@@ -281,6 +328,18 @@ export function createSignalingServer(
           else notifyPublicRoomJoin(roomName, displayName, room.peers.size);
         }
 
+        // A newcomer who lands while others are still knocking sees them too,
+        // so they can help admit/deny (the broadcast above only reached peers
+        // who were already in the room).
+        if (room.pendingJoins.size > 0) {
+          socket.emit("join-requests", {
+            requests: Array.from(room.pendingJoins.entries()).map(([id, p]) => ({
+              id,
+              displayName: p.displayName,
+            })),
+          });
+        }
+
         // Send existing peers to the new joiner. Each producer carries its
         // `source` ("voice" | "music") so a late joiner can label/treat the
         // music caster as a media source without waiting for a new-producer event.
@@ -302,6 +361,7 @@ export function createSignalingServer(
 
         cb({
           ok: true,
+          status: "joined",
           rtpCapabilities: room.router.rtpCapabilities,
           peers: existingPeers,
           mode: decision.mode,
@@ -739,9 +799,47 @@ export function createSignalingServer(
       }
     });
 
+    // --- Ask to join (knock) decision ---
+    // Any participant in the room can allow or deny a pending requester. The
+    // first decision wins (the request is removed); a late/duplicate decision
+    // for an already-resolved request is a harmless no-op. Allow records the
+    // requester's token as admitted and pushes `join-approved` so their client
+    // re-joins; deny pushes `join-denied`.
+    socket.on("join-decision", (data: unknown, cb?: (res: unknown) => void) => {
+      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
+      const parsed = z.object({ requestId: z.string(), allow: z.boolean() }).safeParse(data);
+      if (!parsed.success) return cb?.({ ok: false, error: "Invalid decision" });
+
+      const room = currentRoom;
+      const { requestId, allow } = parsed.data;
+      const pending = room.pendingJoins.get(requestId);
+      if (!pending) return cb?.({ ok: true }); // already resolved by someone else
+
+      room.pendingJoins.delete(requestId);
+      if (allow) {
+        if (pending.token) room.admittedTokens.add(pending.token);
+        io.to(requestId).emit("join-approved", {});
+        console.log(`[ws] ${currentPeer.displayName} admitted ${requestId} to ${room.name}`);
+      } else {
+        io.to(requestId).emit("join-denied", { by: currentPeer.displayName });
+        console.log(`[ws] ${currentPeer.displayName} denied ${requestId} from ${room.name}`);
+      }
+      broadcastJoinRequests(room);
+      cb?.({ ok: true });
+    });
+
     socket.on("disconnect", (reason) => {
       console.log(`[ws] disconnected: ${socket.id} (${reason})`);
       chatLimiter.forget(socket.id);
+
+      // A visitor who was still knocking (never admitted) bailed — retract their
+      // request so participants' modals update.
+      if (pendingRequest) {
+        pendingRequest.pendingJoins.delete(socket.id);
+        broadcastJoinRequests(pendingRequest);
+        pendingRequest = null;
+      }
+
       if (currentRoom && currentPeer) {
         const room = currentRoom;
         socket.to(room.name).emit("peer-left", { peerId: socket.id });
@@ -779,6 +877,12 @@ export function createSignalingServer(
         // Check if we should switch modes (won't downgrade while recording).
         if (room.peers.size > 0) {
           applyModeDecision(room);
+        } else if (room.pendingJoins.size > 0) {
+          // The room just emptied while someone was still knocking — their
+          // request can never be answered now, so let them go (their client
+          // surfaces the denial and can retry, landing in the now-empty room).
+          for (const reqId of room.pendingJoins.keys()) io.to(reqId).emit("join-denied", {});
+          room.pendingJoins.clear();
         }
       }
     });

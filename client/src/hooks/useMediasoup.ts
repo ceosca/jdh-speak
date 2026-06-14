@@ -29,7 +29,7 @@ import {
   announce_share_stopped_you,
   share_stream_name,
 } from "../paraglide/messages.js";
-import { useRoomStore, type RoomMode } from "../stores/room";
+import { useRoomStore, type RoomMode, type JoinRequest } from "../stores/room";
 
 interface ConsumeResult {
   ok: boolean;
@@ -236,6 +236,10 @@ export function useMediasoup() {
   // The first received chat message carries a one-time hint that Alt+1..0
   // reads recent messages aloud even with the chat panel closed.
   const chatHintGivenRef = useRef(false);
+  // Set while we're knocking on a public room and waiting to be let in. The
+  // pushed join-approved/-denied handlers resolve/reject it so the blocked join
+  // flow continues (re-join) or fails (denied).
+  const admissionRef = useRef<{ resolve: () => void; reject: (e: unknown) => void } | null>(null);
 
   const store = useRoomStore;
 
@@ -804,13 +808,29 @@ export function useMediasoup() {
       const socket = io({ transports: ["websocket"] });
       socketRef.current = socket;
 
+      // Per-session, per-room token so a reconnect/refresh is recognized as an
+      // already-admitted session (skips a public room's knock gate) and so an
+      // approval can mark us admitted. Persisted in sessionStorage; falls back
+      // to an in-memory value if storage is unavailable.
+      let joinToken: string;
+      try {
+        const k = `sonicroom:joinToken:${roomName}`;
+        joinToken = sessionStorage.getItem(k) ?? crypto.randomUUID();
+        sessionStorage.setItem(k, joinToken);
+      } catch {
+        joinToken = crypto.randomUUID();
+      }
+
       // (Re)join the room and (re)build all media from the server's response.
       // Runs on the initial join AND on every reconnect; it never registers
       // socket handlers (those are attached once, below, and persist across
       // reconnects).
       const joinAndSetup = async () => {
-        const joinRes = await emit<{
+        type JoinResponse = {
           ok: boolean;
+          // "pending" = held at the door of a public room (knock-to-join);
+          // "joined" = admitted, full payload below is present.
+          status?: "joined" | "pending";
           rtpCapabilities: Record<string, unknown>;
           peers: Array<{
             peerId: string;
@@ -823,15 +843,35 @@ export function useMediasoup() {
           streaming?: boolean;
           voiceActive?: boolean;
           messages: ChatMessage[];
-        }>("join", {
+        };
+        const joinPayload = {
           roomName,
           displayName,
           disableP2p: opts?.disableP2p,
           // List this room in the lobby's public directory (sticky server-side).
           isPublic: opts?.isPublic,
+          joinToken,
           // On a reconnect mid-share, re-pin SFU so the share rebuilds.
           sharing: store.getState().isSharingAudio,
-        });
+        };
+
+        let joinRes = await emit<JoinResponse>("join", joinPayload);
+
+        // Knock-to-join: the room is public + occupied, so we're held at the
+        // door. Show the waiting screen and block until a participant decides —
+        // approval lets us re-join (now token-admitted), denial/abort throws.
+        if (joinRes.status === "pending") {
+          store.getState().setAwaitingApproval(true);
+          try {
+            await new Promise<void>((resolve, reject) => {
+              admissionRef.current = { resolve, reject };
+            });
+          } finally {
+            admissionRef.current = null;
+            store.getState().setAwaitingApproval(false);
+          }
+          joinRes = await emit<JoinResponse>("join", joinPayload);
+        }
 
         store.getState().setRoom(roomName, displayName, socket.id!);
         store.getState().setMode(joinRes.mode);
@@ -933,6 +973,22 @@ export function useMediasoup() {
 
       socket.on("disconnect", () => {
         store.getState().setConnected(false);
+        // If we drop while still knocking, abort the blocked join so it doesn't
+        // deadlock the transition chain (a reconnect re-knocks from scratch).
+        admissionRef.current?.reject(new Error("disconnected"));
+      });
+
+      // --- Knock-to-join (public rooms) ---
+      // Participant side: who is currently waiting at the door (drives the modal
+      // + the looping knock cue). Requester side: our own knock was answered.
+      socket.on("join-requests", ({ requests }: { requests: JoinRequest[] }) => {
+        store.getState().setJoinRequests(requests ?? []);
+      });
+      socket.on("join-approved", () => {
+        admissionRef.current?.resolve();
+      });
+      socket.on("join-denied", () => {
+        admissionRef.current?.reject(new Error("join_denied"));
       });
 
       // --- Socket event handlers (attached once; persist across reconnects) ---
@@ -1544,6 +1600,30 @@ export function useMediasoup() {
     store.getState().reset();
   }, [teardownP2p, teardownSfu, detachSharedAudio, store]);
 
+  // Allow/deny a pending join request (participant side). Optimistically drop it
+  // from our local list so the button doesn't linger; the server also broadcasts
+  // the updated list to everyone in the room.
+  const decideJoinRequest = useCallback(
+    (requestId: string, allow: boolean) => {
+      socketRef.current?.emit("join-decision", { requestId, allow });
+      store
+        .getState()
+        .setJoinRequests(store.getState().joinRequests.filter((r) => r.id !== requestId));
+    },
+    [store],
+  );
+
+  // While anyone is waiting at the door, loop the knock cue so participants
+  // notice. Same local-cue path as join/chat: plays through the shared context
+  // regardless of deafen, never routed to peers.
+  const someoneKnocking = useRoomStore((s) => s.joinRequests.length > 0);
+  useEffect(() => {
+    if (!someoneKnocking) return;
+    playCue(sharedAudioContext, "knock");
+    const id = window.setInterval(() => playCue(sharedAudioContext, "knock"), 2600);
+    return () => window.clearInterval(id);
+  }, [someoneKnocking]);
+
   useEffect(() => {
     return () => {
       leave();
@@ -1553,6 +1633,7 @@ export function useMediasoup() {
   return {
     join,
     leave,
+    decideJoinRequest,
     mute,
     unmute,
     toggleMute,
