@@ -17,7 +17,9 @@ export type Cue =
   | "thunk"
   | "share-start"
   | "share-stop"
-  | "knock";
+  | "knock"
+  | "peer-mute"
+  | "peer-unmute";
 
 interface ToneSpec {
   freq: number;
@@ -35,7 +37,7 @@ interface ToneSpec {
   release?: number;
 }
 
-function tone(ctx: AudioContext, spec: ToneSpec) {
+function tone(ctx: BaseAudioContext, spec: ToneSpec) {
   const {
     freq,
     glideTo,
@@ -82,7 +84,7 @@ interface BellSpec {
 // 2-operator FM bell: a sine carrier whose pitch is modulated by a second sine.
 // The modulation depth decays fast (bright metallic strike that settles into a
 // pure ring) while the amplitude decays slowly — that's what reads as a "bell".
-function bell(ctx: AudioContext, spec: BellSpec) {
+function bell(ctx: BaseAudioContext, spec: BellSpec) {
   const { freq, dur, gain = 0.2, delay = 0, ratio = 1.41, index = 4 } = spec;
   const t0 = ctx.currentTime + delay;
 
@@ -128,7 +130,7 @@ interface NoiseSpec {
 
 // Filtered white-noise burst — the raw material for non-pitched sounds (the
 // door's air whoosh, wood thud, and latch click).
-function noise(ctx: AudioContext, spec: NoiseSpec) {
+function noise(ctx: BaseAudioContext, spec: NoiseSpec) {
   const {
     dur,
     gain = 0.2,
@@ -184,7 +186,7 @@ interface CreakSpec {
 // A hinge creak: a sawtooth (rich in harmonics) glides in pitch through a
 // bandpass for the "eee" vowel, while a fast square LFO chops its amplitude —
 // that ratchety amplitude modulation is the wood's stick-slip "creeeak".
-function creak(ctx: AudioContext, spec: CreakSpec) {
+function creak(ctx: BaseAudioContext, spec: CreakSpec) {
   const {
     freq,
     glideTo,
@@ -352,30 +354,84 @@ export function playCue(ctx: AudioContext, cue: Cue) {
       tone(ctx, { freq: 659, dur: 0.09, type: "triangle", gain: 0.12, delay: 0.08 });
       tone(ctx, { freq: 523, dur: 0.13, type: "triangle", gain: 0.12, delay: 0.16 });
       break;
-    // Someone is asking to be let in → two soft wooden knocks (a knuckle on the
-    // door): a low pitch-dropping thud with a lowpassed noise body. Subtle but
-    // recognizable; the hook loops it while a request is pending.
+    // Someone is asking to be let in → two soft wooden knocks (see `knock`).
     case "knock":
-      for (const delay of [0, 0.17]) {
-        tone(ctx, {
-          freq: 190,
-          glideTo: 90,
-          dur: 0.07,
-          type: "sine",
-          gain: 0.22,
-          delay,
-          attack: 0.002,
-        });
-        noise(ctx, {
-          dur: 0.05,
-          freq: 360,
-          gain: 0.16,
-          type: "lowpass",
-          q: 0.8,
-          delay,
-          attack: 0.002,
-        });
-      }
+      knock(ctx, 0);
+      break;
+    // A REMOTE peer toggled their mic — a short, soft pitch blip (down = muted,
+    // up = unmuted). Deliberately quieter/briefer than the sustained self
+    // mute/unmute slides so you can tell "someone else" from "me".
+    case "peer-mute":
+      tone(ctx, { freq: 520, glideTo: 340, dur: 0.12, type: "triangle", gain: 0.1, release: 0.05 });
+      break;
+    case "peer-unmute":
+      tone(ctx, { freq: 340, glideTo: 520, dur: 0.12, type: "triangle", gain: 0.1, release: 0.05 });
       break;
   }
+}
+
+// The knock timbre — two soft wooden knocks (a knuckle on the door): a low
+// pitch-dropping thud with a lowpassed noise body, scheduled at offset `at`.
+// Subtle but recognizable. Works on a real OR an offline (render) context.
+function knock(ctx: BaseAudioContext, at: number) {
+  for (const d of [0, 0.17]) {
+    tone(ctx, {
+      freq: 190,
+      glideTo: 90,
+      dur: 0.07,
+      type: "sine",
+      gain: 0.22,
+      delay: at + d,
+      attack: 0.002,
+    });
+    noise(ctx, {
+      dur: 0.05,
+      freq: 360,
+      gain: 0.16,
+      type: "lowpass",
+      q: 0.8,
+      delay: at + d,
+      attack: 0.002,
+    });
+  }
+}
+
+// Loop the knock on the AUDIO thread, not a JS timer. setInterval/setTimeout are
+// throttled — and can be suspended outright — for hidden/background tabs, which
+// is why a timer-driven knock fired once and then went silent when the tab
+// wasn't focused. Here we render the knock once into a buffer padded to
+// `periodSec`, then play it through a looping AudioBufferSourceNode: that keeps
+// repeating on the audio rendering thread regardless of tab focus, as long as
+// the context is running (the same reason chat/join cues are audible in a
+// background tab). Returns a stop function.
+export function startKnockLoop(ctx: AudioContext, periodSec = 2.6): () => void {
+  if (ctx.state === "suspended") void ctx.resume();
+
+  let stopped = false;
+  let src: AudioBufferSourceNode | null = null;
+
+  const frames = Math.max(1, Math.ceil(ctx.sampleRate * periodSec));
+  const offline = new OfflineAudioContext(1, frames, ctx.sampleRate);
+  knock(offline, 0);
+  void offline.startRendering().then((buffer) => {
+    if (stopped) return;
+    src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.loop = true;
+    src.connect(ctx.destination);
+    src.start();
+  });
+
+  return () => {
+    stopped = true;
+    if (src) {
+      try {
+        src.stop();
+      } catch {
+        /* already stopped */
+      }
+      src.disconnect();
+      src = null;
+    }
+  };
 }

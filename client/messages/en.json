@@ -150,6 +150,8 @@
   "announce_recording_unavailable": "Recording is no longer available",
   "announce_mic_muted": "Microphone muted",
   "announce_mic_unmuted": "Microphone unmuted",
+  "announce_peer_muted": "{name} muted their microphone",
+  "announce_peer_unmuted": "{name} unmuted their microphone",
   "announce_recording_failed": "Could not start recording",
   "announce_streaming_started": "Live streaming started by {name}",
   "announce_streaming_stopped": "Live streaming stopped",

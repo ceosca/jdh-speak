@@ -4,7 +4,7 @@ import { Device } from "mediasoup-client";
 import type { Transport, Producer, Consumer } from "mediasoup-client/types";
 import { forceOpusParams } from "../lib/sdp-munger";
 import { applySpeakerToContext } from "../lib/audio-devices";
-import { playCue } from "../lib/sounds";
+import { playCue, startKnockLoop } from "../lib/sounds";
 import { formatMessage, RateLimiter, META_SEP, type ChatMessage } from "../lib/chat";
 import {
   announce_joined,
@@ -23,6 +23,8 @@ import {
   announce_streaming_failed_reason,
   announce_mic_muted,
   announce_mic_unmuted,
+  announce_peer_muted,
+  announce_peer_unmuted,
   announce_share_started,
   announce_share_stopped,
   announce_share_started_you,
@@ -1264,12 +1266,21 @@ export function useMediasoup() {
         },
       );
 
+      // A remote peer toggled their mic: reflect it, play a soft cue, and speak
+      // it on the polite ARIA region. Unlike other room events this is NOT
+      // logged to chat (announce, not announceEvent) — it'd be too noisy.
       socket.on("peer-muted", ({ peerId }: { peerId: string }) => {
         store.getState().setPeerMuted(peerId, true);
+        const name = store.getState().peers.get(peerId)?.displayName ?? announce_a_participant();
+        store.getState().announce(announce_peer_muted({ name }));
+        playCue(sharedAudioContext, "peer-mute");
       });
 
       socket.on("peer-unmuted", ({ peerId }: { peerId: string }) => {
         store.getState().setPeerMuted(peerId, false);
+        const name = store.getState().peers.get(peerId)?.displayName ?? announce_a_participant();
+        store.getState().announce(announce_peer_unmuted({ name }));
+        playCue(sharedAudioContext, "peer-unmute");
       });
 
       // Incoming chat (including the echo of our own messages): render it, chime
@@ -1614,14 +1625,14 @@ export function useMediasoup() {
   );
 
   // While anyone is waiting at the door, loop the knock cue so participants
-  // notice. Same local-cue path as join/chat: plays through the shared context
-  // regardless of deafen, never routed to peers.
+  // notice. Driven on the audio thread (not a setInterval, which browsers
+  // throttle/suspend for background tabs — that made it knock once and stop when
+  // unfocused). Plays through the shared context regardless of deafen, never
+  // routed to peers.
   const someoneKnocking = useRoomStore((s) => s.joinRequests.length > 0);
   useEffect(() => {
     if (!someoneKnocking) return;
-    playCue(sharedAudioContext, "knock");
-    const id = window.setInterval(() => playCue(sharedAudioContext, "knock"), 2600);
-    return () => window.clearInterval(id);
+    return startKnockLoop(sharedAudioContext);
   }, [someoneKnocking]);
 
   useEffect(() => {

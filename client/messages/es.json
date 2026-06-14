@@ -150,6 +150,8 @@
   "announce_recording_unavailable": "La grabación ya no está disponible",
   "announce_mic_muted": "Micrófono silenciado",
   "announce_mic_unmuted": "Micrófono activado",
+  "announce_peer_muted": "{name} silenció su micrófono",
+  "announce_peer_unmuted": "{name} reactivó su micrófono",
   "announce_recording_failed": "No se pudo iniciar la grabación",
   "announce_streaming_started": "{name} inició la retransmisión en directo",
   "announce_streaming_stopped": "Retransmisión en directo detenida",

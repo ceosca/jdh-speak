@@ -139,10 +139,15 @@ export function Room() {
       .then(() => setJoinState("joined"))
       .catch((err) => {
         setJoinState("error");
-        // A declined knock-to-join request gets a friendlier, localized message
-        // than the raw sentinel the hook rejects with.
+        // A declined knock-to-join request (or a prior deny that banned this IP
+        // from the room) gets a friendlier, localized message than the raw
+        // sentinel the hook/server rejects with.
         const msg = err instanceof Error ? err.message : "";
-        setErrorMsg(msg === "join_denied" ? m.room_join_denied() : msg || m.room_failed_to_join());
+        setErrorMsg(
+          msg === "join_denied" || msg === "banned"
+            ? m.room_join_denied()
+            : msg || m.room_failed_to_join(),
+        );
       });
   }, [roomName, join, navigate, disableP2p, makePublic, p2pStorageKey, searchParams]);
 
@@ -220,13 +225,14 @@ export function Room() {
   if (joinState === "joining") {
     return (
       <div className="flex min-h-dvh items-center justify-center bg-sonic-900">
-        <div
-          className="flex max-w-sm flex-col items-center gap-4 px-4 text-center"
-          role="status"
-          aria-live="polite"
-        >
+        <div className="flex max-w-sm flex-col items-center gap-4 px-4 text-center">
           <Loader2 className="h-8 w-8 animate-spin text-sonic-accent" />
-          <p className="text-sonic-300">
+          {/* One STABLE assertive live region (always mounted while joining), so
+              the connecting → "waiting to be let in" change is reliably read out
+              with priority — it interrupts other speech instead of queueing
+              behind it. (Swapping a freshly-mounted region in/out announces
+              unreliably, hence the single persistent node.) */}
+          <p className="text-sonic-300" role="alert" aria-live="assertive" aria-atomic="true">
             {awaitingApproval ? m.room_awaiting_approval() : m.room_connecting()}
           </p>
           {awaitingApproval && (

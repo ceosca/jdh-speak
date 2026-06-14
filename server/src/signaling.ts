@@ -1,6 +1,6 @@
 import type { Server as HttpServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { Server } from "socket.io";
+import { Server, type Socket } from "socket.io";
 import { z } from "zod";
 import type { DtlsParameters, MediaKind, RtpCapabilities, RtpParameters } from "mediasoup/types";
 import {
@@ -95,6 +95,18 @@ function closeSfuResources(peer: Peer) {
   peer.recvTransport = null;
   peer.producers.clear();
   peer.consumers.clear();
+}
+
+// Best-effort client IP for room-scoped knock bans. Behind the TLS-terminating
+// reverse proxy that fronts this server, the socket's own address is the proxy
+// (127.0.0.1), so prefer the left-most X-Forwarded-For entry (the original
+// client) when present, else the direct peer address. A soft ban: a determined
+// evader can change IP, and NAT means a ban can catch a household — good enough
+// to shut out the obvious repeat knocker.
+function clientIp(socket: Socket): string {
+  const xff = socket.handshake.headers["x-forwarded-for"];
+  const first = Array.isArray(xff) ? xff[0] : xff?.split(",")[0];
+  return (first || socket.handshake.address || "").trim();
 }
 
 export function createSignalingServer(
@@ -263,6 +275,16 @@ export function createSignalingServer(
         const { roomName, displayName, role, disableP2p, isPublic, sharing, joinToken } =
           joinSchema.parse(data);
         const room = await getOrCreateRoom(roomName);
+        const ip = clientIp(socket);
+
+        // Banned from this room by a prior deny — refuse outright (no knock).
+        // Room-scoped and for the room's lifetime only.
+        if (room.bannedIps.has(ip)) {
+          console.log(`[ws] ${socket.id} (${ip}) blocked from ${roomName} (banned)`);
+          cb({ ok: false, error: "banned" });
+          return;
+        }
+
         // Captured before this join can flip the (sticky) public flag below, so
         // we can tell "this join just made the room public" (a public room is
         // born) apart from "joined an already-public room", and so the knock
@@ -275,7 +297,7 @@ export function createSignalingServer(
         // gate; a private room reached by name still joins openly.
         const alreadyAdmitted = joinToken != null && room.admittedTokens.has(joinToken);
         if (wasPublic && room.peers.size > 0 && role !== "caster" && !alreadyAdmitted) {
-          room.pendingJoins.set(socket.id, { displayName, token: joinToken ?? "" });
+          room.pendingJoins.set(socket.id, { displayName, token: joinToken ?? "", ip });
           pendingRequest = room;
           console.log(`[ws] ${socket.id} knocking on ${roomName} as "${displayName}"`);
           broadcastJoinRequests(room);
@@ -821,8 +843,13 @@ export function createSignalingServer(
         io.to(requestId).emit("join-approved", {});
         console.log(`[ws] ${currentPeer.displayName} admitted ${requestId} to ${room.name}`);
       } else {
+        // Ban the denied visitor's IP from THIS room (only) so they can't just
+        // re-knock; the ban lives as long as the room does.
+        if (pending.ip) room.bannedIps.add(pending.ip);
         io.to(requestId).emit("join-denied", { by: currentPeer.displayName });
-        console.log(`[ws] ${currentPeer.displayName} denied ${requestId} from ${room.name}`);
+        console.log(
+          `[ws] ${currentPeer.displayName} denied + banned ${requestId} (${pending.ip}) from ${room.name}`,
+        );
       }
       broadcastJoinRequests(room);
       cb?.({ ok: true });

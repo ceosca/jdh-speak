@@ -39,12 +39,17 @@ export interface Room {
   // "Ask to join" (knock) state for a PUBLIC room: a visitor to an already-
   // public, occupied room is held here (keyed by their socket id) until someone
   // inside allows or denies them. Participants are shown a modal + hear a knock
-  // loop while this is non-empty. Always empty for private rooms.
-  pendingJoins: Map<string, { displayName: string; token: string }>;
+  // loop while this is non-empty. Always empty for private rooms. `ip` is kept
+  // so a deny can ban it (see bannedIps).
+  pendingJoins: Map<string, { displayName: string; token: string; ip: string }>;
   // Per-session join tokens already admitted to this room, so an admitted
   // participant can reconnect/refresh without re-knocking. Sticky for the
   // room's lifetime.
   admittedTokens: Set<string>;
+  // Client IPs banned from this room because a participant denied their knock.
+  // Checked on every join attempt to this room and refused outright (no knock).
+  // Room-scoped and for the room's lifetime only (cleared when the room dies).
+  bannedIps: Set<string>;
   // Peer ids of send-only "music caster" peers (e.g. Ecobox). While any are
   // present the room is forced to SFU (see decideMode's forceSfu).
   casters: Set<string>;
@@ -103,6 +108,7 @@ export async function getOrCreateRoom(roomName: string): Promise<Room> {
     isPublic: false,
     pendingJoins: new Map(),
     admittedTokens: new Set(),
+    bannedIps: new Set(),
     casters: new Set(),
     sharers: new Set(),
     audioLevelObserver,

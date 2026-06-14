@@ -150,6 +150,8 @@
   "announce_recording_unavailable": "L'enregistrement n'est plus disponible",
   "announce_mic_muted": "Micro coupé",
   "announce_mic_unmuted": "Micro activé",
+  "announce_peer_muted": "{name} a coupé son micro",
+  "announce_peer_unmuted": "{name} a réactivé son micro",
   "announce_recording_failed": "Impossible de démarrer l'enregistrement",
   "announce_streaming_started": "{name} a démarré la diffusion en direct",
   "announce_streaming_stopped": "Diffusion en direct arrêtée",
