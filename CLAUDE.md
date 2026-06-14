@@ -13,6 +13,11 @@ SonicRoom — low-latency browser audio conferencing (voice) with hi-fi stereo m
 
 ## Commands
 
+**System binaries** (the server shells out to these — install on the host, on `PATH` or pointed to by `FFMPEG_PATH` / `YTDLP_PATH`):
+
+- **`ffmpeg`** — recording, Icecast streaming, and transcoding URL/stream audio sources to Opus/WebM.
+- **`yt-dlp`** — audio extraction for the in-call URL streamer when a link isn't a direct media URL (YouTube/SoundCloud/IPTV pages, via `/api/audio-proxy`). Keep it current — extraction breaks against site changes when stale (`pip install -U yt-dlp` or the official binary; distro packages lag).
+
 ```bash
 pnpm install                 # workspace install (builds mediasoup worker)
 pnpm dev                     # server (tsx watch :3100) + client (vite :5173) together
