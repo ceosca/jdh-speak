@@ -101,6 +101,13 @@ async function main() {
         .sort((a, b) => a.localeCompare(b));
       res.json({ files });
     } catch (err) {
+      // The library is optional: an absent/unconfigured dir is the common case
+      // (the default /var/lib/sonicroom/media may not exist), so report it as
+      // empty rather than an error — the picker just shows "no server files".
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        res.json({ files: [] });
+        return;
+      }
       console.error(`[audio-library] list failed: ${String(err)}`);
       res.status(500).json({ error: "Could not list server audio files" });
     }

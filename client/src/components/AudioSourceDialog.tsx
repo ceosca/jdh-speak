@@ -15,7 +15,7 @@ export function AudioSourceDialog({
   onStartUrl,
   onStartServerFile,
 }: AudioSourceDialogProps) {
-  const urlInputRef = useRef<HTMLInputElement>(null);
+  const browseButtonRef = useRef<HTMLButtonElement>(null);
   const [url, setUrl] = useState("");
   const [files, setFiles] = useState<string[]>([]);
   const [selectedFile, setSelectedFile] = useState("");
@@ -24,7 +24,7 @@ export function AudioSourceDialog({
   const [error, setError] = useState("");
 
   useEffect(() => {
-    urlInputRef.current?.focus();
+    browseButtonRef.current?.focus();
     let active = true;
     void fetch("/api/audio-library")
       .then(async (res) => {
@@ -36,7 +36,11 @@ export function AudioSourceDialog({
         setFiles(nextFiles);
         setSelectedFile(nextFiles[0] ?? "");
       })
-      .catch(() => active && setError(m.audio_source_error()))
+      .catch(() => {
+        // The server library is optional and its dir may not exist — a failed
+        // list is not a user error, so fall through to the empty state. The
+        // `error` banner is reserved for an actual failure to *start* a source.
+      })
       .finally(() => active && setLoading(false));
     return () => {
       active = false;
@@ -93,6 +97,7 @@ export function AudioSourceDialog({
         </div>
 
         <button
+          ref={browseButtonRef}
           type="button"
           disabled={starting}
           onClick={onChooseComputerFile}
@@ -111,7 +116,6 @@ export function AudioSourceDialog({
           </label>
           <div className="flex gap-2">
             <input
-              ref={urlInputRef}
               id="audio-source-url"
               type="url"
               required
