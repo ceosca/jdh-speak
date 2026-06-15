@@ -9,11 +9,13 @@ import {
   buildAudioTranscodeArgs,
   buildFfmpegStreamArgs,
   buildYtDlpArgs,
+  classifyLibraryEntries,
   isAudioContentType,
   isAudioFileName,
   isPrivateAddress,
   looksLikeDirectStream,
   looksLikeStreamContentType,
+  resolveLibraryPath,
   streamAudioWithFfmpeg,
   streamAudioWithYtDlp,
   streamFallbackAudio,
@@ -112,6 +114,77 @@ describe("isPrivateAddress", () => {
   it("treats malformed input as private (fail closed)", () => {
     assert.equal(isPrivateAddress("not-an-ip"), true);
     assert.equal(isPrivateAddress(""), true);
+  });
+});
+
+describe("resolveLibraryPath", () => {
+  const root = "/srv/media";
+
+  it("resolves the root and nested subfolders to normalized relative paths", () => {
+    assert.deepEqual(resolveLibraryPath(root, ""), { abs: "/srv/media", rel: "" });
+    assert.deepEqual(resolveLibraryPath(root, "movies"), {
+      abs: "/srv/media/movies",
+      rel: "movies",
+    });
+    assert.deepEqual(resolveLibraryPath(root, "a/b/c.mp3"), {
+      abs: "/srv/media/a/b/c.mp3",
+      rel: "a/b/c.mp3",
+    });
+  });
+
+  it("neutralizes leading slashes and backslashes (no absolute escape)", () => {
+    // A leading slash is stripped, so it's read as relative to the root.
+    assert.equal(resolveLibraryPath(root, "/etc/passwd")?.rel, "etc/passwd");
+    assert.equal(resolveLibraryPath(root, "sub\\track.mp3")?.rel, "sub/track.mp3");
+  });
+
+  it("rejects any path that climbs out of the root", () => {
+    for (const bad of ["..", "../etc", "a/../../etc", "sub/../../../etc/passwd", "..\\..\\x"]) {
+      assert.equal(resolveLibraryPath(root, bad), null, bad);
+    }
+  });
+
+  it("rejects a sibling-directory prefix attack", () => {
+    // `/srv/media-evil` must not pass as if it were under `/srv/media`.
+    assert.equal(resolveLibraryPath(root, "../media-evil/x.mp3"), null);
+  });
+});
+
+describe("classifyLibraryEntries", () => {
+  const dirent = (name: string, kind: "dir" | "file") => ({
+    name,
+    isDirectory: kind === "dir",
+    isFile: kind === "file",
+  });
+
+  it("lists folders first then audio files, each A–Z", () => {
+    const out = classifyLibraryEntries([
+      dirent("zebra.mp3", "file"),
+      dirent("Movies", "dir"),
+      dirent("apple.flac", "file"),
+      dirent("Albums", "dir"),
+    ]);
+    assert.deepEqual(out, [
+      { name: "Albums", dir: true },
+      { name: "Movies", dir: true },
+      { name: "apple.flac", dir: false },
+      { name: "zebra.mp3", dir: false },
+    ]);
+  });
+
+  it("drops dotfiles/dotfolders, non-audio files, and symlinks", () => {
+    const out = classifyLibraryEntries([
+      dirent(".hidden", "dir"),
+      dirent(".secret.mp3", "file"),
+      dirent("notes.txt", "file"),
+      { name: "link.mp3", isDirectory: false, isFile: false }, // symlink: neither
+      dirent("ok.ogg", "file"),
+      dirent("Sub", "dir"),
+    ]);
+    assert.deepEqual(out, [
+      { name: "Sub", dir: true },
+      { name: "ok.ogg", dir: false },
+    ]);
   });
 });
 

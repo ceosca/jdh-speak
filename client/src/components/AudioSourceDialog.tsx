@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { FileMusic, FolderOpen, Link, X } from "lucide-react";
+import { ChevronLeft, FileMusic, Folder, FolderOpen, Link, Music, X } from "lucide-react";
 import { m } from "../paraglide/messages.js";
 
 interface AudioSourceDialogProps {
   onClose: () => void;
   onChooseComputerFile: () => void;
   onStartUrl: (url: string) => Promise<void>;
-  onStartServerFile: (name: string) => Promise<void>;
+  // `relPath` may include subfolders, e.g. "Movies/Dune.mp3".
+  onStartServerFile: (relPath: string) => Promise<void>;
+}
+
+interface LibraryEntry {
+  name: string;
+  dir: boolean;
 }
 
 export function AudioSourceDialog({
@@ -17,35 +23,42 @@ export function AudioSourceDialog({
 }: AudioSourceDialogProps) {
   const browseButtonRef = useRef<HTMLButtonElement>(null);
   const [url, setUrl] = useState("");
-  const [files, setFiles] = useState<string[]>([]);
-  const [selectedFile, setSelectedFile] = useState("");
+  // The server library is a browsable tree: `libPath` is the current folder
+  // ("" = root) and `entries` are its folders + audio files.
+  const [libPath, setLibPath] = useState("");
+  const [entries, setEntries] = useState<LibraryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
 
+  // Focus the "browse computer" button on open (runs once).
   useEffect(() => {
     browseButtonRef.current?.focus();
+  }, []);
+
+  // (Re)list whenever the folder changes.
+  useEffect(() => {
     let active = true;
-    void fetch("/api/audio-library")
+    setLoading(true);
+    void fetch(`/api/audio-library?path=${encodeURIComponent(libPath)}`)
       .then(async (res) => {
         if (!res.ok) throw new Error();
-        return (await res.json()) as { files?: string[] };
+        return (await res.json()) as { entries?: LibraryEntry[] };
       })
-      .then(({ files: nextFiles }) => {
-        if (!active || !Array.isArray(nextFiles)) return;
-        setFiles(nextFiles);
-        setSelectedFile(nextFiles[0] ?? "");
+      .then(({ entries: next }) => {
+        if (active && Array.isArray(next)) setEntries(next);
       })
       .catch(() => {
-        // The server library is optional and its dir may not exist — a failed
-        // list is not a user error, so fall through to the empty state. The
-        // `error` banner is reserved for an actual failure to *start* a source.
+        // The library is optional and a folder may be unreadable — fall through
+        // to the empty state. The `error` banner is reserved for an actual
+        // failure to *start* a source.
+        if (active) setEntries([]);
       })
       .finally(() => active && setLoading(false));
     return () => {
       active = false;
     };
-  }, []);
+  }, [libPath]);
 
   const start = async (action: () => Promise<void>) => {
     setStarting(true);
@@ -59,6 +72,12 @@ export function AudioSourceDialog({
     }
   };
 
+  const atRoot = libPath === "";
+  const openFolder = (name: string) => setLibPath((p) => (p ? `${p}/${name}` : name));
+  const goUp = () => setLibPath((p) => p.split("/").slice(0, -1).join("/"));
+  const streamFile = (name: string) =>
+    void start(() => onStartServerFile(libPath ? `${libPath}/${name}` : name));
+
   const submitUrl = (e: FormEvent) => {
     e.preventDefault();
     const value = url.trim();
@@ -69,6 +88,19 @@ export function AudioSourceDialog({
     if (e.key === "Escape") {
       e.stopPropagation();
       onClose();
+      return;
+    }
+    // Backspace goes up a folder — but never while typing in the URL field.
+    if (e.key === "Backspace" && !atRoot) {
+      const target = e.target as HTMLElement;
+      if (
+        target.tagName !== "INPUT" &&
+        target.tagName !== "TEXTAREA" &&
+        !target.isContentEditable
+      ) {
+        e.preventDefault();
+        goUp();
+      }
     }
   };
 
@@ -135,40 +167,65 @@ export function AudioSourceDialog({
           </div>
         </form>
 
-        <label
-          htmlFor="audio-source-library"
-          className="mb-1 block text-xs font-medium text-sonic-300"
-        >
-          {m.audio_source_library_label()}
-        </label>
-        {loading ? (
-          <p className="text-xs text-sonic-400">{m.audio_source_loading()}</p>
-        ) : files.length === 0 ? (
-          <p className="text-xs text-sonic-400">{m.audio_source_library_empty()}</p>
-        ) : (
-          <div className="flex gap-2">
-            <select
-              id="audio-source-library"
-              value={selectedFile}
-              onChange={(e) => setSelectedFile(e.target.value)}
-              className="min-w-0 flex-1 rounded-lg border border-sonic-600 bg-sonic-700 px-2.5 py-1.5 text-sm text-sonic-100 focus:border-sonic-accent focus:outline-none"
+        {/* Server library: a folder browser. Back button + Backspace go up a
+            level; names truncate visually (CSS) but the full name stays in each
+            button's accessible label. */}
+        <div role="group" aria-label={m.audio_source_library_label()}>
+          <div className="mb-1 flex items-center gap-1.5">
+            {!atRoot && (
+              <button
+                type="button"
+                onClick={goUp}
+                aria-label={m.audio_source_back()}
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-sonic-300 hover:bg-sonic-700 hover:text-sonic-100"
+              >
+                <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+              </button>
+            )}
+            <span
+              className="min-w-0 flex-1 truncate text-xs font-medium text-sonic-300"
+              title={libPath || undefined}
             >
-              {files.map((file) => (
-                <option key={file} value={file}>
-                  {file}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              disabled={starting || !selectedFile}
-              onClick={() => void start(() => onStartServerFile(selectedFile))}
-              className="rounded-lg bg-sonic-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
-            >
-              {m.audio_source_library_start()}
-            </button>
+              {atRoot
+                ? m.audio_source_library_label()
+                : `${m.audio_source_library_label()} / ${libPath}`}
+            </span>
           </div>
-        )}
+
+          {loading ? (
+            <p className="text-xs text-sonic-400">{m.audio_source_loading()}</p>
+          ) : entries.length === 0 ? (
+            <p className="text-xs text-sonic-400">
+              {atRoot ? m.audio_source_library_empty() : m.audio_source_folder_empty()}
+            </p>
+          ) : (
+            <ul className="max-h-48 space-y-0.5 overflow-y-auto rounded-lg border border-sonic-600 bg-sonic-900/40 p-1">
+              {entries.map((entry) => (
+                <li key={`${entry.dir ? "d" : "f"}:${entry.name}`}>
+                  <button
+                    type="button"
+                    disabled={starting}
+                    onClick={() => (entry.dir ? openFolder(entry.name) : streamFile(entry.name))}
+                    aria-label={
+                      entry.dir
+                        ? m.audio_source_open_folder({ name: entry.name })
+                        : m.audio_source_stream_named({ name: entry.name })
+                    }
+                    title={entry.name}
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-sonic-100 hover:bg-sonic-700 disabled:opacity-50"
+                  >
+                    {entry.dir ? (
+                      <Folder className="h-4 w-4 shrink-0 text-sonic-accent" aria-hidden="true" />
+                    ) : (
+                      <Music className="h-4 w-4 shrink-0 text-sonic-300" aria-hidden="true" />
+                    )}
+                    <span className="truncate">{entry.name}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
 
         {error && (
           <p role="alert" className="mt-3 text-sm text-muted">

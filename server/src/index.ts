@@ -14,10 +14,12 @@ import { StreamManager } from "./streaming.js";
 import { createZipStream } from "./zip-stream.js";
 import {
   assertPublicAudioUrl,
+  classifyLibraryEntries,
   fetchPublicAudio,
   isAudioContentType,
   isAudioFileName,
   looksLikeStreamContentType,
+  resolveLibraryPath,
   streamFallbackAudio,
   TranscodeBusyError,
 } from "./audio-sources.js";
@@ -89,23 +91,30 @@ async function main() {
     res.json({ rooms: getPublicRooms() });
   });
 
-  // Audio sources for the in-call music/file streamer. The managed library is
-  // flat and audio-only; URL playback goes through this same-origin proxy so
-  // Web Audio can consume sources whose origin does not provide CORS headers.
-  app.get("/api/audio-library", async (_req, res) => {
+  // Audio sources for the in-call music/file streamer. The library is a
+  // browsable tree of folders + audio files under AUDIO_LIBRARY_DIR; URL
+  // playback goes through the same-origin proxy below so Web Audio can consume
+  // sources whose origin does not provide CORS headers. `?path=` is a relative
+  // subfolder, validated by resolveLibraryPath (no traversal out of the root).
+  app.get("/api/audio-library", async (req, res) => {
+    const rel = typeof req.query.path === "string" ? req.query.path : "";
+    const resolved = resolveLibraryPath(AUDIO_LIBRARY_DIR, rel);
+    if (!resolved) {
+      res.status(400).json({ error: "Invalid library path" });
+      return;
+    }
     try {
-      const entries = await readdir(AUDIO_LIBRARY_DIR, { withFileTypes: true });
-      const files = entries
-        .filter((entry) => entry.isFile() && isAudioFileName(entry.name))
-        .map((entry) => entry.name)
-        .sort((a, b) => a.localeCompare(b));
-      res.json({ files });
+      const dirents = await readdir(resolved.abs, { withFileTypes: true });
+      const entries = classifyLibraryEntries(
+        dirents.map((d) => ({ name: d.name, isDirectory: d.isDirectory(), isFile: d.isFile() })),
+      );
+      res.json({ path: resolved.rel, entries });
     } catch (err) {
-      // The library is optional: an absent/unconfigured dir is the common case
-      // (the default /var/lib/sonicroom/media may not exist), so report it as
-      // empty rather than an error — the picker just shows "no server files".
+      // An absent/unconfigured library dir is the common case (the default
+      // /var/lib/sonicroom/media may not exist) — report it as empty rather
+      // than an error so the picker just shows "no server files".
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-        res.json({ files: [] });
+        res.json({ path: resolved.rel, entries: [] });
         return;
       }
       console.error(`[audio-library] list failed: ${String(err)}`);
@@ -113,12 +122,16 @@ async function main() {
     }
   });
 
-  app.get("/api/audio-library/:name", (req, res) => {
-    if (!isAudioFileName(req.params.name)) {
+  // Serve one library file. `?path=` is the relative path (may include
+  // subfolders), validated the same way and required to name an audio file.
+  app.get("/api/audio-library/file", (req, res) => {
+    const rel = typeof req.query.path === "string" ? req.query.path : "";
+    const resolved = resolveLibraryPath(AUDIO_LIBRARY_DIR, rel);
+    if (!resolved || resolved.rel === "" || !isAudioFileName(path.basename(resolved.rel))) {
       res.status(404).json({ error: "Audio file not found" });
       return;
     }
-    res.sendFile(req.params.name, { root: AUDIO_LIBRARY_DIR, dotfiles: "deny" }, (err) => {
+    res.sendFile(resolved.rel, { root: AUDIO_LIBRARY_DIR, dotfiles: "deny" }, (err) => {
       if (err && !res.headersSent) res.status(404).json({ error: "Audio file not found" });
     });
   });

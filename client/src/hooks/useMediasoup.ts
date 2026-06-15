@@ -1957,8 +1957,11 @@ export function useMediasoup() {
   );
 
   const startServerFileStream = useCallback(
-    async (name: string) => {
-      await startFileSource(`/api/audio-library/${encodeURIComponent(name)}`, name);
+    // `relPath` may include subfolders (e.g. "Movies/Dune.mp3"); display the
+    // basename while streaming.
+    async (relPath: string) => {
+      const name = relPath.split("/").pop() || relPath;
+      await startFileSource(`/api/audio-library/file?path=${encodeURIComponent(relPath)}`, name);
     },
     [startFileSource],
   );

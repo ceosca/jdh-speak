@@ -33,6 +33,42 @@ export function isAudioContentType(value: string): boolean {
   return type.startsWith("audio/") || type === "application/ogg";
 }
 
+// Resolve a client-supplied relative path inside the library `root` for the
+// folder browser. Returns the absolute path + a normalized forward-slash
+// relative path, or null if it escapes the root. This is the path-traversal
+// guard: leading slashes/backslashes are neutralized and `..` is collapsed
+// lexically, so neither an absolute path nor `../` can climb out of the root.
+export function resolveLibraryPath(
+  root: string,
+  relPath: string,
+): { abs: string; rel: string } | null {
+  const cleaned = relPath.replace(/\\/g, "/").replace(/^\/+/, "").trim();
+  const rootResolved = path.resolve(root);
+  const abs = path.resolve(rootResolved, cleaned);
+  if (abs !== rootResolved && !abs.startsWith(rootResolved + path.sep)) return null;
+  return { abs, rel: path.relative(rootResolved, abs).split(path.sep).join("/") };
+}
+
+export interface LibraryEntry {
+  name: string;
+  dir: boolean;
+}
+
+// Shape one directory listing for the picker: drop dotfiles/dotfolders, keep
+// sub-directories (navigable) and audio files, sort folders first then files,
+// each A–Z. (Symlinks report neither isDirectory nor isFile, so they're
+// dropped — only real folders/files are surfaced.)
+export function classifyLibraryEntries(
+  entries: { name: string; isDirectory: boolean; isFile: boolean }[],
+): LibraryEntry[] {
+  return entries
+    .filter(
+      (e) => !e.name.startsWith(".") && (e.isDirectory || (e.isFile && isAudioFileName(e.name))),
+    )
+    .map((e) => ({ name: e.name, dir: e.isDirectory }))
+    .sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1));
+}
+
 function isPrivateIpv4(address: string): boolean {
   const parts = address.split(".").map(Number);
   if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255))
