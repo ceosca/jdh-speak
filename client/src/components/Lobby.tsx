@@ -5,6 +5,7 @@ import { MicPreview } from "./MicPreview";
 import { LanguageSelect } from "./LanguageSelect";
 import { Footer } from "./Footer";
 import { getLocale } from "../lib/i18n";
+import { getInstanceName } from "../lib/branding";
 import { m } from "../paraglide/messages.js";
 
 function sanitize(input: string): string {
@@ -25,6 +26,13 @@ function isPublicEnabled(value: string | null): boolean {
   return ["true", "1", "yes", "on", "enable", "enabled", "public"].includes(value.toLowerCase());
 }
 
+// `?mic=off` (also accepts false/0/no/disable/disabled) pre-ticks the "Join
+// without a microphone" toggle from a shared link.
+function isMicDisabled(value: string | null): boolean {
+  if (value == null) return false;
+  return ["off", "false", "0", "no", "disable", "disabled"].includes(value.toLowerCase());
+}
+
 interface PublicRoom {
   name: string;
   participants: string[];
@@ -42,6 +50,9 @@ export function Lobby() {
   const [displayName, setDisplayName] = useState("");
   const [disableP2p, setDisableP2p] = useState(() => isP2pDisabled(searchParams.get("p2p")));
   const [makePublic, setMakePublic] = useState(() => isPublicEnabled(searchParams.get("public")));
+  const [joinWithoutMic, setJoinWithoutMic] = useState(() =>
+    isMicDisabled(searchParams.get("mic")),
+  );
   const [publicRooms, setPublicRooms] = useState<PublicRoom[]>([]);
   // Roving active option in the public-room listbox (-1 = none yet), mirroring
   // the chat message list's keyboard model. Tracked by index and clamped as the
@@ -62,6 +73,13 @@ export function Lobby() {
       roomInputRef.current?.focus();
     }
   }, [prefillRoom]);
+
+  // Reflect this instance's name in the tab title on the lobby (the Room sets
+  // its own "<room> · <instance>" title). Keeps it in sync after the Room's
+  // cleanup and on SPA navigation back here.
+  useEffect(() => {
+    document.title = getInstanceName();
+  }, []);
 
   // Fetch the public room directory on mount and poll it. Failures are ignored
   // (the list just stays empty/stale); the cleanup flag avoids a late setState.
@@ -179,10 +197,12 @@ export function Lobby() {
       const params = new URLSearchParams();
       if (disableP2p) params.set("p2p", "off");
       if (makePublic) params.set("public", "true");
+      // Listen + text-chat only — no mic prompt (see Room's ?mic=off handling).
+      if (joinWithoutMic) params.set("mic", "off");
       const qs = params.toString();
       navigate(`/room/${sanitizedRoom}${qs ? `?${qs}` : ""}`);
     },
-    [roomName, displayName, navigate, disableP2p, makePublic],
+    [roomName, displayName, navigate, disableP2p, makePublic, joinWithoutMic],
   );
 
   // Localized participant list ("a, b and c"), so the public room rows read
@@ -206,7 +226,9 @@ export function Lobby() {
             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-sonic-accent/20">
               <Headphones className="h-6 w-6 text-sonic-accent" />
             </div>
-            <h1 className="text-3xl font-bold tracking-tight text-sonic-100">SonicRoom</h1>
+            <h1 className="text-3xl font-bold tracking-tight text-sonic-100">
+              {getInstanceName()}
+            </h1>
           </div>
 
           <p className="mb-6 text-center text-sm text-sonic-300">{m.lobby_tagline()}</p>
@@ -374,6 +396,24 @@ export function Lobby() {
                 {m.lobby_make_public_sticky()}
               </p>
             </div>
+
+            {/* Join without a microphone — for people who have no mic or can't /
+                won't speak. They listen and use text chat only; no mic prompt is
+                shown. (A missing or denied mic also falls back to this mode.) */}
+            <label className="flex cursor-pointer select-none items-start gap-2.5">
+              <input
+                type="checkbox"
+                checked={joinWithoutMic}
+                onChange={(e) => setJoinWithoutMic(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded border-sonic-600 bg-sonic-700 accent-sonic-accent"
+              />
+              <span className="text-sm font-medium text-sonic-200">
+                {m.lobby_join_without_mic()}
+                <span className="mt-0.5 block text-xs font-normal text-sonic-400">
+                  {m.lobby_join_without_mic_help()}
+                </span>
+              </span>
+            </label>
 
             {error && (
               <p id="lobby-error" className="text-sm text-muted" role="alert">
