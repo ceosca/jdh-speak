@@ -429,13 +429,6 @@ export function Lobby() {
               <ArrowRight className="h-4 w-4" />
             </button>
           </form>
-
-          <div className="mt-6 text-center text-xs text-sonic-400">
-            <kbd className="rounded border border-sonic-600 bg-sonic-700 px-1.5 py-0.5 font-mono text-sonic-300">
-              M
-            </kbd>{" "}
-            {m.lobby_toggle_mute_hint()}
-          </div>
         </div>
       </div>
 

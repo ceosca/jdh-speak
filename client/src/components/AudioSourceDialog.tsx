@@ -40,9 +40,12 @@ export function AudioSourceDialog({
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
 
-  // Open as a real top-layer modal: native <dialog> gives an inert background,
-  // focus containment, and screen readers reliably announce it as a dialog
-  // (role="dialog" + programmatic focus did not). Initial focus -> browse.
+  // Open as a real top-layer modal. Native <dialog> gives an inert background,
+  // focus containment, and Escape-to-close; the explicit role="dialog" +
+  // aria-modal below make it announce as a dialog on the screen readers that
+  // don't convey a bare native <dialog> (and match every other modal here —
+  // JoinRequests, FileStreamPlayer, the controls popovers). Initial focus ->
+  // browse.
   useEffect(() => {
     const dlg = dialogRef.current;
     if (dlg && !dlg.open) dlg.showModal();
@@ -175,6 +178,8 @@ export function AudioSourceDialog({
   return (
     <dialog
       ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
       aria-labelledby="audio-source-heading"
       onCancel={(e) => {
         e.preventDefault();
