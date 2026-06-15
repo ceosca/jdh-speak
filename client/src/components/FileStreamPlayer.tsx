@@ -58,11 +58,16 @@ export function FileStreamPlayer({ name, playing, onTogglePlay, onStop }: FileSt
           onClick={onTogglePlay}
           className="flex h-10 w-10 items-center justify-center rounded-full bg-sonic-accent text-white transition-all hover:bg-sonic-accent/90"
           aria-label={playing ? m.file_player_pause() : m.file_player_play()}
+          aria-describedby="file-player-hint"
           aria-pressed={playing}
         >
           {playing ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
         </button>
-        <p className="text-xs text-sonic-400">{m.file_player_hint()}</p>
+        {/* Keyboard guidance for the autofocused play button (Space toggles,
+            Escape stops) — tied to it via aria-describedby. */}
+        <p id="file-player-hint" className="text-xs text-sonic-400">
+          {m.file_player_hint()}
+        </p>
       </div>
     </div>
   );

@@ -244,6 +244,7 @@ export function Lobby() {
               <input
                 ref={roomInputRef}
                 id="room-name"
+                name="room-name"
                 type="text"
                 value={roomName}
                 onChange={(e) => {
@@ -268,6 +269,7 @@ export function Lobby() {
               <input
                 ref={nameInputRef}
                 id="display-name"
+                name="display-name"
                 type="text"
                 value={displayName}
                 onChange={(e) => {
@@ -354,44 +356,51 @@ export function Lobby() {
 
             <MicPreview />
 
-            <label className="flex cursor-pointer select-none items-start gap-2.5">
-              <input
-                type="checkbox"
-                checked={disableP2p}
-                onChange={(e) => setDisableP2p(e.target.checked)}
-                className="mt-0.5 h-4 w-4 rounded border-sonic-600 bg-sonic-700 accent-sonic-accent"
-              />
-              <span className="text-sm font-medium text-sonic-200">
-                {m.lobby_disable_p2p()}
-                <span className="mt-0.5 block text-xs font-normal text-sonic-400">
-                  {m.lobby_disable_p2p_help()}
-                </span>
-              </span>
-            </label>
+            {/* Each option's longer help text is a described-by sibling of the
+              label (id + aria-describedby) rather than nested inside it, so a
+              screen reader reads the short title as the checkbox's accessible
+              name and the help as a separate description — instead of folding
+              the whole paragraph into the name. Indented to line up under the
+              label text (checkbox 16px + gap 10px = 26px). */}
+            <div>
+              <label className="flex cursor-pointer select-none items-start gap-2.5">
+                <input
+                  type="checkbox"
+                  id="disable-p2p"
+                  name="disable-p2p"
+                  checked={disableP2p}
+                  onChange={(e) => setDisableP2p(e.target.checked)}
+                  aria-describedby="disable-p2p-help"
+                  className="mt-0.5 h-4 w-4 rounded border-sonic-600 bg-sonic-700 accent-sonic-accent"
+                />
+                <span className="text-sm font-medium text-sonic-200">{m.lobby_disable_p2p()}</span>
+              </label>
+              <p id="disable-p2p-help" className="mt-1 pl-[26px] text-xs text-sonic-400">
+                {m.lobby_disable_p2p_help()}
+              </p>
+            </div>
 
             <div>
               <label className="flex cursor-pointer select-none items-start gap-2.5">
                 <input
                   type="checkbox"
+                  id="make-public"
+                  name="make-public"
                   checked={makePublic}
                   onChange={(e) => setMakePublic(e.target.checked)}
-                  aria-describedby="make-public-sticky"
+                  aria-describedby="make-public-help make-public-sticky"
                   className="mt-0.5 h-4 w-4 rounded border-sonic-600 bg-sonic-700 accent-sonic-accent"
                 />
-                <span className="text-sm font-medium text-sonic-200">
-                  {m.lobby_make_public()}
-                  <span className="mt-0.5 block text-xs font-normal text-sonic-400">
-                    {m.lobby_make_public_help()}
-                  </span>
-                </span>
+                <span className="text-sm font-medium text-sonic-200">{m.lobby_make_public()}</span>
               </label>
+              <p id="make-public-help" className="mt-1 pl-[26px] text-xs text-sonic-400">
+                {m.lobby_make_public_help()}
+              </p>
               {/* Sticky-behaviour note (mirrors the selectPublicRoom comment):
                 once any joiner makes a room public it stays public for its
-                session — unticking this can't un-public an existing room.
-                Visible to everyone, and a described-by sibling of the label so
-                screen readers get it as a description rather than folding it
-                into the checkbox's accessible name. Indented to line up under
-                the label text (checkbox 16px + gap 10px). */}
+                session — unticking this can't un-public an existing room. A
+                second described-by sibling so screen readers get it as another
+                description rather than folding it into the accessible name. */}
               <p id="make-public-sticky" className="mt-1 pl-[26px] text-xs italic text-sonic-400">
                 {m.lobby_make_public_sticky()}
               </p>
@@ -400,20 +409,25 @@ export function Lobby() {
             {/* Join without a microphone — for people who have no mic or can't /
                 won't speak. They listen and use text chat only; no mic prompt is
                 shown. (A missing or denied mic also falls back to this mode.) */}
-            <label className="flex cursor-pointer select-none items-start gap-2.5">
-              <input
-                type="checkbox"
-                checked={joinWithoutMic}
-                onChange={(e) => setJoinWithoutMic(e.target.checked)}
-                className="mt-0.5 h-4 w-4 rounded border-sonic-600 bg-sonic-700 accent-sonic-accent"
-              />
-              <span className="text-sm font-medium text-sonic-200">
-                {m.lobby_join_without_mic()}
-                <span className="mt-0.5 block text-xs font-normal text-sonic-400">
-                  {m.lobby_join_without_mic_help()}
+            <div>
+              <label className="flex cursor-pointer select-none items-start gap-2.5">
+                <input
+                  type="checkbox"
+                  id="join-without-mic"
+                  name="join-without-mic"
+                  checked={joinWithoutMic}
+                  onChange={(e) => setJoinWithoutMic(e.target.checked)}
+                  aria-describedby="join-without-mic-help"
+                  className="mt-0.5 h-4 w-4 rounded border-sonic-600 bg-sonic-700 accent-sonic-accent"
+                />
+                <span className="text-sm font-medium text-sonic-200">
+                  {m.lobby_join_without_mic()}
                 </span>
-              </span>
-            </label>
+              </label>
+              <p id="join-without-mic-help" className="mt-1 pl-[26px] text-xs text-sonic-400">
+                {m.lobby_join_without_mic_help()}
+              </p>
+            </div>
 
             {error && (
               <p id="lobby-error" className="text-sm text-muted" role="alert">

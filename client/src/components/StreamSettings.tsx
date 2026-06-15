@@ -28,6 +28,8 @@ export function StreamSettings({ onStartStreaming, onStopStreaming }: StreamSett
   // Show the inline rejection if we have one, otherwise the server's later report.
   const shownError = error || streamError;
 
+  const headingId = useId();
+  const hintId = useId();
   const hostId = useId();
   const portId = useId();
   const mountId = useId();
@@ -58,12 +60,19 @@ export function StreamSettings({ onStartStreaming, onStopStreaming }: StreamSett
   const labelClass = "mb-1 block text-xs font-medium text-sonic-300";
 
   return (
-    <div className="space-y-3">
+    // The intro hint describes the whole streaming section, not one field, so
+    // bind it to the group (labelledby the heading, describedby the hint) rather
+    // than to an arbitrary input.
+    <div role="group" aria-labelledby={headingId} aria-describedby={hintId} className="space-y-3">
       <div className="flex items-center gap-2">
         <Radio className="h-4 w-4 text-sonic-accent" />
-        <h2 className="text-sm font-semibold text-sonic-100">{m.settings_streaming_heading()}</h2>
+        <h2 id={headingId} className="text-sm font-semibold text-sonic-100">
+          {m.settings_streaming_heading()}
+        </h2>
       </div>
-      <p className="text-xs text-sonic-400">{m.settings_streaming_hint()}</p>
+      <p id={hintId} className="text-xs text-sonic-400">
+        {m.settings_streaming_hint()}
+      </p>
 
       <div>
         <label htmlFor={hostId} className={labelClass}>

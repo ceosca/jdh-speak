@@ -21,6 +21,7 @@ export function DeviceSettings() {
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
   const [speakers, setSpeakers] = useState<MediaDeviceInfo[]>([]);
   const micSelectId = useId();
+  const micHintId = useId();
   const speakerSelectId = useId();
   const voiceProcessingId = useId();
   const hifiVoiceId = useId();
@@ -62,6 +63,7 @@ export function DeviceSettings() {
           value={micValue}
           onChange={(e) => setMicDeviceId(e.target.value)}
           onFocus={() => void refresh()}
+          aria-describedby={mics.length === 0 ? micHintId : undefined}
           className={selectClass}
         >
           <option value="">{m.settings_default_device()}</option>
@@ -98,41 +100,63 @@ export function DeviceSettings() {
         </div>
       )}
 
-      <label
-        htmlFor={voiceProcessingId}
-        title={m.settings_voice_processing_hint()}
-        className="flex cursor-pointer select-none items-center gap-2.5"
-      >
-        <input
-          id={voiceProcessingId}
-          type="checkbox"
-          checked={voiceProcessingEnabled}
-          onChange={(e) => setVoiceProcessingEnabled(e.target.checked)}
-          className="h-4 w-4 rounded border-sonic-600 bg-sonic-700 accent-sonic-accent"
-        />
-        <span className="text-xs font-medium text-sonic-300">
-          {m.settings_voice_processing_label()}
-        </span>
-      </label>
+      {/* Each toggle's hint was a `title` tooltip — invisible to keyboard/SR
+          users and only shown on hover. Promote it to visible help text tied to
+          the checkbox via aria-describedby (the Lobby checkbox pattern). The
+          hint id is derived from the checkbox's useId. Indented to line up under
+          the label text (checkbox 16px + gap 10px = 26px). */}
+      <div>
+        <label
+          htmlFor={voiceProcessingId}
+          className="flex cursor-pointer select-none items-center gap-2.5"
+        >
+          <input
+            id={voiceProcessingId}
+            type="checkbox"
+            checked={voiceProcessingEnabled}
+            onChange={(e) => setVoiceProcessingEnabled(e.target.checked)}
+            aria-describedby={`${voiceProcessingId}-hint`}
+            className="h-4 w-4 rounded border-sonic-600 bg-sonic-700 accent-sonic-accent"
+          />
+          <span className="text-xs font-medium text-sonic-300">
+            {m.settings_voice_processing_label()}
+          </span>
+        </label>
+        <p id={`${voiceProcessingId}-hint`} className="mt-1 pl-[26px] text-xs text-sonic-400">
+          {m.settings_voice_processing_hint()}
+        </p>
+      </div>
 
-      <label
-        htmlFor={hifiVoiceId}
-        title={m.settings_hifi_voice_hint()}
-        className="flex cursor-pointer select-none items-center gap-2.5"
-      >
-        <input
-          id={hifiVoiceId}
-          type="checkbox"
-          checked={hifiVoiceEnabled}
-          onChange={(e) => setHifiVoiceEnabled(e.target.checked)}
-          className="h-4 w-4 rounded border-sonic-600 bg-sonic-700 accent-sonic-accent"
-        />
-        <span className="text-xs font-medium text-sonic-300">{m.settings_hifi_voice_label()}</span>
-      </label>
+      <div>
+        <label
+          htmlFor={hifiVoiceId}
+          className="flex cursor-pointer select-none items-center gap-2.5"
+        >
+          <input
+            id={hifiVoiceId}
+            type="checkbox"
+            checked={hifiVoiceEnabled}
+            onChange={(e) => setHifiVoiceEnabled(e.target.checked)}
+            aria-describedby={`${hifiVoiceId}-hint`}
+            className="h-4 w-4 rounded border-sonic-600 bg-sonic-700 accent-sonic-accent"
+          />
+          <span className="text-xs font-medium text-sonic-300">
+            {m.settings_hifi_voice_label()}
+          </span>
+        </label>
+        <p id={`${hifiVoiceId}-hint`} className="mt-1 pl-[26px] text-xs text-sonic-400">
+          {m.settings_hifi_voice_hint()}
+        </p>
+      </div>
 
       {/* Browsers hide device names until mic permission is granted (e.g. in
-          the lobby before the first test) — explain the bare lists. */}
-      {mics.length === 0 && <p className="text-xs text-sonic-400">{m.settings_labels_hint()}</p>}
+          the lobby before the first test) — explain the bare lists. Tied to the
+          mic select via aria-describedby (only while it's shown). */}
+      {mics.length === 0 && (
+        <p id={micHintId} className="text-xs text-sonic-400">
+          {m.settings_labels_hint()}
+        </p>
+      )}
     </div>
   );
 }

@@ -246,6 +246,7 @@ export function MicPreview() {
           onChange={(e) => setMicGain(parseFloat(e.target.value))}
           className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-sonic-600 accent-sonic-accent"
           aria-label={m.mic_slider_label()}
+          aria-describedby="mic-help"
         />
       </div>
 
@@ -271,7 +272,10 @@ export function MicPreview() {
           loop so it never chatters. */}
       <div ref={statusRef} role="status" aria-live="polite" className="sr-only" />
 
-      <p className="mt-1.5 text-xs text-sonic-400">
+      {/* Contextual help for the level slider (error / testing / idle), wired to
+          the range input above via aria-describedby so a screen reader reads the
+          guidance — "boost a quiet mic, you'll hear yourself" — with the control. */}
+      <p id="mic-help" className="mt-1.5 text-xs text-sonic-400">
         {error ? error : testing ? m.mic_help_testing() : m.mic_help_idle()}
       </p>
 
