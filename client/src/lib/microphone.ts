@@ -6,15 +6,23 @@ export const isIOS =
   (/iP(hone|ad|od)/.test(navigator.userAgent) ||
     (/Mac/.test(navigator.userAgent) && navigator.maxTouchPoints > 1));
 
-// Always request stereo capture. Voice processing is independently selectable:
-// browsers may internally downmix while it is enabled, but SonicRoom keeps the
-// capture graph and Opus transport stereo-capable.
+// Mic capture constraints. Two independent per-user choices:
+//   - voiceProcessingEnabled: echo cancel / noise suppress / auto gain.
+//   - hifiVoice: capture 2 channels for the opt-in stereo voice path. Off by
+//     default, so the default voice path stays mono (matching the wire codec —
+//     see `forceOpusParams` / the produce `opusStereo` flag). A mono mic is
+//     unaffected either way; this only matters for a genuinely stereo source.
+// On iOS we drop the sample-rate hint so WebKit can use the device-native rate
+// (forcing a rate a route can't honour garbles capture); WebRTC/Opus negotiates
+// its own rate regardless. The device is `ideal`, not `exact`, so a
+// remembered-but-unplugged mic falls back to the default instead of failing.
 export function microphoneConstraints(
   deviceId: string,
   voiceProcessingEnabled: boolean,
+  hifiVoice: boolean,
 ): MediaTrackConstraints {
   return {
-    channelCount: 2,
+    channelCount: hifiVoice ? 2 : 1,
     ...(isIOS ? {} : { sampleRate: 48000 }),
     echoCancellation: voiceProcessingEnabled,
     noiseSuppression: voiceProcessingEnabled,

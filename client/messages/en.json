@@ -126,6 +126,8 @@
   "settings_labels_hint": "Device names appear once microphone access is granted.",
   "settings_voice_processing_label": "Voice processing",
   "settings_voice_processing_hint": "Echo control, noise cleanup and auto level",
+  "settings_hifi_voice_label": "Hi-fi voice (stereo)",
+  "settings_hifi_voice_hint": "Send stereo at a higher bitrate. Uses more data; applies on your next call",
 
   "settings_streaming_heading": "Live streaming",
   "settings_streaming_hint": "Stream the whole call — every voice, shared track and the music — to an Icecast2 server. Works alongside (or instead of) recording.",

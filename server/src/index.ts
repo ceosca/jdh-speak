@@ -19,6 +19,7 @@ import {
   isAudioFileName,
   looksLikeStreamContentType,
   streamFallbackAudio,
+  TranscodeBusyError,
 } from "./audio-sources.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -189,7 +190,14 @@ async function main() {
     } catch (err) {
       console.error(`[audio-proxy] transcode fallback failed: ${String(err)}`);
       if (!res.headersSent) {
-        res.status(502).json({ error: "Could not get audio from that URL" });
+        // Slot exhaustion is transient (503 + Retry-After); anything else is an
+        // upstream/extraction failure for this URL (502).
+        if (err instanceof TranscodeBusyError) {
+          res.setHeader("Retry-After", "5");
+          res.status(503).json({ error: "Server busy transcoding audio, try again shortly" });
+        } else {
+          res.status(502).json({ error: "Could not get audio from that URL" });
+        }
       } else {
         res.destroy();
       }

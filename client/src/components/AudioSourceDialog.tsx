@@ -103,7 +103,10 @@ export function AudioSourceDialog({
         </button>
 
         <form onSubmit={submitUrl} className="mb-4">
-          <label htmlFor="audio-source-url" className="mb-1 block text-xs font-medium text-sonic-300">
+          <label
+            htmlFor="audio-source-url"
+            className="mb-1 block text-xs font-medium text-sonic-300"
+          >
             {m.audio_source_url_label()}
           </label>
           <div className="flex gap-2">
@@ -128,7 +131,10 @@ export function AudioSourceDialog({
           </div>
         </form>
 
-        <label htmlFor="audio-source-library" className="mb-1 block text-xs font-medium text-sonic-300">
+        <label
+          htmlFor="audio-source-library"
+          className="mb-1 block text-xs font-medium text-sonic-300"
+        >
           {m.audio_source_library_label()}
         </label>
         {loading ? (

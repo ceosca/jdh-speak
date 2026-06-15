@@ -12,15 +12,18 @@ export function DeviceSettings() {
   const micDeviceId = useRoomStore((s) => s.micDeviceId);
   const speakerDeviceId = useRoomStore((s) => s.speakerDeviceId);
   const voiceProcessingEnabled = useRoomStore((s) => s.voiceProcessingEnabled);
+  const hifiVoiceEnabled = useRoomStore((s) => s.hifiVoiceEnabled);
   const setMicDeviceId = useRoomStore((s) => s.setMicDeviceId);
   const setSpeakerDeviceId = useRoomStore((s) => s.setSpeakerDeviceId);
   const setVoiceProcessingEnabled = useRoomStore((s) => s.setVoiceProcessingEnabled);
+  const setHifiVoiceEnabled = useRoomStore((s) => s.setHifiVoiceEnabled);
 
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
   const [speakers, setSpeakers] = useState<MediaDeviceInfo[]>([]);
   const micSelectId = useId();
   const speakerSelectId = useId();
   const voiceProcessingId = useId();
+  const hifiVoiceId = useId();
 
   const refresh = useCallback(async () => {
     try {
@@ -110,6 +113,21 @@ export function DeviceSettings() {
         <span className="text-xs font-medium text-sonic-300">
           {m.settings_voice_processing_label()}
         </span>
+      </label>
+
+      <label
+        htmlFor={hifiVoiceId}
+        title={m.settings_hifi_voice_hint()}
+        className="flex cursor-pointer select-none items-center gap-2.5"
+      >
+        <input
+          id={hifiVoiceId}
+          type="checkbox"
+          checked={hifiVoiceEnabled}
+          onChange={(e) => setHifiVoiceEnabled(e.target.checked)}
+          className="h-4 w-4 rounded border-sonic-600 bg-sonic-700 accent-sonic-accent"
+        />
+        <span className="text-xs font-medium text-sonic-300">{m.settings_hifi_voice_label()}</span>
       </label>
 
       {/* Browsers hide device names until mic permission is granted (e.g. in

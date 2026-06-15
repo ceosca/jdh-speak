@@ -113,6 +113,7 @@ export function MicPreview() {
         audio: microphoneConstraints(
           micId,
           useRoomStore.getState().voiceProcessingEnabled,
+          useRoomStore.getState().hifiVoiceEnabled,
         ),
       });
     } catch {

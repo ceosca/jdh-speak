@@ -26,6 +26,7 @@ function loadMicGain(): number {
 const MIC_DEVICE_KEY = "sonicroom:micDeviceId";
 const SPEAKER_DEVICE_KEY = "sonicroom:speakerDeviceId";
 const VOICE_PROCESSING_KEY = "sonicroom:voiceProcessing";
+const HIFI_VOICE_KEY = "sonicroom:hifiVoice";
 
 function loadString(key: string): string {
   try {
@@ -49,6 +50,17 @@ function loadVoiceProcessing(): boolean {
     return value == null ? isIOS : value === "true";
   } catch {
     return isIOS;
+  }
+}
+
+// Hi-fi (stereo, ~128 kbps) voice is opt-in; the default is mono ~64 kbps for
+// everyone, since most mics are mono and the higher bitrate costs every
+// listener bandwidth. Applies on the next call.
+function loadHifiVoice(): boolean {
+  try {
+    return localStorage.getItem(HIFI_VOICE_KEY) === "true";
+  } catch {
+    return false;
   }
 }
 
@@ -153,6 +165,9 @@ interface RoomState {
   // Browser voice processing (echo cancellation, noise suppression and
   // automatic gain). Defaults on for iOS/iPadOS and off elsewhere.
   voiceProcessingEnabled: boolean;
+  // Opt-in hi-fi voice (stereo, ~128 kbps). Default off → mono ~64 kbps.
+  // Read at call start (join / P2P offer / produce); applies on the next call.
+  hifiVoiceEnabled: boolean;
 
   // Recording (a recording belongs to the room; visible to everyone)
   isRecording: boolean;
@@ -214,6 +229,7 @@ interface RoomState {
   setMicDeviceId: (deviceId: string) => void;
   setSpeakerDeviceId: (deviceId: string) => void;
   setVoiceProcessingEnabled: (enabled: boolean) => void;
+  setHifiVoiceEnabled: (enabled: boolean) => void;
   setRecording: (recording: boolean, recordingId?: string | null) => void;
   setStreaming: (streaming: boolean) => void;
   setStreamConfig: (config: StreamConfig) => void;
@@ -256,6 +272,7 @@ export const useRoomStore = create<RoomState>((set) => ({
   micDeviceId: loadString(MIC_DEVICE_KEY),
   speakerDeviceId: loadString(SPEAKER_DEVICE_KEY),
   voiceProcessingEnabled: loadVoiceProcessing(),
+  hifiVoiceEnabled: loadHifiVoice(),
   isRecording: false,
   recordingId: null,
   isStreaming: false,
@@ -307,6 +324,10 @@ export const useRoomStore = create<RoomState>((set) => ({
   setVoiceProcessingEnabled: (voiceProcessingEnabled) => {
     saveString(VOICE_PROCESSING_KEY, String(voiceProcessingEnabled));
     set({ voiceProcessingEnabled });
+  },
+  setHifiVoiceEnabled: (hifiVoiceEnabled) => {
+    saveString(HIFI_VOICE_KEY, String(hifiVoiceEnabled));
+    set({ hifiVoiceEnabled });
   },
   setRecording: (isRecording, recordingId) =>
     set((s) => ({

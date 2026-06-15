@@ -235,6 +235,9 @@ export interface YtDlpOptions {
   // the URL extension (set when the direct fetch already revealed a media-stream
   // content type, e.g. an extension-less IPTV octet-stream).
   preferFfmpeg?: boolean;
+  // streamFallbackAudio only: override the global concurrent-transcode cap (for
+  // tests). Production reads MAX_CONCURRENT_TRANSCODES (AUDIO_TRANSCODE_LIMIT).
+  maxConcurrentTranscodes?: number;
 }
 
 // yt-dlp argv: best audio-only format to stdout, a single item, no on-disk cache
@@ -467,23 +470,74 @@ export async function streamAudioWithFfmpeg(
   return gateTranscodedAudio(ffmpeg, [ffmpeg], readDiagnostics, firstByteTimeoutMs);
 }
 
+// Each transcode spawns ffmpeg (and yt-dlp for site URLs), and /api/audio-proxy
+// is unauthenticated, so cap how many run at once — otherwise a burst of proxy
+// requests can exhaust the box's CPU / PIDs / sockets. Tunable via env; a busy
+// server rejects further transcodes with a 503 rather than thrashing.
+export const MAX_CONCURRENT_TRANSCODES = Math.max(
+  1,
+  Number(process.env.AUDIO_TRANSCODE_LIMIT) || 4,
+);
+
+// Thrown by streamFallbackAudio when every transcode slot is taken; the route
+// maps it to 503 (transient) instead of 502.
+export class TranscodeBusyError extends Error {
+  constructor() {
+    super("Too many audio transcodes in progress");
+    this.name = "TranscodeBusyError";
+  }
+}
+
+let activeTranscodes = 0;
+
+// Test-only: current in-flight transcode count (asserts slots are released).
+export function activeTranscodeCount(): number {
+  return activeTranscodes;
+}
+
 // Last-resort resolver used after the direct proxy fails: route direct media
 // streams to ffmpeg first and sites to yt-dlp, each backed by the other so a
 // misclassified URL still plays. The caller has already run the SSRF guard.
+// Holds one concurrency slot for the whole lifetime of the returned stream,
+// released exactly once when the consumer calls destroy() (or on a failed start).
 export async function streamFallbackAudio(
   raw: string,
   options: YtDlpOptions = {},
 ): Promise<YtDlpExtraction> {
+  const limit = options.maxConcurrentTranscodes ?? MAX_CONCURRENT_TRANSCODES;
+  if (activeTranscodes >= limit) throw new TranscodeBusyError();
+  activeTranscodes += 1;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    activeTranscodes -= 1;
+  };
+
   const direct = options.preferFfmpeg === true || looksLikeDirectStream(raw);
   const primary = direct ? streamAudioWithFfmpeg : streamAudioWithYtDlp;
   const backup = direct ? streamAudioWithYtDlp : streamAudioWithFfmpeg;
   try {
-    return await primary(raw, options);
-  } catch (primaryErr) {
+    let extraction: YtDlpExtraction;
     try {
-      return await backup(raw, options);
-    } catch {
-      throw primaryErr;
+      extraction = await primary(raw, options);
+    } catch (primaryErr) {
+      try {
+        extraction = await backup(raw, options);
+      } catch {
+        throw primaryErr;
+      }
     }
+    // Free the slot when the consumer tears the stream down (response close).
+    return {
+      ...extraction,
+      destroy: () => {
+        release();
+        extraction.destroy();
+      },
+    };
+  } catch (err) {
+    release();
+    throw err;
   }
 }
