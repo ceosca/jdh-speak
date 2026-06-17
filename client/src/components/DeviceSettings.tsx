@@ -12,11 +12,9 @@ export function DeviceSettings() {
   const micDeviceId = useRoomStore((s) => s.micDeviceId);
   const speakerDeviceId = useRoomStore((s) => s.speakerDeviceId);
   const voiceProcessingEnabled = useRoomStore((s) => s.voiceProcessingEnabled);
-  const hifiVoiceEnabled = useRoomStore((s) => s.hifiVoiceEnabled);
   const setMicDeviceId = useRoomStore((s) => s.setMicDeviceId);
   const setSpeakerDeviceId = useRoomStore((s) => s.setSpeakerDeviceId);
   const setVoiceProcessingEnabled = useRoomStore((s) => s.setVoiceProcessingEnabled);
-  const setHifiVoiceEnabled = useRoomStore((s) => s.setHifiVoiceEnabled);
 
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
   const [speakers, setSpeakers] = useState<MediaDeviceInfo[]>([]);
@@ -24,7 +22,6 @@ export function DeviceSettings() {
   const micHintId = useId();
   const speakerSelectId = useId();
   const voiceProcessingId = useId();
-  const hifiVoiceId = useId();
 
   const refresh = useCallback(async () => {
     try {
@@ -124,28 +121,6 @@ export function DeviceSettings() {
         </label>
         <p id={`${voiceProcessingId}-hint`} className="mt-1 pl-[26px] text-xs text-sonic-400">
           {m.settings_voice_processing_hint()}
-        </p>
-      </div>
-
-      <div>
-        <label
-          htmlFor={hifiVoiceId}
-          className="flex cursor-pointer select-none items-center gap-2.5"
-        >
-          <input
-            id={hifiVoiceId}
-            type="checkbox"
-            checked={hifiVoiceEnabled}
-            onChange={(e) => setHifiVoiceEnabled(e.target.checked)}
-            aria-describedby={`${hifiVoiceId}-hint`}
-            className="h-4 w-4 rounded border-sonic-600 bg-sonic-700 accent-sonic-accent"
-          />
-          <span className="text-xs font-medium text-sonic-300">
-            {m.settings_hifi_voice_label()}
-          </span>
-        </label>
-        <p id={`${hifiVoiceId}-hint`} className="mt-1 pl-[26px] text-xs text-sonic-400">
-          {m.settings_hifi_voice_hint()}
         </p>
       </div>
 

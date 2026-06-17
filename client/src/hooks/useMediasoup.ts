@@ -474,12 +474,9 @@ export function useMediasoup() {
       let stream: MediaStream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          // hi-fi read non-reactively: changing it shouldn't re-acquire mid-call
-          // (it can't change the live producer's stereo/codec), it applies next call.
-          audio: microphoneConstraints(
+            audio: microphoneConstraints(
             micDeviceId,
             voiceProcessingEnabled,
-            useRoomStore.getState().hifiVoiceEnabled,
           ),
         });
       } catch (err) {
@@ -517,7 +514,6 @@ export function useMediasoup() {
       audio: microphoneConstraints(
         useRoomStore.getState().micDeviceId,
         useRoomStore.getState().voiceProcessingEnabled,
-        useRoomStore.getState().hifiVoiceEnabled,
       ),
     });
     localStreamRef.current = stream;
@@ -581,10 +577,9 @@ export function useMediasoup() {
       p2pConnectionsRef.current.set(peerId, pc);
 
       if (isOfferer) {
-        // Create offer with low-latency Opus params (mono 64k, or stereo 128k
-        // when the user opted into hi-fi voice).
+        // Create offer with stereo 128k low-latency Opus params.
         pc.createOffer().then(async (offer) => {
-          offer.sdp = forceOpusParams(offer.sdp!, useRoomStore.getState().hifiVoiceEnabled);
+          offer.sdp = forceOpusParams(offer.sdp!);
           await pc.setLocalDescription(offer);
           socket.emit("p2p-signal", {
             targetPeerId: peerId,
@@ -903,17 +898,15 @@ export function useMediasoup() {
       recvTransportRef.current = recvTransport;
 
       // Produce the processed outgoing track (mic gain + limiter, + shared audio).
-      // Voice is mono ~64k by default; the per-user hi-fi opt-in sends stereo
-      // 128k (read at produce time, so it takes effect on the next call).
-      const hifiVoice = store.getState().hifiVoiceEnabled;
+      // Voice is always stereo 128k.
       const producer = await sendTransport.produce({
         track: ensureOutGraph().outDest.stream.getAudioTracks()[0],
         codecOptions: {
-          opusStereo: hifiVoice,
+          opusStereo: true,
           opusDtx: false,
           opusFec: true,
           opusMaxPlaybackRate: 48000,
-          ...(hifiVoice ? { opusMaxAverageBitrate: 128000 } : {}),
+          opusMaxAverageBitrate: 128000,
         },
         codec: device.recvRtpCapabilities.codecs?.find(
           (c) => c.mimeType.toLowerCase() === "audio/opus",
@@ -992,7 +985,6 @@ export function useMediasoup() {
             audio: microphoneConstraints(
               store.getState().micDeviceId,
               store.getState().voiceProcessingEnabled,
-              store.getState().hifiVoiceEnabled,
             ),
           });
         } catch (err) {
@@ -1456,7 +1448,7 @@ export function useMediasoup() {
               );
               await flushPendingCandidates(fromPeerId, pc);
               const answer = await pc.createAnswer();
-              answer.sdp = forceOpusParams(answer.sdp!, useRoomStore.getState().hifiVoiceEnabled);
+              answer.sdp = forceOpusParams(answer.sdp!);
               await pc.setLocalDescription(answer);
               socket.emit("p2p-signal", {
                 targetPeerId: fromPeerId,

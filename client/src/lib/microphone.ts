@@ -6,12 +6,9 @@ export const isIOS =
   (/iP(hone|ad|od)/.test(navigator.userAgent) ||
     (/Mac/.test(navigator.userAgent) && navigator.maxTouchPoints > 1));
 
-// Mic capture constraints. Two independent per-user choices:
+// Mic capture constraints. One per-user choice:
 //   - voiceProcessingEnabled: echo cancel / noise suppress / auto gain.
-//   - hifiVoice: capture 2 channels for the opt-in stereo voice path. Off by
-//     default, so the default voice path stays mono (matching the wire codec —
-//     see `forceOpusParams` / the produce `opusStereo` flag). A mono mic is
-//     unaffected either way; this only matters for a genuinely stereo source.
+// Voice is always captured as stereo 2 channels (128 kbps on the wire).
 // On iOS we drop the sample-rate hint so WebKit can use the device-native rate
 // (forcing a rate a route can't honour garbles capture); WebRTC/Opus negotiates
 // its own rate regardless. The device is `ideal`, not `exact`, so a
@@ -19,10 +16,9 @@ export const isIOS =
 export function microphoneConstraints(
   deviceId: string,
   voiceProcessingEnabled: boolean,
-  hifiVoice: boolean,
 ): MediaTrackConstraints {
   return {
-    channelCount: hifiVoice ? 2 : 1,
+    channelCount: 2,
     ...(isIOS ? {} : { sampleRate: 48000 }),
     echoCancellation: voiceProcessingEnabled,
     noiseSuppression: voiceProcessingEnabled,

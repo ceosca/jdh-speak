@@ -1,11 +1,10 @@
 /**
  * Force low-latency Opus params on the P2P voice fmtp.
- * Always sets useinbandfec=1 and minptime=10 for lowest packetization delay.
- * `hifi` picks the per-user voice quality: false (default) → mono 64 kbps,
- * true → stereo 128 kbps. (SFU voice uses the produce `opusStereo` /
+ * Always sets stereo 128 kbps, useinbandfec=1 and minptime=10 for lowest
+ * packetization delay. (SFU voice uses the produce `opusStereo` /
  * `opusMaxAverageBitrate` flags instead; this munger only touches P2P SDP.)
  */
-export function forceOpusParams(sdp: string, hifi = false): string {
+export function forceOpusParams(sdp: string): string {
   const lines = sdp.split("\r\n");
   const result: string[] = [];
 
@@ -23,11 +22,11 @@ export function forceOpusParams(sdp: string, hifi = false): string {
         if (k) params.set(k, v ?? "");
       }
 
-      // Force low-latency params; stereo/bitrate follow the per-user `hifi` flag.
-      params.set("stereo", hifi ? "1" : "0");
-      params.set("sprop-stereo", hifi ? "1" : "0");
+      // Force stereo 128 kbps with low-latency params.
+      params.set("stereo", "1");
+      params.set("sprop-stereo", "1");
       params.set("useinbandfec", "1");
-      params.set("maxaveragebitrate", hifi ? "128000" : "64000");
+      params.set("maxaveragebitrate", "128000");
       params.set("minptime", "10");
       params.set("ptime", "10");
       params.set("maxplaybackrate", "48000");
