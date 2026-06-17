@@ -12,7 +12,6 @@ import { AudioSourceDialog } from "./AudioSourceDialog";
 import { Chat } from "./Chat";
 import { JoinRequests } from "./JoinRequests";
 import { LanguageSelect } from "./LanguageSelect";
-import { Footer, PoweredBy } from "./Footer";
 import { m } from "../paraglide/messages.js";
 
 type JoinState = "idle" | "joining" | "joined" | "error";
@@ -350,7 +349,6 @@ export function Room() {
             )}
           </div>
         </div>
-        <Footer />
       </div>
     );
   }
@@ -370,7 +368,6 @@ export function Room() {
             </button>
           </div>
         </div>
-        <Footer />
       </div>
     );
   }
@@ -394,7 +391,6 @@ export function Room() {
             </button>
           </div>
         </div>
-        <Footer />
       </div>
     );
   }
@@ -527,9 +523,7 @@ export function Room() {
         )}
       </div>
 
-      {/* Bottom controls + attribution. The "Powered by SonicRoom" link lives
-          inside this single footer landmark (rather than a second <Footer />) so
-          the active call keeps exactly one `contentinfo`. */}
+      {/* Bottom controls */}
       <footer className="flex flex-col items-center gap-2 border-t border-sonic-700 p-4">
         <AudioControls
           onToggleMute={toggleMute}
@@ -541,7 +535,6 @@ export function Room() {
           onStopStreaming={stopStreaming}
           onLeave={handleLeave}
         />
-        <PoweredBy />
       </footer>
 
       {/* Screen reader announcements (peer join/leave, recording, etc.).

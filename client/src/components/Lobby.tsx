@@ -3,7 +3,6 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { Headphones, ArrowRight, Globe, DoorOpen } from "lucide-react";
 import { MicPreview } from "./MicPreview";
 import { LanguageSelect } from "./LanguageSelect";
-import { Footer } from "./Footer";
 import { getLocale } from "../lib/i18n";
 import { getInstanceName } from "../lib/branding";
 import { m } from "../paraglide/messages.js";
@@ -452,7 +451,6 @@ export function Lobby() {
         <span key={announceSeq}>{announcement}</span>
       </div>
 
-      <Footer />
     </div>
   );
 }

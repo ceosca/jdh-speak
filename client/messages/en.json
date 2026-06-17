@@ -3,8 +3,6 @@
 
   "language_label": "Language",
 
-  "footer_powered_by": "Powered by SonicRoom",
-
   "lobby_tagline": "Ultra-low-latency stereo audio conferencing",
   "lobby_room_name_label": "Room Name",
   "lobby_room_name_placeholder": "my-studio",
