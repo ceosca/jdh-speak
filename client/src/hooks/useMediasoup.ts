@@ -5,7 +5,7 @@ import type { Transport, Producer, Consumer } from "mediasoup-client/types";
 import { forceOpusParams } from "../lib/sdp-munger";
 import { applySpeakerToContext } from "../lib/audio-devices";
 import { isIOS, microphoneConstraints } from "../lib/microphone";
-import { playCue, startKnockLoop } from "../lib/sounds";
+import { playCue } from "../lib/sounds";
 import { formatMessage, RateLimiter, META_SEP, type ChatMessage } from "../lib/chat";
 import {
   announce_joined,
@@ -40,16 +40,12 @@ import {
   announce_file_stream_resumed,
   announce_ducking_enabled,
   announce_ducking_disabled,
-  announce_kick_vote,
-  announce_kick_vote_withdrawn,
-  announce_peer_kicked,
-  announce_you_were_kicked,
   announce_no_mic,
   file_stream_name,
   file_player_streaming,
   share_stream_name,
 } from "../paraglide/messages.js";
-import { useRoomStore, type RoomMode, type JoinRequest } from "../stores/room";
+import { useRoomStore, type RoomMode } from "../stores/room";
 
 interface ConsumeResult {
   ok: boolean;
@@ -260,11 +256,6 @@ export function useMediasoup() {
   // The first received chat message carries a one-time hint that Alt+1..0
   // reads recent messages aloud even with the chat panel closed.
   const chatHintGivenRef = useRef(false);
-  // Set while we're knocking on a public room and waiting to be let in. The
-  // pushed join-approved/-denied handlers resolve/reject it so the blocked join
-  // flow continues (re-join) or fails (denied).
-  const admissionRef = useRef<{ resolve: () => void; reject: (e: unknown) => void } | null>(null);
-
   const store = useRoomStore;
 
   // Queue `fn` behind any in-flight mode transition. The chain itself never
@@ -966,7 +957,7 @@ export function useMediasoup() {
     async (
       roomName: string,
       displayName: string,
-      opts?: { disableP2p?: boolean; isPublic?: boolean; noMic?: boolean },
+      opts?: { disableP2p?: boolean; noMic?: boolean },
     ) => {
       // Acquire stereo audio + build the outgoing graph BEFORE connecting so
       // it's ready the moment we (re)join. The mic, AudioContext and outgoing
@@ -1010,19 +1001,6 @@ export function useMediasoup() {
       const socket = io({ transports: ["websocket"] });
       socketRef.current = socket;
 
-      // Per-session, per-room token so a reconnect/refresh is recognized as an
-      // already-admitted session (skips a public room's knock gate) and so an
-      // approval can mark us admitted. Persisted in sessionStorage; falls back
-      // to an in-memory value if storage is unavailable.
-      let joinToken: string;
-      try {
-        const k = `sonicroom:joinToken:${roomName}`;
-        joinToken = sessionStorage.getItem(k) ?? crypto.randomUUID();
-        sessionStorage.setItem(k, joinToken);
-      } catch {
-        joinToken = crypto.randomUUID();
-      }
-
       // (Re)join the room and (re)build all media from the server's response.
       // Runs on the initial join AND on every reconnect; it never registers
       // socket handlers (those are attached once, below, and persist across
@@ -1030,9 +1008,6 @@ export function useMediasoup() {
       const joinAndSetup = async () => {
         type JoinResponse = {
           ok: boolean;
-          // "pending" = held at the door of a public room (knock-to-join);
-          // "joined" = admitted, full payload below is present.
-          status?: "joined" | "pending";
           rtpCapabilities: Record<string, unknown>;
           peers: Array<{
             peerId: string;
@@ -1045,41 +1020,19 @@ export function useMediasoup() {
           streaming?: boolean;
           voiceActive?: boolean;
           duckingEnabled?: boolean;
-          // Whether this room is public (gates vote-to-kick) + current tallies.
-          isPublic?: boolean;
-          kickVotes?: Array<{ targetId: string; votes: number }>;
           messages: ChatMessage[];
         };
         const joinPayload = {
           roomName,
           displayName,
           disableP2p: opts?.disableP2p,
-          // List this room in the lobby's public directory (sticky server-side).
-          isPublic: opts?.isPublic,
-          joinToken,
           // On a reconnect mid-share, re-pin SFU so the share rebuilds.
           sharing: store.getState().isSharingAudio,
           // Likewise re-pin SFU on a reconnect mid-file-stream.
           fileStreaming: store.getState().fileStreamName != null,
         };
 
-        let joinRes = await emit<JoinResponse>("join", joinPayload);
-
-        // Knock-to-join: the room is public + occupied, so we're held at the
-        // door. Show the waiting screen and block until a participant decides —
-        // approval lets us re-join (now token-admitted), denial/abort throws.
-        if (joinRes.status === "pending") {
-          store.getState().setAwaitingApproval(true);
-          try {
-            await new Promise<void>((resolve, reject) => {
-              admissionRef.current = { resolve, reject };
-            });
-          } finally {
-            admissionRef.current = null;
-            store.getState().setAwaitingApproval(false);
-          }
-          joinRes = await emit<JoinResponse>("join", joinPayload);
-        }
+        const joinRes = await emit<JoinResponse>("join", joinPayload);
 
         store.getState().setRoom(roomName, displayName, socket.id!);
         store.getState().setMode(joinRes.mode);
@@ -1104,8 +1057,6 @@ export function useMediasoup() {
           );
         // Likewise the room-wide live-streaming state.
         store.getState().setStreaming(!!joinRes.streaming);
-        // Whether this room is public — gates the vote-to-kick controls.
-        store.getState().setRoomIsPublic(!!joinRes.isPublic);
 
         // Reconcile the peer list: drop anyone who left while we were
         // disconnected, add newcomers. addPeer resets per-peer state, so only
@@ -1121,11 +1072,6 @@ export function useMediasoup() {
           // Server truth for mute state — a late joiner (or a reconnect that
           // missed the peer-muted events) renders existing mutes correctly.
           store.getState().setPeerMuted(peer.peerId, !!peer.muted);
-        }
-        // Seed existing vote-to-kick tallies. Our own vote state always starts
-        // clear on a (re)join — votes are keyed by socket id, which changes.
-        for (const { targetId, votes } of joinRes.kickVotes ?? []) {
-          store.getState().setPeerKickVote(targetId, votes, false);
         }
 
         // Producers queued before this ack (stale modeRef during a rejoin) are
@@ -1200,27 +1146,6 @@ export function useMediasoup() {
 
       socket.on("disconnect", () => {
         store.getState().setConnected(false);
-        // If we drop while still knocking, abort the blocked join so it doesn't
-        // deadlock the transition chain (a reconnect re-knocks from scratch).
-        admissionRef.current?.reject(new Error("disconnected"));
-      });
-
-      // --- Knock-to-join (public rooms) ---
-      // Participant side: who is currently waiting at the door (drives the modal
-      // + the looping knock cue). Requester side: our own knock was answered.
-      socket.on("join-requests", ({ requests }: { requests: JoinRequest[] }) => {
-        store.getState().setJoinRequests(requests ?? []);
-      });
-      socket.on("join-approved", () => {
-        admissionRef.current?.resolve();
-      });
-      socket.on("join-denied", () => {
-        admissionRef.current?.reject(new Error("join_denied"));
-      });
-      // Someone made the room public after we joined — reveal the vote-to-kick
-      // controls (the room was private when we arrived).
-      socket.on("room-public", () => {
-        store.getState().setRoomIsPublic(true);
       });
 
       // --- Socket event handlers (attached once; persist across reconnects) ---
@@ -1283,84 +1208,6 @@ export function useMediasoup() {
           });
         }
         playCue(sharedAudioContext, "leave");
-      });
-
-      // --- Vote to kick (public rooms) ---
-      // A vote was cast/withdrawn (or recounted after someone left). Update the
-      // tally; reflect OUR own toggle in iVotedKick (so the button's aria-pressed
-      // is right); announce OTHERS' votes (ours is conveyed by the button state).
-      socket.on(
-        "kick-vote",
-        ({
-          targetId,
-          targetName,
-          votes,
-          voterId,
-          voterName,
-          action,
-        }: {
-          targetId: string;
-          targetName: string;
-          votes: number;
-          voterId: string | null;
-          voterName: string | null;
-          action: "cast" | "withdraw" | "recount";
-        }) => {
-          const myId = store.getState().localPeerId;
-          const mine = voterId != null && voterId === myId;
-          store.getState().setPeerKickVote(targetId, votes, mine ? action === "cast" : undefined);
-          if (action === "recount" || mine) return;
-          const voter = voterName || announce_a_participant();
-          const target =
-            targetName ||
-            store.getState().peers.get(targetId)?.displayName ||
-            announce_a_participant();
-          store
-            .getState()
-            .announce(
-              action === "cast"
-                ? announce_kick_vote({ voter, target })
-                : announce_kick_vote_withdrawn({ voter, target }),
-            );
-        },
-      );
-
-      // Another peer was voted out: tear down their media (like a leave) and log
-      // it to chat as an event (rule: room events go to chat via announceEvent).
-      socket.on(
-        "peer-kicked",
-        ({ peerId, displayName }: { peerId: string; displayName: string }) => {
-          const name = store.getState().peers.get(peerId)?.displayName ?? displayName;
-          const pc = p2pConnectionsRef.current.get(peerId);
-          if (pc) {
-            pc.close();
-            p2pConnectionsRef.current.delete(peerId);
-          }
-          pendingCandidatesRef.current.delete(peerId);
-          const peerAudio = peerAudiosRef.current.get(peerId);
-          if (peerAudio) {
-            destroyAudioPipeline(peerAudio);
-            peerAudiosRef.current.delete(peerId);
-          }
-          for (const [producerId, owner] of shareOwnersRef.current) {
-            if (owner === peerId) removeShareStream(producerId);
-          }
-          for (const [producerId, owner] of fileOwnersRef.current) {
-            if (owner === peerId) removeFileStream(producerId);
-          }
-          store.getState().removePeer(peerId);
-          store.getState().announceEvent(announce_peer_kicked({ name }));
-          playCue(sharedAudioContext, "leave");
-        },
-      );
-
-      // WE were voted out. Show the dedicated "removed" screen (Room.tsx) and
-      // stop the socket so it doesn't auto-reconnect into the now-banned room.
-      socket.on("you-were-kicked", () => {
-        store.getState().setKicked(true);
-        store.getState().announceEvent(announce_you_were_kicked());
-        playCue(sharedAudioContext, "leave");
-        socket.disconnect();
       });
 
       // --- Recording (room-wide; the server forces SFU while recording) ---
@@ -2180,43 +2027,6 @@ export function useMediasoup() {
     store.getState().reset();
   }, [teardownP2p, teardownSfu, detachSharedAudio, store]);
 
-  // Allow/deny a pending join request (participant side). Optimistically drop it
-  // from our local list so the button doesn't linger; the server also broadcasts
-  // the updated list to everyone in the room.
-  const decideJoinRequest = useCallback(
-    (requestId: string, allow: boolean) => {
-      socketRef.current?.emit("join-decision", { requestId, allow });
-      store
-        .getState()
-        .setJoinRequests(store.getState().joinRequests.filter((r) => r.id !== requestId));
-    },
-    [store],
-  );
-
-  // Vote to remove a peer (public rooms only), or withdraw that vote. We don't
-  // update local state optimistically — the server echoes an authoritative
-  // `kick-vote` to the whole room (including us), keeping every client's tally
-  // and our own iVotedKick in sync. A rejection (rate-limited, etc.) thunks.
-  const voteKick = useCallback(
-    (targetId: string, vote: boolean) => {
-      emit("vote-kick", { targetId, vote }).catch(() => {
-        playCue(sharedAudioContext, "thunk");
-      });
-    },
-    [emit],
-  );
-
-  // While anyone is waiting at the door, loop the knock cue so participants
-  // notice. Driven on the audio thread (not a setInterval, which browsers
-  // throttle/suspend for background tabs — that made it knock once and stop when
-  // unfocused). Plays through the shared context regardless of deafen, never
-  // routed to peers.
-  const someoneKnocking = useRoomStore((s) => s.joinRequests.length > 0);
-  useEffect(() => {
-    if (!someoneKnocking) return;
-    return startKnockLoop(sharedAudioContext);
-  }, [someoneKnocking]);
-
   useEffect(() => {
     return () => {
       leave();
@@ -2226,8 +2036,6 @@ export function useMediasoup() {
   return {
     join,
     leave,
-    decideJoinRequest,
-    voteKick,
     mute,
     unmute,
     toggleMute,

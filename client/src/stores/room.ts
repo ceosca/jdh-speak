@@ -116,21 +116,9 @@ export interface PeerState {
   // True for a send-only "music caster" peer (e.g. Ecobox): rendered with a
   // music icon and treated as a media source rather than a talking participant.
   isMusic: boolean;
-  // Vote-to-kick (public rooms): how many people have voted to remove this peer
-  // (server-authoritative tally), and whether WE are one of them (drives the
-  // kick button's aria-pressed). Both 0/false outside a public room.
-  kickVotes: number;
-  iVotedKick: boolean;
 }
 
 export type RoomMode = "p2p" | "sfu";
-
-// A pending "ask to join" request shown to people already in the room. `id` is
-// the requester's socket id — the target a participant's allow/deny references.
-export interface JoinRequest {
-  id: string;
-  displayName: string;
-}
 
 interface RoomState {
   // Active UI language. Mirrors Paraglide's runtime locale so a change here
@@ -210,22 +198,6 @@ interface RoomState {
   chatAssertiveMsg: string;
   chatAnnounceSeq: number;
 
-  // "Ask to join" (knock-to-join) for public rooms:
-  // - joinRequests: people waiting at the door, shown to participants in a modal
-  //   (with a looping knock cue) so they can allow/deny. Empty when nobody waits.
-  // - awaitingApproval: set on OUR side while we're the one knocking and waiting
-  //   to be let in, so the Room shows a "waiting" screen instead of the spinner.
-  joinRequests: JoinRequest[];
-  awaitingApproval: boolean;
-
-  // Whether the current room is publicly listed. Gates the vote-to-kick UI
-  // (only public rooms can vote-kick). Seeded from the join response and flipped
-  // by a `room-public` event if someone makes the room public after we joined.
-  roomIsPublic: boolean;
-  // Set true when WE were voted out of the room. Room.tsx shows a dedicated
-  // "you were removed" screen; cleared on reset (leaving / next join).
-  kicked: boolean;
-
   // Peers
   peers: Map<string, PeerState>;
 
@@ -260,10 +232,6 @@ interface RoomState {
   setChatAnnounceMode: (mode: ChatAnnounceMode) => void;
   // Announce a chat message via whichever channel chatAnnounceMode selects.
   announceChat: (message: string) => void;
-  setJoinRequests: (requests: JoinRequest[]) => void;
-  setAwaitingApproval: (awaiting: boolean) => void;
-  setRoomIsPublic: (isPublic: boolean) => void;
-  setKicked: (kicked: boolean) => void;
   addMessage: (message: ChatMessage) => void;
   addPeer: (peerId: string, displayName: string) => void;
   removePeer: (peerId: string) => void;
@@ -271,9 +239,6 @@ interface RoomState {
   setPeerMuted: (peerId: string, muted: boolean) => void;
   setPeerVolume: (peerId: string, volume: number) => void;
   setPeerMusic: (peerId: string, isMusic: boolean) => void;
-  // Update a peer's vote-to-kick tally; `iVoted` is set only when WE toggled
-  // (left undefined for others' votes / membership recounts, keeping our state).
-  setPeerKickVote: (peerId: string, votes: number, iVoted?: boolean) => void;
   reset: () => void;
 }
 
@@ -308,10 +273,6 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   chatPoliteMsg: "",
   chatAssertiveMsg: "",
   chatAnnounceSeq: 0,
-  joinRequests: [],
-  awaitingApproval: false,
-  roomIsPublic: false,
-  kicked: false,
   peers: new Map(),
   messages: [],
 
@@ -370,10 +331,6 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   },
   setStreamError: (streamError) => set({ streamError }),
   announce: (message) => set((s) => ({ announcement: message, announceSeq: s.announceSeq + 1 })),
-  setJoinRequests: (joinRequests) => set({ joinRequests }),
-  setAwaitingApproval: (awaitingApproval) => set({ awaitingApproval }),
-  setRoomIsPublic: (roomIsPublic) => set({ roomIsPublic }),
-  setKicked: (kicked) => set({ kicked }),
 
   // Room-event announcement (recording/share/music/mute…): speak it AND log it
   // into the chat history as a "system" entry, so chat is the single timeline
@@ -450,8 +407,6 @@ export const useRoomStore = create<RoomState>((set, get) => ({
         isMuted: false,
         volume: 1,
         isMusic: false,
-        kickVotes: 0,
-        iVotedKick: false,
       });
       return { peers };
     }),
@@ -495,19 +450,6 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       return { peers };
     }),
 
-  setPeerKickVote: (peerId, votes, iVoted) =>
-    set((state) => {
-      const peers = new Map(state.peers);
-      const peer = peers.get(peerId);
-      if (peer)
-        peers.set(peerId, {
-          ...peer,
-          kickVotes: votes,
-          iVotedKick: iVoted ?? peer.iVotedKick,
-        });
-      return { peers };
-    }),
-
   reset: () =>
     set({
       connected: false,
@@ -535,10 +477,6 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       chatPoliteMsg: "",
       chatAssertiveMsg: "",
       chatAnnounceSeq: 0,
-      joinRequests: [],
-      awaitingApproval: false,
-      roomIsPublic: false,
-      kicked: false,
       peers: new Map(),
       messages: [],
     }),

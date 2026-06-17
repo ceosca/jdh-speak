@@ -17,7 +17,6 @@ export type Cue =
   | "thunk"
   | "share-start"
   | "share-stop"
-  | "knock"
   | "peer-mute"
   | "peer-unmute";
 
@@ -354,10 +353,6 @@ export function playCue(ctx: AudioContext, cue: Cue) {
       tone(ctx, { freq: 659, dur: 0.09, type: "triangle", gain: 0.12, delay: 0.08 });
       tone(ctx, { freq: 523, dur: 0.13, type: "triangle", gain: 0.12, delay: 0.16 });
       break;
-    // Someone is asking to be let in → two soft wooden knocks (see `knock`).
-    case "knock":
-      knock(ctx, 0);
-      break;
     // A REMOTE peer toggled their mic — a short, soft pitch blip (down = muted,
     // up = unmuted). Deliberately quieter/briefer than the sustained self
     // mute/unmute slides so you can tell "someone else" from "me".
@@ -370,68 +365,3 @@ export function playCue(ctx: AudioContext, cue: Cue) {
   }
 }
 
-// The knock timbre — two soft wooden knocks (a knuckle on the door): a low
-// pitch-dropping thud with a lowpassed noise body, scheduled at offset `at`.
-// Subtle but recognizable. Works on a real OR an offline (render) context.
-function knock(ctx: BaseAudioContext, at: number) {
-  for (const d of [0, 0.17]) {
-    tone(ctx, {
-      freq: 190,
-      glideTo: 90,
-      dur: 0.07,
-      type: "sine",
-      gain: 0.22,
-      delay: at + d,
-      attack: 0.002,
-    });
-    noise(ctx, {
-      dur: 0.05,
-      freq: 360,
-      gain: 0.16,
-      type: "lowpass",
-      q: 0.8,
-      delay: at + d,
-      attack: 0.002,
-    });
-  }
-}
-
-// Loop the knock on the AUDIO thread, not a JS timer. setInterval/setTimeout are
-// throttled — and can be suspended outright — for hidden/background tabs, which
-// is why a timer-driven knock fired once and then went silent when the tab
-// wasn't focused. Here we render the knock once into a buffer padded to
-// `periodSec`, then play it through a looping AudioBufferSourceNode: that keeps
-// repeating on the audio rendering thread regardless of tab focus, as long as
-// the context is running (the same reason chat/join cues are audible in a
-// background tab). Returns a stop function.
-export function startKnockLoop(ctx: AudioContext, periodSec = 2.6): () => void {
-  if (ctx.state === "suspended") void ctx.resume();
-
-  let stopped = false;
-  let src: AudioBufferSourceNode | null = null;
-
-  const frames = Math.max(1, Math.ceil(ctx.sampleRate * periodSec));
-  const offline = new OfflineAudioContext(1, frames, ctx.sampleRate);
-  knock(offline, 0);
-  void offline.startRendering().then((buffer) => {
-    if (stopped) return;
-    src = ctx.createBufferSource();
-    src.buffer = buffer;
-    src.loop = true;
-    src.connect(ctx.destination);
-    src.start();
-  });
-
-  return () => {
-    stopped = true;
-    if (src) {
-      try {
-        src.stop();
-      } catch {
-        /* already stopped */
-      }
-      src.disconnect();
-      src = null;
-    }
-  };
-}

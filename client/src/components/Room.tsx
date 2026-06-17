@@ -10,7 +10,6 @@ import { AudioControls } from "./AudioControls";
 import { FileStreamPlayer } from "./FileStreamPlayer";
 import { AudioSourceDialog } from "./AudioSourceDialog";
 import { Chat } from "./Chat";
-import { JoinRequests } from "./JoinRequests";
 import { LanguageSelect } from "./LanguageSelect";
 import { m } from "../paraglide/messages.js";
 
@@ -26,15 +25,6 @@ function isP2pDisabled(value: string | null): boolean {
   if (value == null) return false;
   const v = value.toLowerCase();
   return ["off", "false", "0", "no", "disable", "disabled"].includes(v);
-}
-
-// `?public=true` (also accepts 1/yes/on/enable/enabled/public) lists this room
-// in the lobby's public directory — flows from the lobby's "Make this room
-// public" toggle, and is sticky for the room's lifetime once any joiner sets it.
-function isPublicEnabled(value: string | null): boolean {
-  if (value == null) return false;
-  const v = value.toLowerCase();
-  return ["true", "1", "yes", "on", "enable", "enabled", "public"].includes(v);
 }
 
 // `?mic=off` (also accepts false/0/no/disable/disabled) joins WITHOUT a
@@ -67,7 +57,6 @@ export function Room() {
   const disableP2p =
     isP2pDisabled(searchParams.get("p2p")) ||
     (p2pStorageKey != null && sessionStorage.getItem(p2pStorageKey) === "1");
-  const makePublic = isPublicEnabled(searchParams.get("public"));
   const noMic = isMicDisabled(searchParams.get("mic"));
   const navigate = useNavigate();
   const {
@@ -87,17 +76,12 @@ export function Room() {
     setPeerVolume,
     setMicGain,
     sendChatMessage,
-    decideJoinRequest,
-    voteKick,
   } = useMediasoup();
 
   const [joinState, setJoinState] = useState<JoinState>("idle");
   const [errorMsg, setErrorMsg] = useState("");
   const [chatOpen, setChatOpen] = useState(false);
   const [audioSourceOpen, setAudioSourceOpen] = useState(false);
-  // Bumped to (re)focus the chat composer even when the panel is already open —
-  // used to hand focus to the call after the knock-to-join modal closes.
-  const [chatFocusSignal, setChatFocusSignal] = useState(0);
   const joinedRef = useRef(false);
   const knownPeersRef = useRef<Set<string>>(new Set());
   // How many messages had arrived last time chat was open, to badge unread.
@@ -112,14 +96,6 @@ export function Room() {
   const closeChat = useCallback(() => {
     setChatOpen(false);
     chatToggleRef.current?.focus();
-  }, []);
-
-  // When the knock-to-join modal closes (everyone decided), drop focus back into
-  // the call by opening chat and focusing its composer (bumping the signal also
-  // re-focuses it if the panel was already open behind the modal).
-  const onJoinRequestsCleared = useCallback(() => {
-    setChatOpen(true);
-    setChatFocusSignal((n) => n + 1);
   }, []);
 
   // Hidden local-file picker used by the audio-source chooser. Choosing a file
@@ -165,12 +141,6 @@ export function Room() {
   const chatPoliteMsg = useRoomStore((s) => s.chatPoliteMsg);
   const chatAssertiveMsg = useRoomStore((s) => s.chatAssertiveMsg);
   const chatAnnounceSeq = useRoomStore((s) => s.chatAnnounceSeq);
-  // True while we're knocking on a public room and waiting to be let in.
-  const awaitingApproval = useRoomStore((s) => s.awaitingApproval);
-  // Whether the room is public (shows the vote-to-kick controls) and whether we
-  // ourselves were just voted out (shows the "removed" screen).
-  const roomIsPublic = useRoomStore((s) => s.roomIsPublic);
-  const kicked = useRoomStore((s) => s.kicked);
 
   // Reflect the room name in the document/tab title while in (or joining) the
   // room, restoring the default when we leave.
@@ -212,21 +182,14 @@ export function Room() {
     // re-asserts it even without the URL param.
     if (disableP2p && p2pStorageKey) sessionStorage.setItem(p2pStorageKey, "1");
 
-    join(roomName, name, { disableP2p, isPublic: makePublic, noMic })
+    join(roomName, name, { disableP2p, noMic })
       .then(() => setJoinState("joined"))
       .catch((err) => {
         setJoinState("error");
-        // A declined knock-to-join request (or a prior deny that banned this IP
-        // from the room) gets a friendlier, localized message than the raw
-        // sentinel the hook/server rejects with.
         const msg = err instanceof Error ? err.message : "";
-        setErrorMsg(
-          msg === "join_denied" || msg === "banned"
-            ? m.room_join_denied()
-            : msg || m.room_failed_to_join(),
-        );
+        setErrorMsg(msg || m.room_failed_to_join());
       });
-  }, [roomName, join, navigate, disableP2p, makePublic, noMic, p2pStorageKey, searchParams]);
+  }, [roomName, join, navigate, disableP2p, noMic, p2pStorageKey, searchParams]);
 
   // Mirror room lifecycle to the host page when embedded (see postToHost).
   useEffect(() => {
@@ -251,10 +214,6 @@ export function Room() {
     if (joinState !== "joined") return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      // While the knock-to-join modal is up it owns the keyboard — don't let any
-      // room shortcut (mute, share, Alt+number readback, …) fire underneath it.
-      if (useRoomStore.getState().joinRequests.length > 0) return;
-
       // Alt+1..9 and Alt+0 read the last 10 messages aloud via the ARIA region:
       // 1 = newest, 2 = next, … 0 = the 10th most recent. Pressing the SAME
       // number again within DOUBLE_PRESS_MS copies that message to the clipboard
@@ -324,29 +283,16 @@ export function Room() {
     navigate("/");
   }, [leave, navigate]);
 
-  // Loading state — or, for a public room, waiting to be let in (knock-to-join).
+  // Loading state
   if (joinState === "joining") {
     return (
       <div className="flex min-h-dvh flex-col bg-sonic-900">
         <div className="flex flex-1 items-center justify-center">
           <div className="flex max-w-sm flex-col items-center gap-4 px-4 text-center">
             <Loader2 className="h-8 w-8 animate-spin text-sonic-accent" />
-            {/* One STABLE assertive live region (always mounted while joining), so
-              the connecting → "waiting to be let in" change is reliably read out
-              with priority — it interrupts other speech instead of queueing
-              behind it. (Swapping a freshly-mounted region in/out announces
-              unreliably, hence the single persistent node.) */}
             <p className="text-sonic-300" role="alert" aria-live="assertive" aria-atomic="true">
-              {awaitingApproval ? m.room_awaiting_approval() : m.room_connecting()}
+              {m.room_connecting()}
             </p>
-            {awaitingApproval && (
-              <button
-                onClick={handleLeave}
-                className="rounded-lg bg-sonic-700 px-4 py-2 text-sm text-sonic-100 hover:bg-sonic-600"
-              >
-                {m.room_cancel_request()}
-              </button>
-            )}
           </div>
         </div>
       </div>
@@ -372,35 +318,7 @@ export function Room() {
     );
   }
 
-  // Voted out of the room: a dedicated screen (this happens after we'd already
-  // joined, so it's separate from the join error state above). The SR text was
-  // already announced via announceEvent when the kick arrived.
-  if (kicked) {
-    return (
-      <div className="flex min-h-dvh flex-col bg-sonic-900">
-        <div className="flex flex-1 items-center justify-center">
-          <div className="flex max-w-sm flex-col items-center gap-4 px-4 text-center">
-            <p className="text-lg text-muted" role="alert">
-              {m.room_kicked()}
-            </p>
-            <button
-              onClick={() => navigate("/")}
-              className="rounded-lg bg-sonic-accent px-4 py-2 text-sm text-white hover:bg-sonic-accent/90"
-            >
-              {m.room_back_to_lobby()}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   const peerList = Array.from(peers.values());
-  // Vote-to-kick needs a real group — it's disabled (controls hidden, like a
-  // private room) below 3 votable people. Votable = humans only: everyone
-  // except music casters (isMusic), plus ourself (+1).
-  const votableCount = peerList.filter((p) => !p.isMusic).length + 1;
-  const kickEnabled = roomIsPublic && votableCount >= 3;
 
   return (
     <div className="flex min-h-dvh flex-col bg-sonic-900">
@@ -492,8 +410,6 @@ export function Room() {
                   isMuted,
                   volume: 1,
                   isMusic: false,
-                  kickVotes: 0,
-                  iVotedKick: false,
                 }}
                 isLocal
                 // No mic → no mic-level slider, and a "text only" indicator.
@@ -503,23 +419,20 @@ export function Room() {
               />
             )}
 
-            {/* Remote peers. In a public room, each non-music peer gets a
-                vote-to-kick toggle (no moderators — the room decides). */}
+            {/* Remote peers */}
             {peerList.map((peer) => (
               <ParticipantCard
                 key={peer.peerId}
                 peer={peer}
                 isLocal={false}
                 onVolumeChange={(v) => setPeerVolume(peer.peerId, v)}
-                canKick={kickEnabled && !peer.isMusic}
-                onToggleKick={() => voteKick(peer.peerId, !peer.iVotedKick)}
               />
             ))}
           </div>
         </main>
 
         {chatOpen && (
-          <Chat onSend={sendChatMessage} onClose={closeChat} focusSignal={chatFocusSignal} />
+          <Chat onSend={sendChatMessage} onClose={closeChat} />
         )}
       </div>
 
@@ -554,10 +467,6 @@ export function Room() {
       <div aria-live="assertive" role="alert" className="sr-only" id="sr-chat-assertive">
         <span key={`ca-${chatAnnounceSeq}`}>{chatAssertiveMsg}</span>
       </div>
-
-      {/* Knock-to-join: allow/deny people asking to enter this public room.
-          Self-hides when nobody is waiting. */}
-      <JoinRequests onDecide={decideJoinRequest} onCleared={onJoinRequestsCleared} />
 
       {audioSourceOpen && (
         <AudioSourceDialog
