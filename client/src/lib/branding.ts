@@ -4,7 +4,7 @@
 // as `window.__SONICROOM_CONFIG__` (see server/src/index.ts), so a pre-built
 // static client is rebranded at runtime with no rebuild. Falls back to the
 // default in dev (Vite serves the raw HTML, so the global is absent) or if unset.
-export const DEFAULT_INSTANCE_NAME = "SonicRoom";
+export const DEFAULT_INSTANCE_NAME = "JDH Speak";
 
 interface SonicRoomConfig {
   instanceName?: string;

@@ -44,7 +44,7 @@ const AUDIO_LIBRARY_DIR = process.env.AUDIO_LIBRARY_DIR || "/var/lib/sonicroom/m
 // tab). Operators rebrand a deployment by setting INSTANCE_NAME in .env; it's
 // injected into the served index.html at runtime (see below), so a pre-built
 // client is rebranded without a rebuild. Defaults to "SonicRoom".
-const INSTANCE_NAME = process.env.INSTANCE_NAME?.trim() || "SonicRoom";
+const INSTANCE_NAME = process.env.INSTANCE_NAME?.trim() || "JDH Speak";
 
 async function main() {
   // Create mediasoup workers
