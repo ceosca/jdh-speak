@@ -44,7 +44,7 @@ export function AudioSourceDialog({
   // focus containment, and Escape-to-close; the explicit role="dialog" +
   // aria-modal below make it announce as a dialog on the screen readers that
   // don't convey a bare native <dialog> (and match every other modal here —
-  // JoinRequests, FileStreamPlayer, the controls popovers). Initial focus ->
+  // FileStreamPlayer, the controls popovers). Initial focus ->
   // browse.
   useEffect(() => {
     const dlg = dialogRef.current;

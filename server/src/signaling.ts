@@ -337,7 +337,6 @@ export function createSignalingServer(
 
         cb({
           ok: true,
-          status: "joined",
           rtpCapabilities: room.router.rtpCapabilities,
           peers: existingPeers,
           mode: decision.mode,
