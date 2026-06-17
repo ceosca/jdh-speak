@@ -12,9 +12,6 @@ import type { ChatMessage } from "./chat-util.js";
 export interface Peer {
   id: string;
   displayName: string;
-  // Best-effort client IP (see clientIp in signaling). Kept so a vote-to-kick
-  // can room-ban it on removal, the same soft ban a knock-deny applies.
-  ip: string;
   // Mirrors the client's mute toggle (set via producer-pause/-resume, which
   // fire in P2P mode too) so late joiners can render existing peers' state.
   muted: boolean;
@@ -35,30 +32,6 @@ export interface Room {
   // Pins the room to the SFU even with <=2 peers; sticky for the room's
   // lifetime once any joiner sets it (see decideMode's forceSfu).
   disableP2p: boolean;
-  // Whether this room is publicly listed in the lobby (via the "Make this room
-  // public" toggle / `?public=true` URL param). Private by default; sticky for
-  // the room's lifetime once any joiner sets it. Listed by getPublicRooms.
-  isPublic: boolean;
-  // "Ask to join" (knock) state for a PUBLIC room: a visitor to an already-
-  // public, occupied room is held here (keyed by their socket id) until someone
-  // inside allows or denies them. Participants are shown a modal + hear a knock
-  // loop while this is non-empty. Always empty for private rooms. `ip` is kept
-  // so a deny can ban it (see bannedIps).
-  pendingJoins: Map<string, { displayName: string; token: string; ip: string }>;
-  // Per-session join tokens already admitted to this room, so an admitted
-  // participant can reconnect/refresh without re-knocking. Sticky for the
-  // room's lifetime.
-  admittedTokens: Set<string>;
-  // Display names that have been admitted to this room (and not since denied),
-  // so someone who was let in earlier — then left — is auto-admitted if they
-  // come back under the same name instead of having to knock again. A denial
-  // removes the name (see join-decision). Soft, name-based, like bannedIps;
-  // sticky for the room's lifetime.
-  admittedNames: Set<string>;
-  // Client IPs banned from this room because a participant denied their knock.
-  // Checked on every join attempt to this room and refused outright (no knock).
-  // Room-scoped and for the room's lifetime only (cleared when the room dies).
-  bannedIps: Set<string>;
   // Peer ids of send-only "music caster" peers (e.g. Ecobox). While any are
   // present the room is forced to SFU (see decideMode's forceSfu).
   casters: Set<string>;
@@ -84,12 +57,6 @@ export interface Room {
   // effectiveGain). Synced via the join response + a `ducking-changed`
   // broadcast; persists for the room's lifetime.
   duckingEnabled: boolean;
-  // Vote-to-kick tallies for a PUBLIC room (no moderators): target peerId ->
-  // the set of peerids who've voted to remove them. When a target's set reaches
-  // kickThreshold(votable peers) it's removed. A target's entry is cleared on
-  // kick; a voter's votes are dropped when they leave (see cleanupKickVotes).
-  // Only ever populated for public rooms.
-  kickVotes: Map<string, Set<string>>;
   // Rolling chat history (bounded to CHAT_HISTORY_MAX) so late joiners receive
   // recent messages on join. Newest last.
   messages: ChatMessage[];
@@ -131,11 +98,6 @@ export async function getOrCreateRoom(roomName: string): Promise<Room> {
     peers: new Map(),
     mode: "p2p",
     disableP2p: false,
-    isPublic: false,
-    pendingJoins: new Map(),
-    admittedTokens: new Set(),
-    admittedNames: new Set(),
-    bannedIps: new Set(),
     casters: new Set(),
     sharers: new Set(),
     fileStreamers: new Set(),
@@ -143,18 +105,16 @@ export async function getOrCreateRoom(roomName: string): Promise<Room> {
     voiceActive: false,
     observerWired: false,
     duckingEnabled: true,
-    kickVotes: new Map(),
     messages: [],
   };
   rooms.set(roomName, room);
   return room;
 }
 
-export function createPeer(room: Room, peerId: string, displayName: string, ip: string): Peer {
+export function createPeer(room: Room, peerId: string, displayName: string): Peer {
   const peer: Peer = {
     id: peerId,
     displayName,
-    ip,
     muted: false,
     sendTransport: null,
     recvTransport: null,
@@ -201,20 +161,4 @@ export function removePeer(room: Room, peerId: string) {
 
 export function getRooms() {
   return rooms;
-}
-
-// Snapshot of the currently-live PUBLIC rooms for the lobby list: each room's
-// name plus the display names of everyone currently in it. Private rooms are
-// omitted entirely. Rooms only exist while they hold at least one peer, so
-// `participants` is never empty.
-export function getPublicRooms(): { name: string; participants: string[] }[] {
-  const out: { name: string; participants: string[] }[] = [];
-  for (const room of rooms.values()) {
-    if (!room.isPublic) continue;
-    out.push({
-      name: room.name,
-      participants: Array.from(room.peers.values()).map((p) => p.displayName),
-    });
-  }
-  return out;
 }
