@@ -4,7 +4,7 @@
 
 **Goal:** Rebrand SonicRoom to "JDH Speak" and strip it down — always-HD stereo voice, a lobby with only room + name, no "Powered by" credit, and full removal of the public-rooms / knock-to-join / vote-to-kick moderation system.
 
-**Architecture:** Mostly deletion across an existing pnpm monorepo. Server (Express + socket.io + mediasoup, run via `tsx`) and client (React 19 + Vite + zustand) are simplified in parallel; the wire protocol only ever *loses* fields/events, so each side compiles and runs independently. zod strips unknown keys, so a lingering field from one side never errors the other during the transition.
+**Architecture:** Mostly deletion across an existing pnpm monorepo. Server (Express + socket.io + mediasoup, run via `tsx`) and client (React 19 + Vite + zustand) are simplified in parallel; the wire protocol only ever _loses_ fields/events, so each side compiles and runs independently. zod strips unknown keys, so a lingering field from one side never errors the other during the transition.
 
 **Tech Stack:** TypeScript, React 19, zustand, socket.io, mediasoup, Paraglide i18n, Tailwind v4.
 
@@ -29,6 +29,7 @@
 Remove the per-user hi-fi opt-in; voice is always stereo 128 kbps.
 
 **Files:**
+
 - Modify: `client/src/lib/sdp-munger.ts`
 - Modify: `client/src/lib/microphone.ts`
 - Modify: `client/src/hooks/useMediasoup.ts`
@@ -38,18 +39,21 @@ Remove the per-user hi-fi opt-in; voice is always stereo 128 kbps.
 - Modify: `client/messages/en.json`, `client/messages/es.json`, `client/messages/fr.json`
 
 **Interfaces:**
+
 - Produces: `forceOpusParams(sdp: string): string` (drops the `hifi` param), `microphoneConstraints(deviceId: string, voiceProcessingEnabled: boolean): MediaTrackConstraints` (drops the `hifiVoice` param). Later tasks/call-sites must use these 1-arg-shorter signatures.
 - Consumes: nothing from other tasks.
 
 - [ ] **Step 1: `forceOpusParams` always stereo 128k**
 
 In `client/src/lib/sdp-munger.ts`, change the signature to `export function forceOpusParams(sdp: string): string` and set, unconditionally:
+
 ```ts
 params.set("stereo", "1");
 params.set("sprop-stereo", "1");
 params.set("useinbandfec", "1");
 params.set("maxaveragebitrate", "128000");
 ```
+
 Update the JSDoc block to say voice is always stereo 128 kbps (drop the mono/`hifi` mentions).
 
 - [ ] **Step 2: `microphoneConstraints` always 2 channels**
@@ -59,6 +63,7 @@ In `client/src/lib/microphone.ts`, drop the `hifiVoice` parameter and set `chann
 - [ ] **Step 3: Update call-sites in `useMediasoup.ts`**
 
 Grep `client/src/hooks/useMediasoup.ts` for `hifiVoiceEnabled` and `forceOpusParams` and `microphoneConstraints`. For each:
+
 - `forceOpusParams(offer.sdp!, useRoomStore.getState().hifiVoiceEnabled)` → `forceOpusParams(offer.sdp!)` (and the answer call-site).
 - `microphoneConstraints(deviceId, voiceProcessing, useRoomStore.getState().hifiVoiceEnabled)` → drop the 3rd arg.
 - The SFU **voice** produce block (around lines 905–916) that reads `const hifiVoice = store.getState().hifiVoiceEnabled;` and conditionally sets codec options: replace with fixed `opusStereo: true` and `opusMaxAverageBitrate: 128000`, and delete the `hifiVoice` local. Leave the caster/share/file produce blocks (the ones with `opusMaxAverageBitrate: 256000`) untouched.
@@ -82,10 +87,12 @@ In each of `client/messages/{en,es,fr}.json` delete `settings_hifi_voice_label` 
 - [ ] **Step 8: Verify**
 
 Run:
+
 ```
 corepack pnpm --filter client exec tsc --noEmit
 corepack pnpm lint
 ```
+
 Expected: PASS, no references to `hifiVoice*` remain (`grep -ri hifi client/src client/messages` returns nothing except generated paraglide, which is regenerated).
 
 - [ ] **Step 9: Commit**
@@ -100,10 +107,12 @@ git commit -m "feat: always stereo 128k voice; remove hi-fi opt-in"
 ### Task 2: Rebrand to "JDH Speak"
 
 **Files:**
+
 - Modify: `client/src/lib/branding.ts`
 - Modify: `server/src/index.ts`
 
 **Interfaces:**
+
 - Consumes/Produces: none (constant change only).
 
 - [ ] **Step 1: Client default name**
@@ -130,12 +139,14 @@ git commit -m "feat: rebrand default instance name to JDH Speak"
 ### Task 3: Remove the "Powered by" credit
 
 **Files:**
+
 - Delete: `client/src/components/Footer.tsx`
 - Modify: `client/src/components/Lobby.tsx`
 - Modify: `client/src/components/Room.tsx`
 - Modify: `client/messages/en.json`, `client/messages/es.json`, `client/messages/fr.json`
 
 **Interfaces:**
+
 - Produces: `Footer` and `PoweredBy` no longer exist — Task 4 (Lobby) and any Room edits must not import them.
 
 - [ ] **Step 1: Delete the Footer component**
@@ -170,15 +181,18 @@ git commit -m "feat: remove Powered by SonicRoom credit"
 ### Task 4: Strip the lobby to room + name only
 
 **Files:**
+
 - Modify: `client/src/components/Lobby.tsx`
 
 **Interfaces:**
+
 - Consumes: `Footer` already removed (Task 3).
 - Produces: room URLs no longer carry `?public=true` / `?p2p=off` / `?mic=off` from the lobby.
 
 - [ ] **Step 1: Gut the lobby form**
 
 Rewrite `client/src/components/Lobby.tsx` to keep only: the language-less header (`getInstanceName()` heading + `Headphones` icon), `m.lobby_tagline()`, the **room** input, the **display-name** input, the inline error `<p>`, and the submit button. Remove:
+
 - State + helpers: `disableP2p`/`isP2pDisabled`, `makePublic`/`isPublicEnabled`, `joinWithoutMic`/`isMicDisabled`, all `publicRooms`/`activeRoomIdx`/`announcement`/`announceSeq` state, `PUBLIC_ROOMS_POLL_MS`, the public-rooms `useEffect` fetch/poll, `selectPublicRoom`, `onRoomListKeyDown`, `roomOptionRefs`, `listFmt`, `activeRoomId`, and the SR live-region `<div>`.
 - JSX: the three checkbox blocks, the public-rooms `<ul role="listbox">` block, `<MicPreview />`, `<LanguageSelect />`.
 - `handleJoin`: keep room/name validation + `sessionStorage.setItem("sonicroom:displayName", trimmedName)`; navigate to `/room/${sanitizedRoom}` with **no** query params.
@@ -202,6 +216,7 @@ git commit -m "feat: lobby asks only for room and display name"
 Remove public rooms, knock-to-join, and vote-to-kick from the backend.
 
 **Files:**
+
 - Modify: `server/src/room-manager.ts`
 - Modify: `server/src/signaling.ts`
 - Modify: `server/src/index.ts`
@@ -210,11 +225,13 @@ Remove public rooms, knock-to-join, and vote-to-kick from the backend.
 - Modify: `.env.example`
 
 **Interfaces:**
+
 - Produces: the join ack no longer includes `isPublic` or `kickVotes`; `Peer` no longer has `ip`; `Room` no longer has `isPublic`/`pendingJoins`/`admittedTokens`/`admittedNames`/`bannedIps`/`kickVotes`; events `join-requests`, `join-approved`, `join-denied`, `room-public`, `kick-vote`, `peer-kicked`, `you-were-kicked` are never emitted; socket events `join-decision`, `vote-kick` are no longer handled. Task 6 (client) relies on all of these being gone.
 
 - [ ] **Step 1: Trim `room-manager.ts`**
 
 In `server/src/room-manager.ts`:
+
 - Remove from the `Room` interface and from `getOrCreateRoom`'s literal: `isPublic`, `pendingJoins`, `admittedTokens`, `admittedNames`, `bannedIps`, `kickVotes` (and their doc comments).
 - Remove `ip` from the `Peer` interface, and the `ip` parameter from `createPeer` (and the `ip` assignment).
 - Delete the `getPublicRooms` function.
@@ -223,6 +240,7 @@ In `server/src/room-manager.ts`:
 - [ ] **Step 2: Trim `signaling.ts`**
 
 In `server/src/signaling.ts`:
+
 - Remove imports `kickThreshold` (from `./kick-util.js`) and `notifyPublicRoomCreated, notifyPublicRoomJoin` (from `./notify.js`).
 - `joinSchema`: remove `isPublic` and `joinToken`.
 - Remove `clientIp` (now unused) and the `kickLimiter`.
@@ -250,11 +268,13 @@ Remove the `NOTY_*` lines from `.env.example`.
 - [ ] **Step 6: Verify**
 
 Run:
+
 ```
 corepack pnpm --filter server exec tsc --noEmit
 corepack pnpm --filter server test
 corepack pnpm lint
 ```
+
 Expected: typecheck PASS; tests PASS (kick-util test is gone; recording/streaming/etc. stay green); lint PASS with no unused symbols.
 
 - [ ] **Step 7: Commit**
@@ -269,6 +289,7 @@ git commit -m "feat: remove public rooms, knock-to-join, and vote-to-kick (serve
 ### Task 6: Remove moderation from the client
 
 **Files:**
+
 - Modify: `client/src/stores/room.ts`
 - Modify: `client/src/hooks/useMediasoup.ts`
 - Modify: `client/src/components/Room.tsx`
@@ -278,6 +299,7 @@ git commit -m "feat: remove public rooms, knock-to-join, and vote-to-kick (serve
 - Modify: `client/messages/en.json`, `client/messages/es.json`, `client/messages/fr.json`
 
 **Interfaces:**
+
 - Consumes: the server no longer emits any moderation events (Task 5).
 
 - [ ] **Step 1: Trim the store**
@@ -287,6 +309,7 @@ In `client/src/stores/room.ts` remove: the `JoinRequest` interface; the fields `
 - [ ] **Step 2: Trim `useMediasoup.ts`**
 
 In `client/src/hooks/useMediasoup.ts`:
+
 - Remove the socket handlers for `join-requests`, `join-approved`, `join-denied`, `room-public`, `kick-vote`, `peer-kicked`, `you-were-kicked` (grep each event name).
 - In the `join` emit payload, stop sending `isPublic` and `joinToken`; remove any `joinToken` sessionStorage read/write.
 - Remove the `status === "pending"` / `awaitingApproval` handling in the join-response path and any `vote-kick` emit helper.
@@ -317,10 +340,12 @@ Grep `client/messages/en.json` for keys referencing knock / join request / kick 
 - [ ] **Step 8: Verify**
 
 Run:
+
 ```
 corepack pnpm --filter client exec tsc --noEmit
 corepack pnpm lint
 ```
+
 Expected: PASS, no references to removed events/keys (`grep -rinE "kick|knock|join-request|room-public|awaitingApproval|roomIsPublic" client/src` returns nothing meaningful outside generated paraglide).
 
 - [ ] **Step 9: Commit**
@@ -339,6 +364,7 @@ git commit -m "feat: remove public rooms, knock-to-join, and vote-to-kick (clien
 - [ ] **Step 1: Static gates**
 
 Run all four and confirm PASS:
+
 ```
 corepack pnpm --filter client exec tsc --noEmit
 corepack pnpm --filter server exec tsc --noEmit
@@ -349,6 +375,7 @@ corepack pnpm lint
 - [ ] **Step 2: Manual smoke test**
 
 Start the app (`start.bat` or the two `corepack pnpm … exec` commands). In `http://localhost:5173`:
+
 - Lobby shows only room + name + button; heading and browser tab read "JDH Speak"; no footer credit.
 - Open two tabs in the same room → they hear each other (P2P ≤2, SFU at 3+).
 - In `chrome://webrtc-internals` (or the SDP) confirm voice is **stereo** with `maxaveragebitrate=128000`.
@@ -357,6 +384,7 @@ Start the app (`start.bat` or the two `corepack pnpm … exec` commands). In `ht
 - [ ] **Step 3: Final note**
 
 Leave the branch `jdh-speak` ready for review/merge (see superpowers:finishing-a-development-branch). No commit needed for this task.
+
 ```
 
 ```

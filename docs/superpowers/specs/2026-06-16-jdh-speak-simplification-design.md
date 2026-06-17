@@ -13,6 +13,7 @@ El resultado: una app de voz directa donde entras con sala + nombre y hablas en
 la mejor calidad disponible, sin opciones intermedias.
 
 Decisiones de alcance ya tomadas con el usuario:
+
 - Voz: **siempre estéreo 128 kbps** (el "Hi-fi" actual). Sin opt-in. Se podrá
   subir a 256k en el futuro.
 - Lobby: **solo** campo de sala + campo de nombre + botón. Nada más.
@@ -51,6 +52,7 @@ se mantiene (es ceiling, no baja la voz).
 tagline, input **sala**, input **nombre**, mensaje de error, botón entrar.
 
 Eliminar:
+
 - Los 3 checkboxes: desactivar P2P, hacer pública, entrar sin micro (+ estados
   `disableP2p`, `makePublic`, `joinWithoutMic` y los helpers `isP2pDisabled`,
   `isPublicEnabled`, `isMicDisabled`).
@@ -79,6 +81,7 @@ en `Room` (solo desaparece el checkbox explícito del lobby).
 ## Cambio 4 — Eliminar moderación a fondo
 
 ### Server
+
 - `server/src/room-manager.ts` — quitar de `Room`: `isPublic`, `pendingJoins`,
   `admittedTokens`, `admittedNames`, `bannedIps`, `kickVotes` (y su init en
   `getOrCreateRoom`); quitar `ip` de `Peer` y de `createPeer`; eliminar
@@ -103,6 +106,7 @@ en `Room` (solo desaparece el checkbox explícito del lobby).
 - Borrar `server/src/notify.ts`; limpiar `NOTY_*` de `.env.example`.
 
 ### Cliente
+
 - `client/src/stores/room.ts` — eliminar: tipo `JoinRequest`; campos
   `joinRequests`, `awaitingApproval`, `roomIsPublic`, `kicked`; `PeerState.kickVotes`
   e `iVotedKick`; acciones `setJoinRequests`, `setAwaitingApproval`,

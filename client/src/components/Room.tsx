@@ -431,9 +431,7 @@ export function Room() {
           </div>
         </main>
 
-        {chatOpen && (
-          <Chat onSend={sendChatMessage} onClose={closeChat} />
-        )}
+        {chatOpen && <Chat onSend={sendChatMessage} onClose={closeChat} />}
       </div>
 
       {/* Bottom controls */}

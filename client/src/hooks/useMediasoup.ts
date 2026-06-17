@@ -465,10 +465,7 @@ export function useMediasoup() {
       let stream: MediaStream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-            audio: microphoneConstraints(
-            micDeviceId,
-            voiceProcessingEnabled,
-          ),
+          audio: microphoneConstraints(micDeviceId, voiceProcessingEnabled),
         });
       } catch (err) {
         console.error("[mic] device switch failed:", err);

@@ -283,14 +283,8 @@ export function createSignalingServer(
 
     socket.on("join", async (data: unknown, cb: (res: unknown) => void) => {
       try {
-        const {
-          roomName,
-          displayName,
-          role,
-          disableP2p,
-          sharing,
-          fileStreaming,
-        } = joinSchema.parse(data);
+        const { roomName, displayName, role, disableP2p, sharing, fileStreaming } =
+          joinSchema.parse(data);
         const room = await getOrCreateRoom(roomName);
 
         console.log(

@@ -110,10 +110,7 @@ export function MicPreview() {
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
-        audio: microphoneConstraints(
-          micId,
-          useRoomStore.getState().voiceProcessingEnabled,
-        ),
+        audio: microphoneConstraints(micId, useRoomStore.getState().voiceProcessingEnabled),
       });
     } catch {
       setError(m.mic_permission_error());
