@@ -115,6 +115,11 @@ export interface PeerState {
   // True for a send-only "music caster" peer (e.g. Ecobox): rendered with a
   // music icon and treated as a media source rather than a talking participant.
   isMusic: boolean;
+  // True only for an EXTERNAL music caster (Ecobox, source "music"), which
+  // sends raw stereo and cannot duck itself — so listeners duck it. A browser
+  // emitter's share/file producer is ducked at the source instead, so it is
+  // NOT receiver-ducked (duckAtReceiver false) to avoid double-ducking.
+  duckAtReceiver: boolean;
 }
 
 export type RoomMode = "p2p" | "sfu";
@@ -232,6 +237,7 @@ interface RoomState {
   setPeerMuted: (peerId: string, muted: boolean) => void;
   setPeerVolume: (peerId: string, volume: number) => void;
   setPeerMusic: (peerId: string, isMusic: boolean) => void;
+  setPeerDuckAtReceiver: (peerId: string, value: boolean) => void;
   reset: () => void;
 }
 
@@ -392,6 +398,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
         isMuted: false,
         volume: 1,
         isMusic: false,
+        duckAtReceiver: false,
       });
       return { peers };
     }),
@@ -432,6 +439,14 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       const peers = new Map(state.peers);
       const peer = peers.get(peerId);
       if (peer) peers.set(peerId, { ...peer, isMusic });
+      return { peers };
+    }),
+
+  setPeerDuckAtReceiver: (peerId, value) =>
+    set((state) => {
+      const peers = new Map(state.peers);
+      const peer = peers.get(peerId);
+      if (peer) peers.set(peerId, { ...peer, duckAtReceiver: value });
       return { peers };
     }),
 

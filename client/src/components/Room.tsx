@@ -408,6 +408,7 @@ export function Room() {
                   isMuted,
                   volume: 1,
                   isMusic: false,
+                  duckAtReceiver: false,
                 }}
                 isLocal
                 // No mic → no mic-level slider, and a "text only" indicator.

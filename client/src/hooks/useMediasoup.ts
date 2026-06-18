@@ -231,6 +231,13 @@ export function useMediasoup() {
     // destination or its producer.
     fileSource: MediaElementAudioSourceNode | null;
     fileDest: MediaStreamAudioDestinationNode | null;
+    // Duck gain nodes inserted before shareDest/fileDest on the SENT path so
+    // the transmitted producer is already attenuated during voice — the server's
+    // recording/streaming taps capture the ducked audio directly. Local monitor
+    // paths (source.connect(sharedAudioContext.destination)) bypass these nodes
+    // and are NOT ducked. Null until the respective share/file path is started.
+    shareDuckGain: GainNode | null;
+    fileDuckGain: GainNode | null;
     micStream: MediaStream | null;
   } | null>(null);
   // Audio share (system / tab audio produced as its own stereo "share" track)
@@ -302,7 +309,15 @@ export function useMediasoup() {
       if (!peer || state.isDeafened) return 0;
       // Ducking is gated by the room-wide toggle: with it off, music-type
       // streams (caster/share/file) never dip under voice.
-      if (peer.isMusic && isVoiceActiveRef.current && state.duckingEnabled)
+      // Only receiver-duck the external music caster (duckAtReceiver true).
+      // Share/file peers are ducked at the source instead, so they are not
+      // receiver-ducked here (duckAtReceiver false) to avoid double-ducking.
+      if (
+        peer.isMusic &&
+        peer.duckAtReceiver &&
+        isVoiceActiveRef.current &&
+        state.duckingEnabled
+      )
         return peer.volume * DUCK_FACTOR;
       return peer.volume;
     },
@@ -322,13 +337,36 @@ export function useMediasoup() {
     [store, effectiveGain],
   );
 
-  // Server told us whether anyone is talking — ramp every music peer's gain.
+  // Current emit-side duck target: the emitter drops its OWN share/file output
+  // to DUCK_FACTOR while a voice is active (and room ducking is on), 1 otherwise.
+  const emitDuckTarget = useCallback((): number => {
+    const s = useRoomStore.getState();
+    return isVoiceActiveRef.current && s.duckingEnabled ? DUCK_FACTOR : 1;
+  }, []);
+
+  // Ramp the outgoing share/file duck gains to `target` with time-constant `ramp`.
+  // Called from applyDuck (duck event) and the ducking-changed handler (toggle).
+  const rampEmitDuck = useCallback(
+    (active: boolean) => {
+      const g = outGraphRef.current;
+      const target = active && useRoomStore.getState().duckingEnabled ? DUCK_FACTOR : 1;
+      const ramp = active ? DUCK_ATTACK : DUCK_RELEASE;
+      const now = sharedAudioContext.currentTime;
+      g?.shareDuckGain?.gain.setTargetAtTime(target, now, ramp);
+      g?.fileDuckGain?.gain.setTargetAtTime(target, now, ramp);
+    },
+    [],
+  );
+
+  // Server told us whether anyone is talking — ramp every music peer's gain
+  // AND the emitter's own share/file duck gains.
   const applyDuck = useCallback(
     (active: boolean) => {
       isVoiceActiveRef.current = active;
       rampMusicGains(active ? DUCK_ATTACK : DUCK_RELEASE);
+      rampEmitDuck(active);
     },
-    [rampMusicGains],
+    [rampMusicGains, rampEmitDuck],
   );
 
   // Per-key state for the toggle coalescer (see TOGGLE_DEDUP_MS): a debounce
@@ -418,6 +456,8 @@ export function useMediasoup() {
       shareDest: null,
       fileSource: null,
       fileDest: null,
+      shareDuckGain: null,
+      fileDuckGain: null,
       micStream: null,
     };
     return outGraphRef.current;
@@ -714,6 +754,7 @@ export function useMediasoup() {
           store.getState().announceEvent(announce_music_started({ name }));
         }
         store.getState().setPeerMusic(peerId, true);
+        store.getState().setPeerDuckAtReceiver(peerId, true);
       }
 
       // Start at the correct gain: respects deafen, and ducks immediately if a
@@ -1417,6 +1458,9 @@ export function useMediasoup() {
         if (store.getState().duckingEnabled === enabled) return;
         store.getState().setDuckingEnabled(enabled);
         rampMusicGains();
+        // Re-ramp our own outgoing share/file duck gains: turning ducking off
+        // must un-duck the emitted audio even if no voice transition fires.
+        rampEmitDuck(isVoiceActiveRef.current && enabled);
         const name = by ?? announce_a_participant();
         // Coalesced so mashing the ducking toggle doesn't spam the whole room's
         // chat log (the gain change above still applies on every flip).
@@ -1533,6 +1577,7 @@ export function useMediasoup() {
       teardownSfu,
       applyDuck,
       rampMusicGains,
+      rampEmitDuck,
       surfaceToggle,
       removeShareStream,
       removeFileStream,
@@ -1618,9 +1663,11 @@ export function useMediasoup() {
   const detachSharedAudio = useCallback(() => {
     const g = outGraphRef.current;
     g?.displaySource?.disconnect();
+    g?.shareDuckGain?.disconnect();
     g?.shareDest?.disconnect();
     if (g) {
       g.displaySource = null;
+      g.shareDuckGain = null;
       g.shareDest = null;
     }
     displayStreamRef.current?.getTracks().forEach((t) => t.stop());
@@ -1682,13 +1729,21 @@ export function useMediasoup() {
     displayStream.getVideoTracks().forEach((t) => t.stop());
 
     // Route the shared audio into its OWN destination (not the voice graph), so
-    // it becomes a separate high-bitrate stereo producer.
+    // it becomes a separate high-bitrate stereo producer. Insert a duck gain
+    // node between the source and destination so the SENT path is attenuated
+    // during voice (recording/streaming taps see the ducked signal). The local
+    // monitor (source → sharedAudioContext.destination) is NOT routed through
+    // the duck gain so the streamer always hears the music at full volume.
     const g = ensureOutGraph();
     const shareDest = sharedAudioContext.createMediaStreamDestination();
     const displaySource = sharedAudioContext.createMediaStreamSource(new MediaStream(audioTracks));
-    displaySource.connect(shareDest);
+    const shareDuckGain = sharedAudioContext.createGain();
+    shareDuckGain.gain.value = emitDuckTarget();
+    displaySource.connect(shareDuckGain);
+    shareDuckGain.connect(shareDest);
     g.displaySource = displaySource;
     g.shareDest = shareDest;
+    g.shareDuckGain = shareDuckGain;
     displayStreamRef.current = displayStream;
 
     // Fire when the user hits the browser's "Stop sharing" UI
@@ -1709,7 +1764,7 @@ export function useMediasoup() {
     // Local feedback; peers get theirs via the share-started broadcast.
     store.getState().announceEvent(announce_share_started_you());
     playCue(sharedAudioContext, "share-start");
-  }, [store, ensureOutGraph, stopAudioShare, produceShare, emit]);
+  }, [store, ensureOutGraph, emitDuckTarget, stopAudioShare, produceShare, emit]);
 
   const toggleAudioShare = useCallback(async () => {
     if (store.getState().isSharingAudio) await stopAudioShare();
@@ -1733,9 +1788,11 @@ export function useMediasoup() {
       }
       const g = outGraphRef.current;
       g?.fileSource?.disconnect();
+      g?.fileDuckGain?.disconnect();
       g?.fileDest?.disconnect();
       if (g) {
         g.fileSource = null;
+        g.fileDuckGain = null;
         g.fileDest = null;
       }
       if (fileAudioRef.current) {
@@ -1793,9 +1850,18 @@ export function useMediasoup() {
       const source = sharedAudioContext.createMediaElementSource(audioEl);
       g.fileSource = source;
       // Its OWN destination → produced as a separate stereo "file" track.
+      // Insert a duck gain node on the SENT path so the transmitted producer is
+      // attenuated during voice (recording/streaming taps see the ducked signal).
+      // The gain persists across file replaces (fileDest/fileDuckGain are kept).
       if (!g.fileDest) g.fileDest = sharedAudioContext.createMediaStreamDestination();
-      source.connect(g.fileDest);
-      // Also monitor it locally, so the streamer hears what they're playing.
+      if (!g.fileDuckGain) {
+        g.fileDuckGain = sharedAudioContext.createGain();
+        g.fileDuckGain.gain.value = emitDuckTarget();
+        g.fileDuckGain.connect(g.fileDest);
+      }
+      source.connect(g.fileDuckGain);
+      // Also monitor it locally at full volume (not ducked), so the streamer
+      // hears what they're playing.
       source.connect(sharedAudioContext.destination);
 
       // Stop the whole stream when the file ends or fails to decode.
@@ -1832,7 +1898,7 @@ export function useMediasoup() {
         store.getState().announce(file_player_streaming({ name }));
       }
     },
-    [store, ensureOutGraph, emit, produceFile, stopFileStream],
+    [store, ensureOutGraph, emitDuckTarget, emit, produceFile, stopFileStream],
   );
 
   const startFileStream = useCallback(
@@ -2013,8 +2079,10 @@ export function useMediasoup() {
       g.micGain.disconnect();
       g.limiter.disconnect();
       g.displaySource?.disconnect();
+      g.shareDuckGain?.disconnect();
       g.shareDest?.disconnect();
       g.fileSource?.disconnect();
+      g.fileDuckGain?.disconnect();
       g.fileDest?.disconnect();
       outGraphRef.current = null;
     }
