@@ -44,3 +44,6 @@ coverage/
 *.pid
 *.seed
 *.pid.lock
+
+# Local Claude Code dev config (preview launch.json, etc.)
+.claude/
