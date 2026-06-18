@@ -10,7 +10,6 @@ import { AudioControls } from "./AudioControls";
 import { FileStreamPlayer } from "./FileStreamPlayer";
 import { AudioSourceDialog } from "./AudioSourceDialog";
 import { Chat } from "./Chat";
-import { LanguageSelect } from "./LanguageSelect";
 import { m } from "../paraglide/messages.js";
 
 type JoinState = "idle" | "joining" | "joined" | "error";
@@ -388,7 +387,6 @@ export function Room() {
               </span>
             )}
           </button>
-          <LanguageSelect />
         </div>
       </header>
 

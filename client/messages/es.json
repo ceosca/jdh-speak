@@ -1,8 +1,6 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
 
-  "language_label": "Idioma",
-
   "lobby_tagline": "Conferencia de audio estéreo de latencia ultrabaja",
   "lobby_room_name_label": "Nombre de la sala",
   "lobby_room_name_placeholder": "mi-estudio",

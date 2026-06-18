@@ -1,6 +1,5 @@
 import { create } from "zustand";
 import type { ChatMessage } from "../lib/chat";
-import { getLocale, setLocale as applyParaglideLocale, type Locale } from "../lib/i18n";
 import { isIOS } from "../lib/microphone";
 import { speak } from "../lib/tts";
 
@@ -121,11 +120,6 @@ export interface PeerState {
 export type RoomMode = "p2p" | "sfu";
 
 interface RoomState {
-  // Active UI language. Mirrors Paraglide's runtime locale so a change here
-  // re-renders the tree (see main.tsx's App); the actual messages are resolved
-  // by the generated m.*() functions, not from this field.
-  locale: Locale;
-
   // Connection
   connected: boolean;
   roomName: string | null;
@@ -206,7 +200,6 @@ interface RoomState {
   messages: ChatMessage[];
 
   // Actions
-  setLanguage: (locale: Locale) => void;
   setConnected: (connected: boolean) => void;
   setRoom: (roomName: string, displayName: string, localPeerId: string) => void;
   setMode: (mode: RoomMode) => void;
@@ -243,7 +236,6 @@ interface RoomState {
 }
 
 export const useRoomStore = create<RoomState>((set, get) => ({
-  locale: getLocale(),
   connected: false,
   roomName: null,
   displayName: null,
@@ -276,13 +268,6 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   peers: new Map(),
   messages: [],
 
-  setLanguage: (locale) => {
-    // reload:false — App re-renders in place on the store change below, so a
-    // language switch (even mid-call) never tears down the connection.
-    applyParaglideLocale(locale, { reload: false });
-    document.documentElement.lang = locale;
-    set({ locale });
-  },
   setConnected: (connected) => set({ connected }),
   setRoom: (roomName, displayName, localPeerId) => set({ roomName, displayName, localPeerId }),
   setMode: (mode) => set({ mode }),
@@ -373,7 +358,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
         set({ chatAnnounceSeq });
         return;
       case "tts":
-        speak(message, s.locale);
+        speak(message, "es");
         set({ chatAnnounceSeq, chatPoliteMsg: "", chatAssertiveMsg: "" });
         return;
       case "assertive":
