@@ -340,22 +340,22 @@ export function useMediasoup() {
   // Current emit-side duck target: the emitter drops its OWN share/file output
   // to DUCK_FACTOR while a voice is active (and room ducking is on), 1 otherwise.
   const emitDuckTarget = useCallback((): number => {
-    const s = useRoomStore.getState();
+    const s = store.getState();
     return isVoiceActiveRef.current && s.duckingEnabled ? DUCK_FACTOR : 1;
-  }, []);
+  }, [store]);
 
   // Ramp the outgoing share/file duck gains to `target` with time-constant `ramp`.
   // Called from applyDuck (duck event) and the ducking-changed handler (toggle).
   const rampEmitDuck = useCallback(
     (active: boolean) => {
       const g = outGraphRef.current;
-      const target = active && useRoomStore.getState().duckingEnabled ? DUCK_FACTOR : 1;
+      const target = active && store.getState().duckingEnabled ? DUCK_FACTOR : 1;
       const ramp = active ? DUCK_ATTACK : DUCK_RELEASE;
       const now = sharedAudioContext.currentTime;
       g?.shareDuckGain?.gain.setTargetAtTime(target, now, ramp);
       g?.fileDuckGain?.gain.setTargetAtTime(target, now, ramp);
     },
-    [],
+    [store],
   );
 
   // Server told us whether anyone is talking — ramp every music peer's gain

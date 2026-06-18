@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "client",
+      "runtimeExecutable": "corepack",
+      "runtimeArgs": ["pnpm", "--filter", "client", "exec", "vite"],
+      "port": 5173
+    }
+  ]
+}
