@@ -41,6 +41,8 @@ import {
   announce_ducking_enabled,
   announce_ducking_disabled,
   announce_no_mic,
+  announce_voice_processing_on,
+  announce_voice_processing_off,
   file_stream_name,
   file_player_streaming,
   share_stream_name,
@@ -481,6 +483,15 @@ export function useMediasoup() {
       localStreamRef.current = stream;
       connectMicToGraph(stream);
       old?.getTracks().forEach((t) => t.stop());
+      // Confirm the live change to screen readers when the voice-processing flag
+      // (not the device) is what changed.
+      if (previous.voiceProcessingEnabled !== voiceProcessingEnabled) {
+        store
+          .getState()
+          .announce(
+            voiceProcessingEnabled ? announce_voice_processing_on() : announce_voice_processing_off(),
+          );
+      }
     })();
     return () => {
       cancelled = true;
