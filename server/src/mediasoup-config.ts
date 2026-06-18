@@ -48,7 +48,13 @@ export const transportOptions: WebRtcTransportOptions = {
     {
       protocol: "udp",
       ip: "0.0.0.0",
-      announcedAddress: process.env.ANNOUNCED_IP || undefined,
+      // Public IPv4 announced to ICE. In production set ANNOUNCED_IP to the box's
+      // public IP. Locally it's unset, so fall back to 127.0.0.1: with ip "0.0.0.0"
+      // and no announced address mediasoup advertises a 0.0.0.0 ICE candidate, which
+      // a browser can't reach — so SFU media never connects (P2P is unaffected, since
+      // peers exchange their own host candidates). For LAN testing across devices,
+      // set ANNOUNCED_IP to this machine's LAN IP.
+      announcedAddress: process.env.ANNOUNCED_IP || "127.0.0.1",
     },
     {
       protocol: "udp",
