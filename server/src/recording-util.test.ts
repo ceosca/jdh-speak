@@ -184,19 +184,22 @@ describe("buildMixArgs", () => {
 });
 
 describe("decideMode", () => {
-  it("requires SFU for 3+ peers", () => {
-    assert.deepEqual(decideMode(3, "p2p", false), { mode: "sfu", action: "switch-to-sfu" });
-    assert.deepEqual(decideMode(5, "sfu", false), { mode: "sfu", action: "none" });
+  it("requires SFU for 6+ peers", () => {
+    assert.deepEqual(decideMode(6, "p2p", false), { mode: "sfu", action: "switch-to-sfu" });
+    assert.deepEqual(decideMode(7, "sfu", false), { mode: "sfu", action: "none" });
   });
 
-  it("uses P2P for <=2 peers when not recording", () => {
-    assert.deepEqual(decideMode(2, "sfu", false), { mode: "p2p", action: "switch-to-p2p" });
+  it("uses P2P for <=5 peers when not recording", () => {
+    // 5 is the upper bound of the full-mesh range; switch back down from the SFU.
+    assert.deepEqual(decideMode(5, "sfu", false), { mode: "p2p", action: "switch-to-p2p" });
+    assert.deepEqual(decideMode(3, "p2p", false), { mode: "p2p", action: "none" });
     assert.deepEqual(decideMode(1, "p2p", false), { mode: "p2p", action: "none" });
   });
 
-  it("forces SFU when forceSfu is set even with <=2 peers", () => {
+  it("forces SFU when forceSfu is set even within the P2P range (<=5 peers)", () => {
     // forceSfu is true while recording OR while a music caster is present.
     assert.deepEqual(decideMode(2, "p2p", true), { mode: "sfu", action: "switch-to-sfu" });
+    assert.deepEqual(decideMode(5, "p2p", true), { mode: "sfu", action: "switch-to-sfu" });
     assert.deepEqual(decideMode(1, "sfu", true), { mode: "sfu", action: "none" });
   });
 

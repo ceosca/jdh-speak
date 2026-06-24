@@ -187,18 +187,19 @@ export interface ModeDecision {
 }
 
 // Pure decision for the mode a room should be in:
-//   - 3+ peers always require the SFU.
-//   - `forceSfu` pins the SFU even with <=2 peers. Callers set this when the
+//   - 6+ peers always require the SFU (full-mesh P2P is used for up to 5 peers,
+//     trading the SFU's single server hop for lower latency in small groups).
+//   - `forceSfu` pins the SFU even with <=5 peers. Callers set this when the
 //     server must see/route the media on the SFU: while recording (P2P media
 //     never reaches the server) or when a send-only "music caster" peer is
 //     present (it produces but never sets up P2P, so the room must be SFU).
-//   - otherwise <=2 peers fall back to P2P.
+//   - otherwise <=5 peers fall back to P2P.
 export function decideMode(
   peerCount: number,
   currentMode: RoomMode,
   forceSfu: boolean,
 ): ModeDecision {
-  const target: RoomMode = peerCount > 2 || forceSfu ? "sfu" : "p2p";
+  const target: RoomMode = peerCount > 5 || forceSfu ? "sfu" : "p2p";
   if (target === currentMode) return { mode: currentMode, action: "none" };
   return {
     mode: target,
