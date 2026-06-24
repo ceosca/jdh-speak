@@ -151,8 +151,14 @@ function createAudioPipeline(track: MediaStreamTrack): Omit<PeerAudio, "consumer
   // iOS Safari requires webkit attributes
   (audioEl as unknown as Record<string, boolean>).playsInline = true;
   (audioEl as unknown as Record<string, string>).webkitPlaysinline = "true";
-  // Mute the HTML element — audio is routed through the shared AudioContext
+  // Mute the HTML element — audio is routed through the shared AudioContext.
+  // NOTE: iOS Safari ignores `volume = 0` on media elements (volume is hardware-
+  // controlled there), so the element would play at full volume ALONGSIDE the
+  // Web Audio graph → doubled/"chorus" audio on iOS. `muted` IS honoured on iOS,
+  // so it actually silences the element, leaving the AudioContext as the single
+  // playback path (and preserving per-peer gain/ducking).
   audioEl.volume = 0;
+  audioEl.muted = true;
 
   resumeSharedContext();
 

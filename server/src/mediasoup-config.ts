@@ -1,4 +1,5 @@
 import type { WorkerSettings, RouterOptions, WebRtcTransportOptions } from "mediasoup/types";
+import type { TransportListenInfo } from "mediasoup/types";
 import os from "node:os";
 
 const numCores = os.cpus().length;
@@ -22,14 +23,6 @@ export const routerOptions: RouterOptions = {
         useinbandfec: 1,
         usedtx: 0,
         maxplaybackrate: 48000,
-        // This is a ceiling, not a floor. Voice producers cap themselves well
-        // below it — mono 64k by default, or the per-user hi-fi opt-in's stereo
-        // 128k (client `forceOpusParams` / produce `opusStereo` +
-        // `opusMaxAverageBitrate`) — so the router ceiling does NOT make voice
-        // balloon. It only lets the dedicated stereo "music caster" (Ecobox),
-        // share, and file producers negotiate up to a hi-fi bitrate. Do not
-        // lower this back to 64000 — that would silently clamp the music stream
-        // to voice quality.
         maxaveragebitrate: 256000,
         minptime: 10,
         ptime: 10,
@@ -38,30 +31,44 @@ export const routerOptions: RouterOptions = {
   ],
 };
 
+// ICE candidates announced to clients. We always announce the public IPv4
+// (ANNOUNCED_IP) so remote participants reach the SFU through the router's
+// port-forward. We ALSO announce the LAN IP (ANNOUNCED_IP_LOCAL) when set, so
+// participants on the same local network connect directly over the LAN — no NAT
+// hairpin needed and lower latency. ICE picks whichever candidate actually works
+// for each client, so advertising both is safe. IPv6 is announced only when
+// ANNOUNCED_IP6 is set, to avoid advertising unreachable ULA/link-local addresses.
+//
+// IMPORTANT: these are read at import time (before index.ts loads the .env), so
+// in production the env MUST be present before the process starts. Use systemd's
+// EnvironmentFile=...  (see sonicroom.service) — relying on the app's own .env
+// loader alone leaves ANNOUNCED_IP unset here and ICE falls back to 127.0.0.1.
+const listenInfos: TransportListenInfo[] = [
+  {
+    protocol: "udp",
+    ip: "0.0.0.0",
+    announcedAddress: process.env.ANNOUNCED_IP || "127.0.0.1",
+  },
+];
+
+if (process.env.ANNOUNCED_IP_LOCAL) {
+  listenInfos.push({
+    protocol: "udp",
+    ip: "0.0.0.0",
+    announcedAddress: process.env.ANNOUNCED_IP_LOCAL,
+  });
+}
+
+if (process.env.ANNOUNCED_IP6) {
+  listenInfos.push({
+    protocol: "udp",
+    ip: "::",
+    announcedAddress: process.env.ANNOUNCED_IP6,
+  });
+}
+
 export const transportOptions: WebRtcTransportOptions = {
-  // UDP only. We deliberately don't advertise TCP ICE candidates: the firewall
-  // only opens this range for UDP, and TCP fallback is already handled by the
-  // shared coturn (TURN over 3478/tcp, TURNS over 5349/tls). Advertising
-  // unreachable TCP candidates just made ICE slower (clients probed dead
-  // candidates before relaying via coturn anyway).
-  listenInfos: [
-    {
-      protocol: "udp",
-      ip: "0.0.0.0",
-      // Public IPv4 announced to ICE. In production set ANNOUNCED_IP to the box's
-      // public IP. Locally it's unset, so fall back to 127.0.0.1: with ip "0.0.0.0"
-      // and no announced address mediasoup advertises a 0.0.0.0 ICE candidate, which
-      // a browser can't reach — so SFU media never connects (P2P is unaffected, since
-      // peers exchange their own host candidates). For LAN testing across devices,
-      // set ANNOUNCED_IP to this machine's LAN IP.
-      announcedAddress: process.env.ANNOUNCED_IP || "127.0.0.1",
-    },
-    {
-      protocol: "udp",
-      ip: "::",
-      announcedAddress: process.env.ANNOUNCED_IP6 || undefined,
-    },
-  ],
+  listenInfos,
   initialAvailableOutgoingBitrate: 600000,
   enableUdp: true,
   enableTcp: false,
