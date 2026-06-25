@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="JDH Speak">
+  <rect width="512" height="512" rx="112" fill="#6d28d9" />
+  <path
+    fill="#ffffff"
+    d="M256 120c-79 0-143 64-143 143v96a40 40 0 0 0 40 40h20a28 28 0 0 0 28-28v-72a28 28 0 0 0-28-28h-40v-8c0-68 55-123 123-123s123 55 123 123v8h-40a28 28 0 0 0-28 28v72a28 28 0 0 0 28 28h20a40 40 0 0 0 40-40v-96c0-79-64-143-143-143z"
+  />
+</svg>
