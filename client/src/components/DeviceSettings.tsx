@@ -11,17 +11,14 @@ import { m } from "../paraglide/messages.js";
 export function DeviceSettings() {
   const micDeviceId = useRoomStore((s) => s.micDeviceId);
   const speakerDeviceId = useRoomStore((s) => s.speakerDeviceId);
-  const voiceProcessingEnabled = useRoomStore((s) => s.voiceProcessingEnabled);
   const setMicDeviceId = useRoomStore((s) => s.setMicDeviceId);
   const setSpeakerDeviceId = useRoomStore((s) => s.setSpeakerDeviceId);
-  const setVoiceProcessingEnabled = useRoomStore((s) => s.setVoiceProcessingEnabled);
 
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
   const [speakers, setSpeakers] = useState<MediaDeviceInfo[]>([]);
   const micSelectId = useId();
   const micHintId = useId();
   const speakerSelectId = useId();
-  const voiceProcessingId = useId();
 
   const refresh = useCallback(async () => {
     try {
@@ -96,33 +93,6 @@ export function DeviceSettings() {
           </select>
         </div>
       )}
-
-      {/* Each toggle's hint was a `title` tooltip — invisible to keyboard/SR
-          users and only shown on hover. Promote it to visible help text tied to
-          the checkbox via aria-describedby (the Lobby checkbox pattern). The
-          hint id is derived from the checkbox's useId. Indented to line up under
-          the label text (checkbox 16px + gap 10px = 26px). */}
-      <div>
-        <label
-          htmlFor={voiceProcessingId}
-          className="flex cursor-pointer select-none items-center gap-2.5"
-        >
-          <input
-            id={voiceProcessingId}
-            type="checkbox"
-            checked={voiceProcessingEnabled}
-            onChange={(e) => setVoiceProcessingEnabled(e.target.checked)}
-            aria-describedby={`${voiceProcessingId}-hint`}
-            className="h-4 w-4 rounded border-sonic-600 bg-sonic-700 accent-sonic-accent"
-          />
-          <span className="text-xs font-medium text-sonic-300">
-            {m.settings_voice_processing_label()}
-          </span>
-        </label>
-        <p id={`${voiceProcessingId}-hint`} className="mt-1 pl-[26px] text-xs text-sonic-400">
-          {m.settings_voice_processing_hint()}
-        </p>
-      </div>
 
       {/* Browsers hide device names until mic permission is granted (e.g. in
           the lobby before the first test) — explain the bare lists. Tied to the

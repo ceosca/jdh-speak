@@ -1,11 +1,4 @@
-import type {
-  Router,
-  WebRtcTransport,
-  Producer,
-  Consumer,
-  Worker,
-  AudioLevelObserver,
-} from "mediasoup/types";
+import type { Router, WebRtcTransport, Producer, Consumer, Worker } from "mediasoup/types";
 import { routerOptions, transportOptions } from "./mediasoup-config.js";
 import type { ChatMessage } from "./chat-util.js";
 
@@ -44,19 +37,6 @@ export interface Room {
   // voice track AND of any audio share), so the server has to route it — an
   // active file streamer forces SFU just like a caster/sharer does.
   fileStreamers: Set<string>;
-  // Watches VOICE producers only (music producers are never added) to drive
-  // auto-ducking: when someone talks, listeners lower the music peer's volume.
-  audioLevelObserver: AudioLevelObserver;
-  // Latched ducking state so we only broadcast on transitions, and whether the
-  // observer's events have been wired (done once per room in signaling).
-  voiceActive: boolean;
-  observerWired: boolean;
-  // Room-wide auto-ducking toggle (default on). When off, listeners stop
-  // ducking ALL music-type streams (caster, share, file) entirely — the level
-  // observer keeps running, but clients ignore the duck signal (gated in
-  // effectiveGain). Synced via the join response + a `ducking-changed`
-  // broadcast; persists for the room's lifetime.
-  duckingEnabled: boolean;
   // Rolling chat history (bounded to CHAT_HISTORY_MAX) so late joiners receive
   // recent messages on join. Newest last.
   messages: ChatMessage[];
@@ -84,14 +64,6 @@ export async function getOrCreateRoom(roomName: string): Promise<Room> {
   const worker = getNextWorker();
   const router = await worker.createRouter(routerOptions);
 
-  // -50 dBov ignores room/keyboard noise but catches normal speech; a short
-  // interval keeps ducking responsive. Closed automatically with the router.
-  const audioLevelObserver = await router.createAudioLevelObserver({
-    maxEntries: 1,
-    threshold: -50,
-    interval: 300,
-  });
-
   const room: Room = {
     name: roomName,
     router,
@@ -101,10 +73,6 @@ export async function getOrCreateRoom(roomName: string): Promise<Room> {
     casters: new Set(),
     sharers: new Set(),
     fileStreamers: new Set(),
-    audioLevelObserver,
-    voiceActive: false,
-    observerWired: false,
-    duckingEnabled: true,
     messages: [],
   };
   rooms.set(roomName, room);

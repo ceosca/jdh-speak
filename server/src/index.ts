@@ -10,7 +10,6 @@ import { workerSettings, numWorkers } from "./mediasoup-config.js";
 import { setWorkers } from "./room-manager.js";
 import { createSignalingServer } from "./signaling.js";
 import { RecordingManager } from "./recording.js";
-import { StreamManager } from "./streaming.js";
 import { createZipStream } from "./zip-stream.js";
 import {
   assertPublicAudioUrl,
@@ -64,8 +63,7 @@ async function main() {
   const httpServer = createServer(app);
 
   const recordingManager = new RecordingManager();
-  const streamManager = new StreamManager();
-  const { postChatMessage } = createSignalingServer(httpServer, recordingManager, streamManager);
+  const { postChatMessage } = createSignalingServer(httpServer, recordingManager);
   // Health check
   app.get("/health", (_req, res) => {
     res.json({ status: "ok", workers: workers.length });
@@ -332,10 +330,8 @@ async function main() {
   // Clean up recordings and live streams (ffmpeg processes, temp files) on
   // shutdown.
   const shutdown = (signal: string) => {
-    console.log(`Received ${signal}, cleaning up recordings and streams...`);
-    Promise.allSettled([recordingManager.stopAll(), streamManager.stopAll()]).finally(() =>
-      process.exit(0),
-    );
+    console.log(`Received ${signal}, cleaning up recordings...`);
+    Promise.allSettled([recordingManager.stopAll()]).finally(() => process.exit(0));
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
