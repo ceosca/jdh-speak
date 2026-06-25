@@ -1,6 +1,6 @@
 import { useEffect, useCallback, useRef, useState } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { Headphones, Users, Loader2, Circle, MessageSquare, Radio } from "lucide-react";
+import { Headphones, Users, Loader2, Circle, MessageSquare } from "lucide-react";
 import { useRoomStore } from "../stores/room";
 import { useMediasoup } from "../hooks/useMediasoup";
 import { formatMessage, messageContent } from "../lib/chat";
@@ -70,8 +70,6 @@ export function Room() {
     stopFileStream,
     toggleFilePlayback,
     toggleRecording,
-    startStreaming,
-    stopStreaming,
     setPeerVolume,
     setMicGain,
     sendChatMessage,
@@ -128,7 +126,6 @@ export function Room() {
   const micGain = useRoomStore((s) => s.micGain);
   const mode = useRoomStore((s) => s.mode);
   const isRecording = useRoomStore((s) => s.isRecording);
-  const isStreaming = useRoomStore((s) => s.isStreaming);
   const fileStreamName = useRoomStore((s) => s.fileStreamName);
   const fileStreamPlaying = useRoomStore((s) => s.fileStreamPlaying);
   const messages = useRoomStore((s) => s.messages);
@@ -337,15 +334,6 @@ export function Room() {
               REC
             </span>
           )}
-          {isStreaming && (
-            <span
-              className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs font-medium bg-purple-500/20 text-purple-300"
-              title={m.room_streaming_title()}
-            >
-              <Radio className="h-2.5 w-2.5 animate-pulse" />
-              LIVE
-            </span>
-          )}
           <span
             className={`rounded px-1.5 py-0.5 text-xs font-medium ${
               mode === "p2p" ? "bg-green-500/20 text-green-400" : "bg-blue-500/20 text-blue-400"
@@ -441,8 +429,6 @@ export function Room() {
           onToggleFileStream={toggleFileStream}
           onToggleDucking={toggleDucking}
           onToggleRecording={toggleRecording}
-          onStartStreaming={startStreaming}
-          onStopStreaming={stopStreaming}
           onLeave={handleLeave}
         />
       </footer>

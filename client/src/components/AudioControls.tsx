@@ -11,12 +11,10 @@ import {
   FileArchive,
   FileMusic,
   AudioLines,
-  Radio,
   Settings,
 } from "lucide-react";
 import { useRoomStore } from "../stores/room";
 import { DeviceSettings } from "./DeviceSettings";
-import { StreamSettings } from "./StreamSettings";
 import { m } from "../paraglide/messages.js";
 
 interface AudioControlsProps {
@@ -28,8 +26,6 @@ interface AudioControlsProps {
   // Flip the room-wide auto-ducking toggle (music dips under voice, or not).
   onToggleDucking: () => void;
   onToggleRecording: () => void;
-  onStartStreaming: () => Promise<void>;
-  onStopStreaming: () => Promise<void>;
   onLeave: () => void;
 }
 
@@ -39,8 +35,6 @@ export function AudioControls({
   onToggleFileStream,
   onToggleDucking,
   onToggleRecording,
-  onStartStreaming,
-  onStopStreaming,
   onLeave,
 }: AudioControlsProps) {
   const isMuted = useRoomStore((s) => s.isMuted);
@@ -50,14 +44,10 @@ export function AudioControls({
   const duckingEnabled = useRoomStore((s) => s.duckingEnabled);
   const isRecording = useRoomStore((s) => s.isRecording);
   const recordingId = useRoomStore((s) => s.recordingId);
-  const isStreaming = useRoomStore((s) => s.isStreaming);
 
-  // The gear (device pickers) and the streaming button each open a popover.
-  // Only one is open at a time — opening one closes the other.
+  // The gear (device pickers) opens a popover.
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [streamOpen, setStreamOpen] = useState(false);
   const settingsPanelRef = useRef<HTMLDivElement>(null);
-  const streamPanelRef = useRef<HTMLDivElement>(null);
 
   // Roving tabindex: the toolbar is a single tab stop and left/right arrows
   // move focus between its controls (ARIA toolbar pattern).
@@ -69,29 +59,13 @@ export function AudioControls({
   useEffect(() => {
     if (settingsOpen) settingsPanelRef.current?.querySelector("select")?.focus();
   }, [settingsOpen]);
-  useEffect(() => {
-    if (streamOpen) {
-      streamPanelRef.current
-        ?.querySelector<HTMLElement>("input:not([disabled]), select:not([disabled]), button")
-        ?.focus();
-    }
-  }, [streamOpen]);
 
   const openSettings = useCallback(() => {
-    setStreamOpen(false);
     setSettingsOpen((o) => !o);
-  }, []);
-  const openStream = useCallback(() => {
-    setSettingsOpen(false);
-    setStreamOpen((o) => !o);
   }, []);
   const closeSettings = useCallback(() => {
     setSettingsOpen(false);
     itemRefs.current.get("settings")?.focus();
-  }, []);
-  const closeStream = useCallback(() => {
-    setStreamOpen(false);
-    itemRefs.current.get("stream")?.focus();
   }, []);
 
   const orderedIds = [
@@ -101,7 +75,6 @@ export function AudioControls({
     "duck",
     "record",
     ...(recordingId ? ["download", "download-tracks"] : []),
-    "stream",
     "settings",
     "leave",
   ];
@@ -138,8 +111,8 @@ export function AudioControls({
   };
 
   return (
-    // Escape is handled on the wrapper so it closes whichever popover is open,
-    // no matter where focus sits (inside the panel or still on the button).
+    // Escape is handled on the wrapper so it closes the popover, no matter where
+    // focus sits (inside the panel or still on the button).
     <div
       className="relative"
       onKeyDown={(e) => {
@@ -147,9 +120,6 @@ export function AudioControls({
         if (settingsOpen) {
           e.stopPropagation();
           closeSettings();
-        } else if (streamOpen) {
-          e.stopPropagation();
-          closeStream();
         }
       }}
     >
@@ -164,19 +134,6 @@ export function AudioControls({
         >
           <h2 className="mb-3 text-sm font-semibold text-sonic-100">{m.settings_heading()}</h2>
           <DeviceSettings />
-        </div>
-      )}
-
-      {/* Streaming: the Icecast target lives right here, where you press start —
-          enter the URL/credentials and Start streaming. */}
-      {streamOpen && (
-        <div
-          ref={streamPanelRef}
-          className="absolute bottom-full left-1/2 z-10 mb-3 max-h-[75vh] w-80 -translate-x-1/2 overflow-y-auto rounded-xl border border-sonic-600 bg-sonic-800 p-4 shadow-2xl"
-          role="dialog"
-          aria-label={m.settings_streaming_heading()}
-        >
-          <StreamSettings onStartStreaming={onStartStreaming} onStopStreaming={onStopStreaming} />
         </div>
       )}
 
@@ -310,25 +267,6 @@ export function AudioControls({
             <span className="text-sm font-medium">{m.controls_download_tracks()}</span>
           </a>
         )}
-
-        {/* Live streaming: opens the Icecast target popover (where you start). A
-            live stream tints it purple to match the header's LIVE badge. */}
-        <button
-          {...item("stream")}
-          onClick={openStream}
-          className={`flex h-11 w-11 items-center justify-center rounded-full transition-all ${
-            isStreaming
-              ? "bg-purple-500/20 text-purple-300 hover:bg-purple-500/30"
-              : streamOpen
-                ? "bg-sonic-accent text-white hover:bg-sonic-accent/90"
-                : "bg-sonic-700 text-sonic-200 hover:bg-sonic-600"
-          }`}
-          aria-label={m.settings_streaming_heading()}
-          aria-expanded={streamOpen}
-          title={isStreaming ? m.room_streaming_title() : m.streaming_start_title()}
-        >
-          <Radio className={`h-5 w-5 ${isStreaming ? "animate-pulse" : ""}`} />
-        </button>
 
         <button
           {...item("settings")}
