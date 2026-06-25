@@ -4,7 +4,7 @@ import { Device } from "mediasoup-client";
 import type { Transport, Producer, Consumer } from "mediasoup-client/types";
 import { forceOpusParams } from "../lib/sdp-munger";
 import { applySpeakerToContext } from "../lib/audio-devices";
-import { isIOS, microphoneConstraints } from "../lib/microphone";
+import { isIOS, getMicrophoneStream } from "../lib/microphone";
 import { playCue } from "../lib/sounds";
 import { formatMessage, RateLimiter, META_SEP, type ChatMessage } from "../lib/chat";
 import {
@@ -512,9 +512,7 @@ export function useMediasoup() {
     void (async () => {
       let stream: MediaStream;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: microphoneConstraints(micDeviceId, voiceProcessingEnabled),
-        });
+        stream = await getMicrophoneStream(micDeviceId, voiceProcessingEnabled);
       } catch (err) {
         console.error("[mic] device switch failed:", err);
         return;
@@ -555,12 +553,10 @@ export function useMediasoup() {
     if (track && track.readyState === "live") return existing!;
 
     // Re-acquire mic (on the user's selected device, if any)
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: microphoneConstraints(
-        useRoomStore.getState().micDeviceId,
-        useRoomStore.getState().voiceProcessingEnabled,
-      ),
-    });
+    const stream = await getMicrophoneStream(
+      useRoomStore.getState().micDeviceId,
+      useRoomStore.getState().voiceProcessingEnabled,
+    );
     localStreamRef.current = stream;
     connectMicToGraph(stream);
     return stream;
@@ -1027,12 +1023,10 @@ export function useMediasoup() {
       let stream: MediaStream | null = null;
       if (!opts?.noMic) {
         try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: microphoneConstraints(
-              store.getState().micDeviceId,
-              store.getState().voiceProcessingEnabled,
-            ),
-          });
+          stream = await getMicrophoneStream(
+            store.getState().micDeviceId,
+            store.getState().voiceProcessingEnabled,
+          );
         } catch (err) {
           console.warn("[mic] no microphone — joining in listen/chat-only mode:", err);
         }
