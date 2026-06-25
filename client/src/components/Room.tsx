@@ -5,7 +5,6 @@ import { useRoomStore, loadStoredDisplayName } from "../stores/room";
 import { useMediasoup } from "../hooks/useMediasoup";
 import { formatMessage, messageContent } from "../lib/chat";
 import { getInstanceName } from "../lib/branding";
-import { activateMediaSession, deactivateMediaSession } from "../lib/media-session";
 import { ParticipantCard } from "./ParticipantCard";
 import { AudioControls } from "./AudioControls";
 import { FileStreamPlayer } from "./FileStreamPlayer";
@@ -184,15 +183,6 @@ export function Room() {
   useEffect(() => {
     if (joinState === "joined") postToHost("videoConferenceJoined");
   }, [joinState]);
-
-  // While in the call, present an active "media session" so the browser keeps the
-  // audio alive in the background (esp. Android with the screen off / app
-  // switched). Safe no-op on platforms that don't support it.
-  useEffect(() => {
-    if (joinState !== "joined") return;
-    activateMediaSession(roomName, getInstanceName());
-    return () => deactivateMediaSession();
-  }, [joinState, roomName]);
 
   useEffect(() => {
     if (joinState !== "joined") return;
