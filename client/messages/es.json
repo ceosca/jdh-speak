@@ -194,5 +194,26 @@
   "announce_voice_processing_off": "Procesamiento de voz desactivado",
   "announce_music_started": "{name} empezó a emitir música",
   "announce_music_stopped": "{name} dejó de emitir música",
-  "announce_chat_hint": "Pulsa Alt más un número del 1 al 0 para oír los últimos diez mensajes, incluso con el panel de chat cerrado. Pulsa el mismo número otra vez para copiar ese mensaje."
+  "announce_chat_hint": "Pulsa Alt más un número del 1 al 0 para oír los últimos diez mensajes, incluso con el panel de chat cerrado. Pulsa el mismo número otra vez para copiar ese mensaje.",
+
+  "announce_recording_on": "Grabación iniciada",
+  "announce_recording_off": "Grabación detenida (se puede descargar)",
+
+  "room_participants_heading": "Participantes",
+  "controls_heading": "Controles de audio",
+  "room_change_name": "Cambiar nombre",
+
+  "name_prompt_title": "¿Cómo te quieres llamar?",
+  "name_prompt_label": "Tu nombre",
+  "name_prompt_placeholder": "Escribe tu nombre",
+  "name_prompt_confirm": "Entrar",
+  "name_prompt_save": "Guardar",
+
+  "controls_noise_suppression_enable": "Habilitar supresión de ruidos",
+  "controls_noise_suppression_disable": "Deshabilitar supresión de ruidos",
+  "controls_noise_suppression_on_title": "Supresión de ruidos activada: control de eco, limpieza de ruido y nivel automático",
+  "controls_noise_suppression_off_title": "Supresión de ruidos desactivada: el micrófono se envía sin procesar",
+
+  "card_mic_on": "micrófono activado",
+  "card_mic_off": "micrófono desactivado"
 }

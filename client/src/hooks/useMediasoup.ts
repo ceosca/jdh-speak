@@ -14,8 +14,8 @@ import {
   announce_music_stopped,
   announce_chat_hint,
   announce_a_participant,
-  announce_recording_started,
-  announce_recording_stopped,
+  announce_recording_on,
+  announce_recording_off,
   announce_recording_unavailable,
   announce_recording_failed,
   announce_mic_muted,
@@ -1252,27 +1252,22 @@ export function useMediasoup() {
         playCue(sharedAudioContext, "leave");
       });
 
-      // --- Recording (room-wide; the server forces SFU while recording) ---
-      socket.on("recording-started", ({ recordingId, by }: { recordingId: string; by: string }) => {
-        // Two near-simultaneous starts can broadcast this twice for the same
-        // recording — announce it only once.
-        const s = store.getState();
-        if (s.isRecording && s.recordingId === recordingId) return;
-        s.setRecording(true, recordingId);
-        s.announceEvent(announce_recording_started({ name: by }));
-      });
-
-      socket.on("recording-stopped", () => {
-        // Keep recordingId so the download link stays available after stopping.
-        store.getState().setRecording(false);
-        store.getState().announceEvent(announce_recording_stopped());
-      });
-
+      // --- Recording (private to whoever started it; silent to others) ---
       // The finished recording was cleaned up server-side (TTL) — drop the link.
+      // Only matters to the initiator (the only client holding a recordingId).
       socket.on("recording-expired", () => {
+        if (!store.getState().recordingId) return;
         store.getState().setRecording(false, null);
-        store.getState().announceEvent(announce_recording_unavailable());
+        store.getState().announce(announce_recording_unavailable());
       });
+
+      // A peer changed their display name live — update their card.
+      socket.on(
+        "peer-renamed",
+        ({ peerId, displayName }: { peerId: string; displayName: string }) => {
+          store.getState().setPeerName(peerId, displayName);
+        },
+      );
 
       // P2P signaling relay
       socket.on(
@@ -1925,6 +1920,8 @@ export function useMediasoup() {
     try {
       const res = await emit<{ recordingId: string }>("start-recording");
       store.getState().setRecording(true, res.recordingId);
+      // Local-only confirmation — recording is NOT announced to the room.
+      store.getState().announce(announce_recording_on());
     } catch (err) {
       console.error("[recording] failed to start:", err);
       store.getState().announceEvent(announce_recording_failed());
@@ -1938,15 +1935,33 @@ export function useMediasoup() {
     } catch (err) {
       console.error("[recording] failed to stop:", err);
     }
-    // The server also broadcasts recording-stopped; mark stopped locally but
-    // keep recordingId so the download link remains until the file expires.
+    // Mark stopped locally but keep recordingId so the download link remains
+    // until the file expires. Local-only confirmation (not announced to the room).
     store.getState().setRecording(false);
+    store.getState().announce(announce_recording_off());
   }, [emit, store]);
 
   const toggleRecording = useCallback(async () => {
     if (store.getState().isRecording) await stopRecording();
     else await startRecording();
   }, [startRecording, stopRecording, store]);
+
+  // Change your display name live: persist it, tell the server (which broadcasts
+  // peer-renamed to other peers), and reflect it locally.
+  const rename = useCallback(
+    async (newName: string) => {
+      const name = newName
+        .trim()
+        .replace(/[<>"'&]/g, "")
+        .slice(0, 256);
+      if (!name) return;
+      store.getState().setDisplayName(name);
+      await emit("rename", { displayName: name }).catch((err) => {
+        console.error("[rename] failed:", err);
+      });
+    },
+    [emit, store],
+  );
 
   // Live mic-gain control: persists the value and ramps the outgoing gain node.
   const setMicGain = useCallback(
@@ -2053,6 +2068,7 @@ export function useMediasoup() {
     toggleRecording,
     startRecording,
     stopRecording,
+    rename,
     setPeerVolume,
     setMicGain,
     sendChatMessage,

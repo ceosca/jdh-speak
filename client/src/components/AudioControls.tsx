@@ -1,17 +1,15 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Mic,
   MicOff,
-  LogOut,
   ScreenShare,
   ScreenShareOff,
-  Circle,
-  Square,
   Download,
   FileArchive,
   FileMusic,
-  AudioLines,
+  Waves,
   Settings,
+  MessageSquare,
 } from "lucide-react";
 import { useRoomStore } from "../stores/room";
 import { DeviceSettings } from "./DeviceSettings";
@@ -20,111 +18,68 @@ import { m } from "../paraglide/messages.js";
 interface AudioControlsProps {
   onToggleMute: () => void;
   onToggleAudioShare: () => void;
-  // Stream audio: opens the source chooser when idle, stops the stream when one
+  // "Emitir audio": opens the source chooser when idle, stops the stream when one
   // is active (the floating player also offers play/pause + stop).
   onToggleFileStream: () => void;
-  // Flip the room-wide auto-ducking toggle (music dips under voice, or not).
-  onToggleDucking: () => void;
-  onToggleRecording: () => void;
-  onLeave: () => void;
+  onToggleChat: () => void;
+  chatOpen: boolean;
 }
 
+// The bottom control bar. Plain buttons (no ARIA toolbar / roving tabindex) so a
+// screen reader reads each as a normal Tab stop under the "Controles de audio"
+// heading, instead of announcing "barra de herramientas / fuera de barra de
+// herramientas". Recording has no button — it's a keyboard shortcut (Alt+Shift+R)
+// handled in Room; its download links appear here only while a recording exists.
 export function AudioControls({
   onToggleMute,
   onToggleAudioShare,
   onToggleFileStream,
-  onToggleDucking,
-  onToggleRecording,
-  onLeave,
+  onToggleChat,
+  chatOpen,
 }: AudioControlsProps) {
   const isMuted = useRoomStore((s) => s.isMuted);
   const hasMic = useRoomStore((s) => s.hasMic);
   const isSharingAudio = useRoomStore((s) => s.isSharingAudio);
   const isStreamingFile = useRoomStore((s) => s.fileStreamName != null);
-  const duckingEnabled = useRoomStore((s) => s.duckingEnabled);
-  const isRecording = useRoomStore((s) => s.isRecording);
   const recordingId = useRoomStore((s) => s.recordingId);
+  const voiceProcessingEnabled = useRoomStore((s) => s.voiceProcessingEnabled);
+  const setVoiceProcessingEnabled = useRoomStore((s) => s.setVoiceProcessingEnabled);
 
-  // The gear (device pickers) opens a popover.
+  // The gear (device pickers) opens a popover above the bar.
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsPanelRef = useRef<HTMLDivElement>(null);
+  const settingsBtnRef = useRef<HTMLButtonElement>(null);
 
-  // Roving tabindex: the toolbar is a single tab stop and left/right arrows
-  // move focus between its controls (ARIA toolbar pattern).
-  const itemRefs = useRef(new Map<string, HTMLElement>());
-  const [activeId, setActiveId] = useState("mute");
-
-  // Dialog focus management: move focus into a panel when it opens (its first
-  // enabled control), and return it to the triggering button on close.
   useEffect(() => {
     if (settingsOpen) settingsPanelRef.current?.querySelector("select")?.focus();
   }, [settingsOpen]);
 
-  const openSettings = useCallback(() => {
-    setSettingsOpen((o) => !o);
-  }, []);
   const closeSettings = useCallback(() => {
     setSettingsOpen(false);
-    itemRefs.current.get("settings")?.focus();
+    settingsBtnRef.current?.focus();
   }, []);
 
-  const orderedIds = [
-    "mute",
-    "share",
-    "file",
-    "duck",
-    "record",
-    ...(recordingId ? ["download", "download-tracks"] : []),
-    "settings",
-    "leave",
-  ];
-  // If the active control vanished (e.g. the download link), fall back to the first.
-  const effectiveActiveId = orderedIds.includes(activeId) ? activeId : orderedIds[0];
-
-  const register = (id: string) => (el: HTMLElement | null) => {
-    if (el) itemRefs.current.set(id, el);
-    else itemRefs.current.delete(id);
-  };
-
-  const item = (id: string) => ({
-    ref: register(id),
-    tabIndex: effectiveActiveId === id ? 0 : -1,
-  });
-
-  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    const { key } = e;
-    if (key !== "ArrowRight" && key !== "ArrowLeft" && key !== "Home" && key !== "End") return;
-    e.preventDefault();
-    const idx = orderedIds.indexOf(effectiveActiveId);
-    const last = orderedIds.length - 1;
-    const nextIdx =
-      key === "Home"
-        ? 0
-        : key === "End"
-          ? last
-          : key === "ArrowRight"
-            ? (idx + 1) % orderedIds.length
-            : (idx - 1 + orderedIds.length) % orderedIds.length;
-    const nextId = orderedIds[nextIdx];
-    setActiveId(nextId);
-    itemRefs.current.get(nextId)?.focus();
-  };
+  const btn =
+    "flex h-12 min-w-12 items-center justify-center gap-2 rounded-full px-3 transition-all";
+  const idle = "bg-sonic-700 text-sonic-200 hover:bg-sonic-600";
+  const active = "bg-sonic-accent text-white hover:bg-sonic-accent/90";
 
   return (
-    // Escape is handled on the wrapper so it closes the popover, no matter where
-    // focus sits (inside the panel or still on the button).
-    <div
+    <section
+      aria-labelledby="controls-heading"
       className="relative"
       onKeyDown={(e) => {
-        if (e.key !== "Escape") return;
-        if (settingsOpen) {
+        if (e.key === "Escape" && settingsOpen) {
           e.stopPropagation();
           closeSettings();
         }
       }}
     >
-      {/* Mic/speaker pickers — same DeviceSettings as the lobby, so a change
-          here applies live to the call and is remembered for next time. */}
+      <h2 id="controls-heading" className="sr-only">
+        {m.controls_heading()}
+      </h2>
+
+      {/* Device pickers popover (mic/speaker). */}
       {settingsOpen && (
         <div
           ref={settingsPanelRef}
@@ -132,31 +87,17 @@ export function AudioControls({
           role="dialog"
           aria-label={m.settings_heading()}
         >
-          <h2 className="mb-3 text-sm font-semibold text-sonic-100">{m.settings_heading()}</h2>
+          <h3 className="mb-3 text-sm font-semibold text-sonic-100">{m.settings_heading()}</h3>
           <DeviceSettings />
         </div>
       )}
 
-      <div
-        className="flex items-center justify-center gap-3 rounded-2xl border border-sonic-600 bg-sonic-800 p-3"
-        role="toolbar"
-        aria-label={m.controls_toolbar_label()}
-        onKeyDown={onKeyDown}
-      >
-        {/* Mute. With no microphone (listen/chat-only) there's nothing to mute:
-            stays focusable for discoverability but is aria-disabled, relabelled,
-            and shows a struck-through mic. */}
+      <div className="flex flex-wrap items-center justify-center gap-3 rounded-2xl border border-sonic-600 bg-sonic-800 p-3">
+        {/* Mute */}
         <button
-          {...item("mute")}
           onClick={hasMic ? onToggleMute : undefined}
           aria-disabled={!hasMic}
-          className={`flex h-11 w-11 items-center justify-center rounded-full transition-all ${
-            !hasMic
-              ? "cursor-not-allowed bg-sonic-700 text-sonic-500"
-              : isMuted
-                ? "bg-muted/20 text-muted hover:bg-muted/30"
-                : "bg-sonic-700 text-sonic-200 hover:bg-sonic-600"
-          }`}
+          className={`${btn} ${!hasMic ? "cursor-not-allowed bg-sonic-700 text-sonic-500" : isMuted ? "bg-muted/20 text-muted hover:bg-muted/30" : idle}`}
           aria-label={
             hasMic ? (isMuted ? m.controls_unmute() : m.controls_mute()) : m.controls_no_mic()
           }
@@ -165,14 +106,10 @@ export function AudioControls({
           {!hasMic || isMuted ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
         </button>
 
+        {/* Share system/tab audio */}
         <button
-          {...item("share")}
           onClick={onToggleAudioShare}
-          className={`flex h-11 w-11 items-center justify-center rounded-full transition-all ${
-            isSharingAudio
-              ? "bg-sonic-accent text-white hover:bg-sonic-accent/90"
-              : "bg-sonic-700 text-sonic-200 hover:bg-sonic-600"
-          }`}
+          className={`${btn} ${isSharingAudio ? active : idle}`}
           aria-label={isSharingAudio ? m.controls_stop_share() : m.controls_share()}
           aria-pressed={isSharingAudio}
           title={isSharingAudio ? m.controls_stop_share_title() : m.controls_share_title()}
@@ -184,14 +121,10 @@ export function AudioControls({
           )}
         </button>
 
+        {/* Emit audio (file/URL/server) */}
         <button
-          {...item("file")}
           onClick={onToggleFileStream}
-          className={`flex h-11 w-11 items-center justify-center rounded-full transition-all ${
-            isStreamingFile
-              ? "bg-sonic-accent text-white hover:bg-sonic-accent/90"
-              : "bg-sonic-700 text-sonic-200 hover:bg-sonic-600"
-          }`}
+          className={`${btn} ${isStreamingFile ? active : idle}`}
           aria-label={isStreamingFile ? m.controls_stop_file() : m.controls_stream_file()}
           aria-pressed={isStreamingFile}
           title={isStreamingFile ? m.controls_stop_file_title() : m.controls_stream_file_title()}
@@ -199,83 +132,30 @@ export function AudioControls({
           <FileMusic className="h-5 w-5" />
         </button>
 
-        {/* Auto-ducking toggle (room-wide). Default on shows as a normal control;
-            turning it OFF tints it amber to flag that music no longer dips under
-            voice for anyone in the room. */}
+        {/* Noise-suppression toggle (echo cancel / noise / auto-gain). */}
         <button
-          {...item("duck")}
-          onClick={onToggleDucking}
-          className={`flex h-11 w-11 items-center justify-center rounded-full transition-all ${
-            duckingEnabled
-              ? "bg-sonic-700 text-sonic-200 hover:bg-sonic-600"
-              : "bg-amber-500/20 text-amber-400 hover:bg-amber-500/30"
-          }`}
-          aria-label={duckingEnabled ? m.controls_ducking_disable() : m.controls_ducking_enable()}
-          aria-pressed={duckingEnabled}
-          title={duckingEnabled ? m.controls_ducking_on_title() : m.controls_ducking_off_title()}
+          onClick={() => setVoiceProcessingEnabled(!voiceProcessingEnabled)}
+          className={`${btn} ${voiceProcessingEnabled ? active : idle}`}
+          aria-label={
+            voiceProcessingEnabled
+              ? m.controls_noise_suppression_disable()
+              : m.controls_noise_suppression_enable()
+          }
+          aria-pressed={voiceProcessingEnabled}
+          title={
+            voiceProcessingEnabled
+              ? m.controls_noise_suppression_on_title()
+              : m.controls_noise_suppression_off_title()
+          }
         >
-          <AudioLines className="h-5 w-5" />
+          <Waves className="h-5 w-5" />
         </button>
 
+        {/* Device settings (mic/speaker) */}
         <button
-          {...item("record")}
-          onClick={onToggleRecording}
-          className={`flex h-11 w-11 items-center justify-center rounded-full transition-all ${
-            isRecording
-              ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
-              : "bg-sonic-700 text-sonic-200 hover:bg-sonic-600"
-          }`}
-          aria-label={isRecording ? m.controls_stop_recording() : m.controls_record()}
-          aria-pressed={isRecording}
-          title={isRecording ? m.controls_stop_recording_title() : m.controls_record_title()}
-        >
-          {isRecording ? (
-            <Square className="h-4 w-4 fill-current" />
-          ) : (
-            <Circle className="h-5 w-5 fill-red-500 text-red-500" />
-          )}
-        </button>
-
-        {recordingId && (
-          <a
-            {...item("download")}
-            href={`/api/recordings/${encodeURIComponent(recordingId)}/download`}
-            download={`sonicroom-${recordingId}.ogg`}
-            className="flex h-11 items-center gap-2 rounded-full bg-sonic-700 px-4 text-sonic-200 transition-all hover:bg-sonic-600"
-            aria-label={m.controls_download_recording()}
-            title={isRecording ? m.controls_download_active_title() : m.controls_download_title()}
-          >
-            <Download className="h-4 w-4" />
-            <span className="text-sm font-medium">{m.controls_download()}</span>
-          </a>
-        )}
-
-        {recordingId && (
-          <a
-            {...item("download-tracks")}
-            href={`/api/recordings/${encodeURIComponent(recordingId)}/tracks`}
-            download={`sonicroom-${recordingId}-tracks.zip`}
-            className="flex h-11 items-center gap-2 rounded-full bg-sonic-700 px-4 text-sonic-200 transition-all hover:bg-sonic-600"
-            aria-label={m.controls_download_tracks_recording()}
-            title={
-              isRecording
-                ? m.controls_download_tracks_active_title()
-                : m.controls_download_tracks_title()
-            }
-          >
-            <FileArchive className="h-4 w-4" />
-            <span className="text-sm font-medium">{m.controls_download_tracks()}</span>
-          </a>
-        )}
-
-        <button
-          {...item("settings")}
-          onClick={openSettings}
-          className={`flex h-11 w-11 items-center justify-center rounded-full transition-all ${
-            settingsOpen
-              ? "bg-sonic-accent text-white hover:bg-sonic-accent/90"
-              : "bg-sonic-700 text-sonic-200 hover:bg-sonic-600"
-          }`}
+          ref={settingsBtnRef}
+          onClick={() => setSettingsOpen((o) => !o)}
+          className={`${btn} ${settingsOpen ? active : idle}`}
           aria-label={m.settings_open()}
           aria-expanded={settingsOpen}
           title={m.settings_open()}
@@ -283,18 +163,44 @@ export function AudioControls({
           <Settings className="h-5 w-5" />
         </button>
 
-        <div className="h-8 w-px bg-sonic-600" role="separator" />
-
+        {/* Chat */}
         <button
-          {...item("leave")}
-          onClick={onLeave}
-          className="flex h-11 items-center gap-2 rounded-full bg-muted/20 px-4 text-muted transition-all hover:bg-muted/30"
-          aria-label={m.controls_leave_room()}
+          onClick={onToggleChat}
+          className={`${btn} ${chatOpen ? active : idle}`}
+          aria-label={chatOpen ? m.room_chat_close() : m.room_chat_open()}
+          aria-expanded={chatOpen}
+          title={m.room_toggle_chat_title()}
         >
-          <LogOut className="h-4 w-4" />
-          <span className="text-sm font-medium">{m.controls_leave()}</span>
+          <MessageSquare className="h-5 w-5" />
         </button>
+
+        {/* Recording download links — only while a recording exists (started via
+            the Alt+Shift+R shortcut). */}
+        {recordingId && (
+          <a
+            href={`/api/recordings/${encodeURIComponent(recordingId)}/download`}
+            download={`sonicroom-${recordingId}.ogg`}
+            className={`${btn} ${idle}`}
+            aria-label={m.controls_download_recording()}
+            title={m.controls_download_title()}
+          >
+            <Download className="h-4 w-4" />
+            <span className="text-sm font-medium">{m.controls_download()}</span>
+          </a>
+        )}
+        {recordingId && (
+          <a
+            href={`/api/recordings/${encodeURIComponent(recordingId)}/tracks`}
+            download={`sonicroom-${recordingId}-tracks.zip`}
+            className={`${btn} ${idle}`}
+            aria-label={m.controls_download_tracks_recording()}
+            title={m.controls_download_tracks_title()}
+          >
+            <FileArchive className="h-4 w-4" />
+            <span className="text-sm font-medium">{m.controls_download_tracks()}</span>
+          </a>
+        )}
       </div>
-    </div>
+    </section>
   );
 }

@@ -1,7 +1,7 @@
 import { useEffect, useCallback, useRef, useState } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { Headphones, Users, Loader2, Circle, MessageSquare } from "lucide-react";
-import { useRoomStore } from "../stores/room";
+import { Headphones, Users, Loader2, Circle } from "lucide-react";
+import { useRoomStore, loadStoredDisplayName } from "../stores/room";
 import { useMediasoup } from "../hooks/useMediasoup";
 import { formatMessage, messageContent } from "../lib/chat";
 import { getInstanceName } from "../lib/branding";
@@ -14,32 +14,34 @@ import { m } from "../paraglide/messages.js";
 
 type JoinState = "idle" | "joining" | "joined" | "error";
 
+// The main room joined at the base domain "/". Any "/<roomName>" joins that room.
+const DEFAULT_ROOM = "jdh";
+
 // Max gap between two Alt+<same number> presses for the second to count as a
 // "copy that message" double-press rather than a fresh readback.
 const DOUBLE_PRESS_MS = 600;
 
-// `?p2p=off` (also accepts false/0/no/disable/disabled) pins the room to the
-// SFU even with two participants, instead of the usual P2P mesh.
 function isP2pDisabled(value: string | null): boolean {
   if (value == null) return false;
   const v = value.toLowerCase();
   return ["off", "false", "0", "no", "disable", "disabled"].includes(v);
 }
 
-// `?mic=off` (also accepts false/0/no/disable/disabled) joins WITHOUT a
-// microphone — listen + text chat only, no mic prompt. Flows from the lobby's
-// "Join without a microphone" toggle. (A missing/denied mic falls back to the
-// same mode automatically, even without this.)
 function isMicDisabled(value: string | null): boolean {
   if (value == null) return false;
   const v = value.toLowerCase();
   return ["off", "false", "0", "no", "disable", "disabled"].includes(v);
 }
 
+function sanitizeName(input: string): string {
+  return input
+    .replace(/[<>"'&]/g, "")
+    .trim()
+    .slice(0, 256);
+}
+
 // When embedded in an iframe (e.g. jitchat), mirror room lifecycle events to the
-// host page via postMessage so it can play sounds / reset its view. The event
-// names match the Jitsi External API events the host previously relied on. No-op
-// when sonic runs as a top-level page.
+// host page via postMessage so it can play sounds / reset its view.
 function postToHost(type: string, payload?: Record<string, unknown>) {
   if (typeof window !== "undefined" && window.parent !== window) {
     window.parent.postMessage({ source: "sonicroom", type, ...payload }, "*");
@@ -47,22 +49,18 @@ function postToHost(type: string, payload?: Record<string, unknown>) {
 }
 
 export function Room() {
-  const { roomName } = useParams<{ roomName: string }>();
+  const params = useParams<{ roomName: string }>();
+  const roomName = params.roomName || DEFAULT_ROOM;
   const [searchParams] = useSearchParams();
-  // P2P-off can come from the URL (?p2p=off) or — so the choice survives a
-  // reload/rejoin even if the reloaded link drops the query — from a per-room
-  // flag we persist for this tab's session once it's been set.
-  const p2pStorageKey = roomName ? `sonicroom:p2p-off:${roomName}` : null;
+  const p2pStorageKey = `sonicroom:p2p-off:${roomName}`;
   const disableP2p =
     isP2pDisabled(searchParams.get("p2p")) ||
-    (p2pStorageKey != null && sessionStorage.getItem(p2pStorageKey) === "1");
+    sessionStorage.getItem(p2pStorageKey) === "1";
   const noMic = isMicDisabled(searchParams.get("mic"));
   const navigate = useNavigate();
   const {
     join,
-    leave,
     toggleMute,
-    toggleDucking,
     toggleAudioShare,
     startFileStream,
     startUrlStream,
@@ -70,6 +68,7 @@ export function Room() {
     stopFileStream,
     toggleFilePlayback,
     toggleRecording,
+    rename,
     setPeerVolume,
     setMicGain,
     sendChatMessage,
@@ -79,25 +78,17 @@ export function Room() {
   const [errorMsg, setErrorMsg] = useState("");
   const [chatOpen, setChatOpen] = useState(false);
   const [audioSourceOpen, setAudioSourceOpen] = useState(false);
+  // Name prompt: shown once on first ever visit (no stored name), and reopened
+  // by the "Change name" button under your own card.
+  const [namePromptOpen, setNamePromptOpen] = useState(false);
+  const [nameInput, setNameInput] = useState("");
   const joinedRef = useRef(false);
   const knownPeersRef = useRef<Set<string>>(new Set());
-  // How many messages had arrived last time chat was open, to badge unread.
-  const seenCountRef = useRef(0);
-  // The header chat toggle — focus returns here when the panel closes, so
-  // keyboard/SR focus is never dropped onto <body>.
-  const chatToggleRef = useRef<HTMLButtonElement>(null);
-  // The last Alt+number readback (which digit, and when), so a quick second
-  // press of the SAME number copies that message instead of just re-reading it.
   const lastAltNumRef = useRef<{ digit: string; at: number } | null>(null);
 
-  const closeChat = useCallback(() => {
-    setChatOpen(false);
-    chatToggleRef.current?.focus();
-  }, []);
+  const closeChat = useCallback(() => setChatOpen(false), []);
 
-  // Hidden local-file picker used by the audio-source chooser. Choosing a file
-  // starts — or, mid-stream, replaces — the stream. The floating player handles
-  // play/pause + stop after that.
+  // Hidden local-file picker used by the audio-source chooser.
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pickFile = useCallback(() => {
     setAudioSourceOpen(false);
@@ -106,13 +97,11 @@ export function Room() {
   const onFileChosen = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
-      // Reset so picking the SAME file again still fires `change`.
       e.target.value = "";
       if (file) void startFileStream(file);
     },
     [startFileStream],
   );
-  // Toolbar button: stop an active stream, otherwise open the source chooser.
   const toggleFileStream = useCallback(() => {
     if (useRoomStore.getState().fileStreamName != null) void stopFileStream();
     else setAudioSourceOpen(true);
@@ -128,20 +117,13 @@ export function Room() {
   const isRecording = useRoomStore((s) => s.isRecording);
   const fileStreamName = useRoomStore((s) => s.fileStreamName);
   const fileStreamPlaying = useRoomStore((s) => s.fileStreamPlaying);
-  const messages = useRoomStore((s) => s.messages);
   const announcement = useRoomStore((s) => s.announcement);
   const announceSeq = useRoomStore((s) => s.announceSeq);
-  // Chat-message announcements ride their own polite/assertive regions, driven
-  // by the user's chatAnnounceMode (the other mode, TTS, speaks via the browser
-  // and leaves both strings empty).
   const chatPoliteMsg = useRoomStore((s) => s.chatPoliteMsg);
   const chatAssertiveMsg = useRoomStore((s) => s.chatAssertiveMsg);
   const chatAnnounceSeq = useRoomStore((s) => s.chatAnnounceSeq);
 
-  // Reflect the room name in the document/tab title while in (or joining) the
-  // room, restoring the default when we leave.
   useEffect(() => {
-    if (!roomName) return;
     const instance = getInstanceName();
     document.title = `${roomName} · ${instance}`;
     return () => {
@@ -149,45 +131,55 @@ export function Room() {
     };
   }, [roomName]);
 
-  // Unread count for the chat toggle badge; resets whenever the panel is open.
-  useEffect(() => {
-    if (chatOpen) seenCountRef.current = messages.length;
-  }, [chatOpen, messages.length]);
-  const unread = chatOpen ? 0 : Math.max(0, messages.length - seenCountRef.current);
+  // Actually join the room with the given name. Idempotent via joinedRef.
+  const doJoin = useCallback(
+    (name: string) => {
+      if (joinedRef.current) return;
+      joinedRef.current = true;
+      setJoinState("joining");
+      if (disableP2p) sessionStorage.setItem(p2pStorageKey, "1");
+      join(roomName, name, { disableP2p, noMic })
+        .then(() => setJoinState("joined"))
+        .catch((err) => {
+          setJoinState("error");
+          const msg = err instanceof Error ? err.message : "";
+          setErrorMsg(msg || m.room_failed_to_join());
+        });
+    },
+    [roomName, join, disableP2p, noMic, p2pStorageKey],
+  );
 
-  // Join on mount. An embedder (e.g. jitchat) can deep-link straight into a
-  // room with ?displayName=... to skip the lobby name prompt; otherwise we fall
-  // back to the name the Lobby stashed in sessionStorage.
+  // On mount: join immediately if we already have a name (from ?displayName= or
+  // the persisted one); otherwise show the one-time name prompt and wait.
   useEffect(() => {
-    if (joinedRef.current || !roomName) return;
-    const fromQuery = searchParams
-      .get("displayName")
-      ?.replace(/[<>"'&]/g, "")
-      .trim();
-    const name = fromQuery || sessionStorage.getItem("sonicroom:displayName");
-    if (!name) {
-      navigate(`/?room=${encodeURIComponent(roomName)}`);
-      return;
+    if (joinedRef.current) return;
+    const fromQuery = sanitizeName(searchParams.get("displayName") ?? "");
+    const name = fromQuery || loadStoredDisplayName();
+    if (name) {
+      useRoomStore.getState().setDisplayName(name);
+      doJoin(name);
+    } else {
+      setNameInput("");
+      setNamePromptOpen(true);
     }
-    sessionStorage.setItem("sonicroom:displayName", name);
+  }, [doJoin, searchParams]);
 
-    joinedRef.current = true;
-    setJoinState("joining");
+  // Confirm the name prompt: persist the name, then join (first time) or rename
+  // live (already in the room).
+  const submitName = useCallback(() => {
+    const name = sanitizeName(nameInput);
+    if (!name) return;
+    useRoomStore.getState().setDisplayName(name);
+    setNamePromptOpen(false);
+    if (joinedRef.current) void rename(name);
+    else doJoin(name);
+  }, [nameInput, rename, doJoin]);
 
-    // Remember the p2p-off choice for this room/tab so a later reload or rejoin
-    // re-asserts it even without the URL param.
-    if (disableP2p && p2pStorageKey) sessionStorage.setItem(p2pStorageKey, "1");
+  const openChangeName = useCallback(() => {
+    setNameInput(useRoomStore.getState().displayName ?? "");
+    setNamePromptOpen(true);
+  }, []);
 
-    join(roomName, name, { disableP2p, noMic })
-      .then(() => setJoinState("joined"))
-      .catch((err) => {
-        setJoinState("error");
-        const msg = err instanceof Error ? err.message : "";
-        setErrorMsg(msg || m.room_failed_to_join());
-      });
-  }, [roomName, join, navigate, disableP2p, noMic, p2pStorageKey, searchParams]);
-
-  // Mirror room lifecycle to the host page when embedded (see postToHost).
   useEffect(() => {
     if (joinState === "joined") postToHost("videoConferenceJoined");
   }, [joinState]);
@@ -210,18 +202,8 @@ export function Room() {
     if (joinState !== "joined") return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Alt+1..9 and Alt+0 read the last 10 messages aloud via the ARIA region:
-      // 1 = newest, 2 = next, … 0 = the 10th most recent. Pressing the SAME
-      // number again within DOUBLE_PRESS_MS copies that message to the clipboard
-      // (the same body the chat panel's Ctrl+C copies) — so it's grabbable
-      // without opening the panel. The listener is on window, so it works
-      // whether the chat panel is open or closed. Match the *physical* number
-      // key (e.code) rather than e.key so it fires regardless of layout — on
-      // AZERTY/macOS-Option/AltGr, Alt+1 yields a non-digit e.key (which is why
-      // it appeared to only work with the composer focused). Plain e.key digits
-      // stay as a fallback. Checked before the input guard below so it also
-      // works while typing in the composer.
-      if (e.altKey && !e.ctrlKey && !e.metaKey) {
+      // Alt+1..9 / Alt+0 read back the last 10 chat messages (double-press copies).
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
         const digit =
           /^(?:Digit|Numpad)([0-9])$/.exec(e.code)?.[1] ?? (/^[0-9]$/.test(e.key) ? e.key : null);
         if (digit != null) {
@@ -231,7 +213,6 @@ export function Room() {
           const msg = msgs[msgs.length - n];
           const now = Date.now();
           const prev = lastAltNumRef.current;
-          // Second quick press of the same digit on an existing message → copy.
           if (msg && prev && prev.digit === digit && now - prev.at < DOUBLE_PRESS_MS) {
             lastAltNumRef.current = null;
             void navigator.clipboard
@@ -245,6 +226,13 @@ export function Room() {
         }
       }
 
+      // Recording toggle: deliberate Alt+Shift+R (works regardless of focus).
+      if (e.altKey && e.shiftKey && (e.code === "KeyR" || e.key === "r" || e.key === "R")) {
+        e.preventDefault();
+        void toggleRecording();
+        return;
+      }
+
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
       if (e.key === "m" || e.key === "M") {
@@ -254,42 +242,64 @@ export function Room() {
         e.preventDefault();
         toggleAudioShare();
       } else if (e.key === "f" || e.key === "F") {
-        // Open the audio-source chooser.
         e.preventDefault();
         setAudioSourceOpen(true);
-      } else if (e.key === "d" || e.key === "D") {
-        // Toggle room-wide auto-ducking.
-        e.preventDefault();
-        toggleDucking();
-      } else if (e.key === "r" || e.key === "R") {
-        e.preventDefault();
-        toggleRecording();
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [joinState, toggleMute, toggleAudioShare, toggleDucking, toggleRecording]);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [joinState, toggleMute, toggleAudioShare, toggleRecording]);
 
-  const handleLeave = useCallback(() => {
-    postToHost("readyToClose");
-    leave();
-    navigate("/");
-  }, [leave, navigate]);
+  // Name prompt overlay (first visit or "Change name"). Rendered above whatever
+  // is behind it; on first visit nothing is behind yet.
+  const namePrompt = namePromptOpen ? (
+    <div className="fixed inset-0 z-20 flex items-center justify-center bg-sonic-900/80 p-4">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          submitName();
+        }}
+        className="w-full max-w-sm rounded-2xl border border-sonic-600 bg-sonic-800 p-6 shadow-2xl"
+        role="dialog"
+        aria-labelledby="name-prompt-title"
+      >
+        <h2 id="name-prompt-title" className="mb-4 text-lg font-semibold text-sonic-100">
+          {m.name_prompt_title()}
+        </h2>
+        <label htmlFor="name-prompt-input" className="mb-1.5 block text-sm text-sonic-200">
+          {m.name_prompt_label()}
+        </label>
+        <input
+          id="name-prompt-input"
+          type="text"
+          value={nameInput}
+          onChange={(e) => setNameInput(e.target.value)}
+          placeholder={m.name_prompt_placeholder()}
+          maxLength={256}
+          autoFocus
+          autoComplete="off"
+          className="mb-4 w-full rounded-lg border border-sonic-600 bg-sonic-700 px-4 py-2.5 text-sonic-100 placeholder-sonic-400 focus:border-sonic-accent focus:outline-none"
+        />
+        <button
+          type="submit"
+          className="w-full rounded-lg bg-sonic-accent px-4 py-2.5 font-medium text-white hover:bg-sonic-accent/90"
+        >
+          {joinedRef.current ? m.name_prompt_save() : m.name_prompt_confirm()}
+        </button>
+      </form>
+    </div>
+  ) : null;
 
   // Loading state
   if (joinState === "joining") {
     return (
-      <div className="flex min-h-dvh flex-col bg-sonic-900">
-        <div className="flex flex-1 items-center justify-center">
-          <div className="flex max-w-sm flex-col items-center gap-4 px-4 text-center">
-            <Loader2 className="h-8 w-8 animate-spin text-sonic-accent" />
-            <p className="text-sonic-300" role="alert" aria-live="assertive" aria-atomic="true">
-              {m.room_connecting()}
-            </p>
-          </div>
+      <div className="flex min-h-dvh flex-col items-center justify-center bg-sonic-900">
+        <div className="flex max-w-sm flex-col items-center gap-4 px-4 text-center">
+          <Loader2 className="h-8 w-8 animate-spin text-sonic-accent" />
+          <p className="text-sonic-300" role="alert" aria-live="assertive" aria-atomic="true">
+            {m.room_connecting()}
+          </p>
         </div>
       </div>
     );
@@ -298,39 +308,45 @@ export function Room() {
   // Error state
   if (joinState === "error") {
     return (
-      <div className="flex min-h-dvh flex-col bg-sonic-900">
-        <div className="flex flex-1 items-center justify-center">
-          <div className="flex flex-col items-center gap-4 text-center">
-            <p className="text-lg text-muted">{errorMsg}</p>
-            <button
-              onClick={() => navigate("/")}
-              className="rounded-lg bg-sonic-accent px-4 py-2 text-sm text-white hover:bg-sonic-accent/90"
-            >
-              {m.room_back_to_lobby()}
-            </button>
-          </div>
+      <div className="flex min-h-dvh flex-col items-center justify-center bg-sonic-900">
+        <div className="flex flex-col items-center gap-4 text-center">
+          <p className="text-lg text-muted">{errorMsg}</p>
+          <button
+            onClick={() => {
+              joinedRef.current = false;
+              navigate(0);
+            }}
+            className="rounded-lg bg-sonic-accent px-4 py-2 text-sm text-white hover:bg-sonic-accent/90"
+          >
+            {m.room_back_to_lobby()}
+          </button>
         </div>
       </div>
     );
+  }
+
+  // Before joining (waiting for the first-visit name), show only the prompt.
+  if (joinState === "idle") {
+    return <div className="min-h-dvh bg-sonic-900">{namePrompt}</div>;
   }
 
   const peerList = Array.from(peers.values());
 
   return (
     <div className="flex min-h-dvh flex-col bg-sonic-900">
-      {/* Header */}
+      {/* Slim header: room name + live mode + participant count. */}
       <header className="flex items-center justify-between border-b border-sonic-700 px-6 py-3">
         <div className="flex items-center gap-3">
-          <Headphones className="h-5 w-5 text-sonic-accent" />
+          <Headphones aria-hidden="true" className="h-5 w-5 text-sonic-accent" />
           <h1 className="text-lg font-semibold text-sonic-100">{roomName}</h1>
         </div>
         <div className="flex items-center gap-3 text-sm text-sonic-300">
           {isRecording && (
             <span
-              className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs font-medium bg-red-500/20 text-red-400"
+              className="flex items-center gap-1.5 rounded bg-red-500/20 px-1.5 py-0.5 text-xs font-medium text-red-400"
               title={m.room_recording_title()}
             >
-              <Circle className="h-2.5 w-2.5 animate-pulse fill-red-500 text-red-500" />
+              <Circle aria-hidden="true" className="h-2.5 w-2.5 animate-pulse fill-red-500 text-red-500" />
               REC
             </span>
           )}
@@ -342,108 +358,74 @@ export function Room() {
             {mode === "p2p" ? "P2P" : "SFU"}
           </span>
           <div className="flex items-center gap-1">
-            <Users className="h-4 w-4" />
+            <Users aria-hidden="true" className="h-4 w-4" />
             <span>{peerList.length + 1}</span>
           </div>
-          <button
-            ref={chatToggleRef}
-            onClick={() => (chatOpen ? closeChat() : setChatOpen(true))}
-            className={`relative flex h-8 items-center gap-1.5 rounded-full px-3 transition-all ${
-              chatOpen
-                ? "bg-sonic-accent text-white hover:bg-sonic-accent/90"
-                : "bg-sonic-700 text-sonic-200 hover:bg-sonic-600"
-            }`}
-            aria-label={
-              unread > 0
-                ? chatOpen
-                  ? m.room_chat_close_unread({ count: unread })
-                  : m.room_chat_open_unread({ count: unread })
-                : chatOpen
-                  ? m.room_chat_close()
-                  : m.room_chat_open()
-            }
-            aria-expanded={chatOpen}
-            title={m.room_toggle_chat_title()}
-          >
-            <MessageSquare className="h-4 w-4" />
-            {unread > 0 && (
-              <span
-                className="flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold text-white"
-                aria-hidden="true"
-              >
-                {unread > 9 ? "9+" : unread}
-              </span>
-            )}
-          </button>
         </div>
       </header>
 
-      {/* Participants grid + optional chat side panel */}
+      {/* Participants (top) + optional chat side panel. */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <main className="flex min-w-0 flex-1 items-center justify-center overflow-y-auto p-6">
-          <div
-            className="grid w-full max-w-4xl grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4"
-            role="list"
-            aria-label={m.room_participants_label()}
-          >
-            {/* Local user */}
-            {localPeerId && displayName && (
-              <ParticipantCard
-                peer={{
-                  peerId: localPeerId,
-                  displayName,
-                  isSpeaking: false,
-                  isMuted,
-                  volume: 1,
-                  isMusic: false,
-                  duckAtReceiver: false,
-                }}
-                isLocal
-                // No mic → no mic-level slider, and a "text only" indicator.
-                textOnly={!hasMic}
-                micGain={micGain}
-                onMicGainChange={hasMic ? setMicGain : undefined}
-              />
-            )}
-
-            {/* Remote peers */}
-            {peerList.map((peer) => (
-              <ParticipantCard
-                key={peer.peerId}
-                peer={peer}
-                isLocal={false}
-                onVolumeChange={(v) => setPeerVolume(peer.peerId, v)}
-              />
-            ))}
-          </div>
+        <main className="min-w-0 flex-1 overflow-y-auto p-6">
+          <section aria-labelledby="participants-heading" className="mx-auto max-w-4xl">
+            <h2
+              id="participants-heading"
+              className="mb-4 text-sm font-semibold uppercase tracking-wide text-sonic-400"
+            >
+              {m.room_participants_heading()}
+            </h2>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
+              {localPeerId && displayName && (
+                <ParticipantCard
+                  peer={{
+                    peerId: localPeerId,
+                    displayName,
+                    isSpeaking: false,
+                    isMuted,
+                    volume: 1,
+                    isMusic: false,
+                    duckAtReceiver: false,
+                  }}
+                  isLocal
+                  textOnly={!hasMic}
+                  micGain={micGain}
+                  onMicGainChange={hasMic ? setMicGain : undefined}
+                  onChangeName={openChangeName}
+                />
+              )}
+              {peerList.map((peer) => (
+                <ParticipantCard
+                  key={peer.peerId}
+                  peer={peer}
+                  isLocal={false}
+                  onVolumeChange={(v) => setPeerVolume(peer.peerId, v)}
+                />
+              ))}
+            </div>
+          </section>
         </main>
 
         {chatOpen && <Chat onSend={sendChatMessage} onClose={closeChat} />}
       </div>
 
-      {/* Bottom controls */}
-      <footer className="flex flex-col items-center gap-2 border-t border-sonic-700 p-4">
-        <AudioControls
-          onToggleMute={toggleMute}
-          onToggleAudioShare={toggleAudioShare}
-          onToggleFileStream={toggleFileStream}
-          onToggleDucking={toggleDucking}
-          onToggleRecording={toggleRecording}
-          onLeave={handleLeave}
-        />
+      {/* Bottom control bar. */}
+      <footer className="border-t border-sonic-700 p-4">
+        <div className="mx-auto max-w-4xl">
+          <AudioControls
+            onToggleMute={toggleMute}
+            onToggleAudioShare={toggleAudioShare}
+            onToggleFileStream={toggleFileStream}
+            onToggleChat={() => setChatOpen((o) => !o)}
+            chatOpen={chatOpen}
+          />
+        </div>
       </footer>
 
-      {/* Screen reader announcements (peer join/leave, recording, etc.).
-          key changes per announcement so identical messages re-announce. */}
+      {/* Screen-reader event log (peer join/leave, recording, etc.), at the very
+          bottom as before. */}
       <div aria-live="polite" role="status" className="sr-only" id="sr-announcements">
         <span key={announceSeq}>{announcement}</span>
       </div>
-
-      {/* Chat-message announcements on their OWN regions so they can follow the
-          user's preference (Chat panel → "Announce new messages"). Both are
-          always mounted; announceChat fills only the one for the active mode
-          (polite or assertive), or neither in spoken-TTS / off modes. The key
-          re-mounts the span so a repeated identical message re-announces. */}
       <div aria-live="polite" role="status" className="sr-only" id="sr-chat-polite">
         <span key={`cp-${chatAnnounceSeq}`}>{chatPoliteMsg}</span>
       </div>
@@ -460,7 +442,6 @@ export function Room() {
         />
       )}
 
-      {/* Hidden local-file picker opened from the audio-source chooser. */}
       <input
         ref={fileInputRef}
         type="file"
@@ -471,8 +452,6 @@ export function Room() {
         tabIndex={-1}
       />
 
-      {/* Floating player for the local-file stream — autofocuses play/pause when
-          a file is picked; Escape stops the stream and closes it. */}
       {fileStreamName && (
         <FileStreamPlayer
           name={fileStreamName}
@@ -481,6 +460,8 @@ export function Room() {
           onStop={() => stopFileStream()}
         />
       )}
+
+      {namePrompt}
     </div>
   );
 }

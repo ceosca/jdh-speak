@@ -144,26 +144,6 @@ export function createSignalingServer(
     );
   }
 
-  // Auto-ducking: the room's AudioLevelObserver watches VOICE producers only
-  // (music producers are never added — see the produce handler), so it fires
-  // 'volumes' when someone talks and 'silence' when nobody does. We broadcast a
-  // `duck` event on each transition; listeners ramp the music peer's gain down
-  // while a voice is active. Wired once per room.
-  function wireDucking(room: Room) {
-    if (room.observerWired) return;
-    room.observerWired = true;
-    room.audioLevelObserver.on("volumes", () => {
-      if (room.voiceActive) return;
-      room.voiceActive = true;
-      io.to(room.name).emit("duck", { active: true });
-    });
-    room.audioLevelObserver.on("silence", () => {
-      if (!room.voiceActive) return;
-      room.voiceActive = false;
-      io.to(room.name).emit("duck", { active: false });
-    });
-  }
-
   // --- Evaluate room mode and trigger switches ---
   // A recording (or an active music caster) forces SFU and prevents the usual
   // downgrade to P2P, so the server keeps seeing the media.
@@ -245,7 +225,6 @@ export function createSignalingServer(
           `[ws] ${socket.id} joined ${roomName} as "${displayName}"${role ? ` (${role})` : ""}${disableP2p ? " (p2p disabled)" : ""}`,
         );
 
-        wireDucking(room);
         const peer = createPeer(room, socket.id, displayName);
 
         // Register a caster / P2P-disable BEFORE deciding the mode, so the join
@@ -294,14 +273,8 @@ export function createSignalingServer(
           rtpCapabilities: room.router.rtpCapabilities,
           peers: existingPeers,
           mode: decision.mode,
-          recording: recordingManager.isRecording(room.name)
-            ? { recordingId: recordingManager.getRecording(room.name)!.id }
-            : null,
-          // Whether someone is talking RIGHT NOW, so a late joiner starts
-          // music peers ducked instead of waiting for the next transition.
-          voiceActive: room.voiceActive,
-          // Room-wide auto-ducking toggle, so a joiner matches the room's state.
-          duckingEnabled: room.duckingEnabled,
+          // Recording is private to whoever started it — not revealed to others.
+          recording: null,
           // Recent chat so a late joiner can read/announce the last messages.
           messages: room.messages,
         });
@@ -437,15 +410,6 @@ export function createSignalingServer(
         });
 
         currentPeer.producers.set(producer.id, producer);
-
-        // Feed VOICE producers into the audio-level observer so talking ducks
-        // the music. Music/share producers are deliberately excluded so the
-        // music never ducks itself. (Closed producers auto-remove themselves.)
-        if (producer.kind === "audio" && (source ?? "voice") === "voice") {
-          void currentRoom.audioLevelObserver
-            .addProducer({ producerId: producer.id })
-            .catch((err) => console.error("[duck] addProducer failed:", err));
-        }
 
         // If the room is being recorded, tap this producer too. Not awaited —
         // the produce callback should return promptly, and the recorder spins up
@@ -624,23 +588,6 @@ export function createSignalingServer(
       cb?.({ ok: true });
     });
 
-    // --- Auto-ducking toggle (room-wide) ---
-    // Anyone can turn the room's auto-ducking on/off. Off means listeners stop
-    // ducking every music-type stream (caster/share/file). We just flip the room
-    // flag and broadcast it to EVERYONE (incl. the sender, like recording) — the
-    // gain change itself is applied client-side in effectiveGain.
-    socket.on("set-ducking", (data: unknown, cb?: (res: unknown) => void) => {
-      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
-      const parsed = z.object({ enabled: z.boolean() }).safeParse(data);
-      if (!parsed.success) return cb?.({ ok: false, error: "Invalid value" });
-      currentRoom.duckingEnabled = parsed.data.enabled;
-      io.to(currentRoom.name).emit("ducking-changed", {
-        enabled: parsed.data.enabled,
-        by: currentPeer.displayName,
-      });
-      cb?.({ ok: true });
-    });
-
     // --- Recording ---
     socket.on("start-recording", async (_data: unknown, cb: (res: unknown) => void) => {
       try {
@@ -674,10 +621,8 @@ export function createSignalingServer(
         // Force SFU if we're in P2P so the server can see the media.
         applyModeDecision(room);
 
-        io.to(room.name).emit("recording-started", {
-          recordingId: rec.id,
-          by: currentPeer?.displayName ?? "Someone",
-        });
+        // Recording is silent to the room — only the initiator learns of it, via
+        // this callback. No room-wide notification or REC badge for others.
         cb({ ok: true, recordingId: rec.id });
       } catch (err) {
         cb({ ok: false, error: err instanceof Error ? err.message : "Failed to start recording" });
@@ -693,14 +638,27 @@ export function createSignalingServer(
         const room = currentRoom;
         // Finalize (not discard): captures stop, but the file stays
         // downloadable until its TTL / a new recording / room exit.
-        const rec = await recordingManager.finalize(room.name);
-        io.to(room.name).emit("recording-stopped", { recordingId: rec?.id ?? null });
+        await recordingManager.finalize(room.name);
         // Recording no longer pins SFU — fall back to P2P if <=2 peers remain.
         applyModeDecision(room);
         cb({ ok: true });
       } catch (err) {
         cb({ ok: false, error: err instanceof Error ? err.message : "Failed to stop recording" });
       }
+    });
+
+    // --- Live rename: a peer changed their display name; broadcast it so others
+    // re-render their card. The peer's own client updates locally.
+    socket.on("rename", (data: unknown, cb?: (res: unknown) => void) => {
+      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
+      const parsed = z.object({ displayName: displayNameSchema }).safeParse(data);
+      if (!parsed.success) return cb?.({ ok: false, error: "Invalid name" });
+      currentPeer.displayName = parsed.data.displayName;
+      socket.to(currentRoom.name).emit("peer-renamed", {
+        peerId: socket.id,
+        displayName: parsed.data.displayName,
+      });
+      cb?.({ ok: true, displayName: parsed.data.displayName });
     });
 
     socket.on("disconnect", (reason) => {

@@ -52,6 +52,15 @@ function loadVoiceProcessing(): boolean {
   }
 }
 
+// Display name persisted across ALL sessions (set on first visit, changed via
+// the "Change name" button). "" = not chosen yet, so the Room shows a one-time
+// name prompt before joining.
+const DISPLAY_NAME_KEY = "sonicroom:displayName";
+
+export function loadStoredDisplayName(): string {
+  return loadString(DISPLAY_NAME_KEY);
+}
+
 // How incoming/outgoing chat messages are spoken to the user. A persisted
 // accessibility preference:
 //  - "polite"    — announced on a polite ARIA live region (default; queues
@@ -160,6 +169,8 @@ interface RoomState {
   // Actions
   setConnected: (connected: boolean) => void;
   setRoom: (roomName: string, displayName: string, localPeerId: string) => void;
+  // Persist + apply a new display name (first-time set or the "Change name" button).
+  setDisplayName: (displayName: string) => void;
   setMode: (mode: RoomMode) => void;
   setHasMic: (hasMic: boolean) => void;
   setMuted: (muted: boolean) => void;
@@ -185,6 +196,7 @@ interface RoomState {
   removePeer: (peerId: string) => void;
   setPeerSpeaking: (peerId: string, speaking: boolean) => void;
   setPeerMuted: (peerId: string, muted: boolean) => void;
+  setPeerName: (peerId: string, displayName: string) => void;
   setPeerVolume: (peerId: string, volume: number) => void;
   setPeerMusic: (peerId: string, isMusic: boolean) => void;
   setPeerDuckAtReceiver: (peerId: string, value: boolean) => void;
@@ -223,6 +235,10 @@ export const useRoomStore = create<RoomState>((set, get) => ({
 
   setConnected: (connected) => set({ connected }),
   setRoom: (roomName, displayName, localPeerId) => set({ roomName, displayName, localPeerId }),
+  setDisplayName: (displayName) => {
+    saveString(DISPLAY_NAME_KEY, displayName);
+    set({ displayName });
+  },
   setMode: (mode) => set({ mode }),
   setHasMic: (hasMic) => set({ hasMic }),
   setMuted: (isMuted) => set({ isMuted }),
@@ -360,6 +376,14 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       const peers = new Map(state.peers);
       const peer = peers.get(peerId);
       if (peer) peers.set(peerId, { ...peer, isMuted: muted });
+      return { peers };
+    }),
+
+  setPeerName: (peerId, displayName) =>
+    set((state) => {
+      const peers = new Map(state.peers);
+      const peer = peers.get(peerId);
+      if (peer) peers.set(peerId, { ...peer, displayName });
       return { peers };
     }),
 

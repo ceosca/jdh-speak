@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { Mic, MicOff, Volume2, Music } from "lucide-react";
+import { Mic, Volume2, Music, UserPen } from "lucide-react";
 import type { PeerState } from "../stores/room";
 import { m } from "../paraglide/messages.js";
 
@@ -8,11 +8,12 @@ interface ParticipantCardProps {
   isLocal: boolean;
   onVolumeChange?: (volume: number) => void;
   // Local card only: you joined without a microphone (listen + text chat only).
-  // Shows a "Text only" indicator and hides the mic-level slider.
   textOnly?: boolean;
   // Local card only: your outgoing mic gain (send-side), and its setter.
   micGain?: number;
   onMicGainChange?: (gain: number) => void;
+  // Local card only: open the "change name" prompt.
+  onChangeName?: () => void;
 }
 
 function getInitials(name: string): string {
@@ -24,6 +25,13 @@ function getInitials(name: string): string {
     .slice(0, 2);
 }
 
+// One participant. Accessibility model (screen-reader first):
+//  - The mic status is read RIGHT NEXT TO the name as one phrase, e.g.
+//    "Eedutú, micrófono activado" — so navigating to a participant says it all.
+//  - The avatar and the status icon are decorative (aria-hidden) so the reader
+//    never says "gráfico" or a duplicated "Activado".
+//  - The volume slider's label is ONLY "Volumen de <name>" (no on/off — that's
+//    already next to the name above).
 export function ParticipantCard({
   peer,
   isLocal,
@@ -31,6 +39,7 @@ export function ParticipantCard({
   textOnly,
   micGain,
   onMicGainChange,
+  onChangeName,
 }: ParticipantCardProps) {
   const handleVolume = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -46,59 +55,52 @@ export function ParticipantCard({
     [onMicGainChange],
   );
 
+  const micStatus = peer.isMusic
+    ? m.card_music_stream()
+    : textOnly
+      ? m.card_text_only_status()
+      : peer.isMuted
+        ? m.card_mic_off()
+        : m.card_mic_on();
+
+  const nameWithYou = isLocal ? `${peer.displayName} (${m.card_you()})` : peer.displayName;
+
   return (
-    <div
-      className="flex flex-col items-center gap-3 rounded-xl border border-sonic-600 bg-sonic-800 p-4 transition-all hover:border-sonic-500"
-      role="listitem"
-      aria-label={`${peer.displayName}${isLocal ? ` (${m.card_you()})` : ""}${
-        textOnly ? `, ${m.card_text_only()}` : peer.isMuted ? `, ${m.card_muted_fragment()}` : ""
-      }${peer.isSpeaking ? `, ${m.card_speaking_fragment()}` : ""}`}
-    >
-      {/* Avatar */}
+    <div className="flex flex-col items-center gap-2 rounded-xl border border-sonic-600 bg-sonic-800 p-4">
+      {/* Decorative avatar — hidden from the screen reader. */}
       <div
-        className={`flex h-16 w-16 items-center justify-center rounded-full text-lg font-bold transition-all ${
+        aria-hidden="true"
+        className={`flex h-14 w-14 items-center justify-center rounded-full text-lg font-bold ${
           peer.isMusic
             ? "border-2 border-sonic-accent bg-sonic-accent/20 text-sonic-accent"
-            : peer.isSpeaking
-              ? "speaking-ring border-2 border-speaking bg-speaking/20 text-speaking"
-              : peer.isMuted
-                ? "border-2 border-sonic-600 bg-sonic-700 text-sonic-400"
-                : "border-2 border-sonic-500 bg-sonic-700 text-sonic-200"
+            : peer.isMuted
+              ? "border-2 border-sonic-600 bg-sonic-700 text-sonic-400"
+              : "border-2 border-sonic-500 bg-sonic-700 text-sonic-200"
         }`}
       >
-        {peer.isMusic ? <Music className="h-7 w-7" /> : getInitials(peer.displayName)}
+        {peer.isMusic ? <Music className="h-6 w-6" /> : getInitials(peer.displayName)}
       </div>
 
-      {/* Name + status */}
-      <div className="flex items-center gap-1.5">
-        <span className="max-w-[120px] truncate text-sm font-medium text-sonic-100">
-          {peer.displayName}
-        </span>
-        {isLocal && (
-          <span className="rounded bg-sonic-accent/20 px-1.5 py-0.5 text-xs text-sonic-accent">
-            {m.card_you()}
-          </span>
-        )}
-        {isLocal && textOnly && (
-          <span className="rounded bg-sonic-700 px-1.5 py-0.5 text-xs text-sonic-300">
-            {m.card_text_only()}
-          </span>
-        )}
-        {peer.isMusic ? (
-          <Music className="h-3.5 w-3.5 text-sonic-accent" aria-label={m.card_music_stream()} />
-        ) : textOnly ? (
-          <MicOff className="h-3.5 w-3.5 text-sonic-400" aria-label={m.card_text_only_status()} />
-        ) : peer.isMuted ? (
-          <MicOff className="h-3.5 w-3.5 text-muted" aria-label={m.card_muted_status()} />
-        ) : (
-          <Mic className="h-3.5 w-3.5 text-sonic-300" aria-label={m.card_unmuted_status()} />
-        )}
-      </div>
+      {/* Name + mic status, read together: "Name, micrófono activado". */}
+      <p className="max-w-[150px] truncate text-center text-sm text-sonic-100">
+        <span className="font-medium">{nameWithYou}</span>, {micStatus}
+      </p>
 
-      {/* Volume slider (remote peers): how loud you hear them — receive-side. */}
+      {/* Local: change-name button right under your name. */}
+      {isLocal && onChangeName && (
+        <button
+          onClick={onChangeName}
+          className="flex items-center gap-1.5 rounded-lg bg-sonic-700 px-3 py-1 text-xs font-medium text-sonic-200 transition-colors hover:bg-sonic-600"
+        >
+          <UserPen aria-hidden="true" className="h-3.5 w-3.5" />
+          {m.room_change_name()}
+        </button>
+      )}
+
+      {/* Remote peer: how loud you hear them. Label has NO on/off (it's by the name). */}
       {!isLocal && (
         <div className="flex w-full items-center gap-2">
-          <Volume2 className="h-3.5 w-3.5 shrink-0 text-sonic-400" />
+          <Volume2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-sonic-400" />
           <input
             type="range"
             min="0"
@@ -112,11 +114,10 @@ export function ParticipantCard({
         </div>
       )}
 
-      {/* Mic-level slider (your own card): your outgoing gain — send-side, so it
-          changes how loud everyone hears you. Distinct from the volume sliders. */}
+      {/* Your own card: your outgoing mic level (send-side gain). */}
       {isLocal && onMicGainChange && (
         <div className="flex w-full items-center gap-2">
-          <Mic className="h-3.5 w-3.5 shrink-0 text-sonic-400" />
+          <Mic aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-sonic-400" />
           <input
             type="range"
             min="0"
@@ -126,7 +127,6 @@ export function ParticipantCard({
             onChange={handleMicGain}
             className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-sonic-600 accent-sonic-accent"
             aria-label={m.card_your_mic_level()}
-            title={m.card_mic_level_title({ gain: (micGain ?? 1).toFixed(1) })}
           />
         </div>
       )}
