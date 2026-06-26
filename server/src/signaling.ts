@@ -664,9 +664,29 @@ export function createSignalingServer(
       cb?.({ ok: true, displayName: parsed.data.displayName });
     });
 
+    // Close one of this peer's producers (used when a client re-creates its
+    // voice producer to change bitrate live — the old server-side producer must
+    // be closed so it doesn't linger; mediasoup closes its consumers too).
+    socket.on("close-producer", (data: unknown, cb?: (res: unknown) => void) => {
+      if (!currentRoom || !currentPeer) return cb?.({ ok: false });
+      const parsed = z.object({ producerId: z.string() }).safeParse(data);
+      if (!parsed.success) return cb?.({ ok: false, error: "Invalid producerId" });
+      const producer = currentPeer.producers.get(parsed.data.producerId);
+      if (producer) {
+        producer.close();
+        currentPeer.producers.delete(parsed.data.producerId);
+        if (recordingManager.isRecording(currentRoom.name)) {
+          void recordingManager
+            .removeProducer(currentRoom.name, parsed.data.producerId)
+            .catch(() => {});
+        }
+      }
+      cb?.({ ok: true });
+    });
+
     // --- Room audio quality (bitrate). No UI: changed live via a keyboard
     // shortcut; whoever triggers it sets it for EVERYONE (broadcast). Each
-    // client applies it to its own outgoing voice sender (setParameters).
+    // client then re-creates its outgoing voice stream at the new bitrate.
     socket.on("set-bitrate", (data: unknown, cb?: (res: unknown) => void) => {
       if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
       const parsed = z.object({ kbps: z.number().int() }).safeParse(data);

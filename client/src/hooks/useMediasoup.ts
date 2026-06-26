@@ -141,28 +141,6 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") resumeSharedContext();
 });
 
-// Set the max outgoing bitrate (kbps) on a voice sender live, without
-// renegotiation. 128 (or more) = "original" → remove the cap. Used for the
-// room-wide quality command.
-async function setSenderBitrate(
-  sender: RTCRtpSender | null | undefined,
-  kbps: number,
-): Promise<void> {
-  if (!sender) return;
-  try {
-    const params = sender.getParameters();
-    if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
-    const max = kbps >= 128 ? undefined : kbps * 1000;
-    for (const enc of params.encodings) {
-      if (max === undefined) delete enc.maxBitrate;
-      else enc.maxBitrate = max;
-    }
-    await sender.setParameters(params);
-  } catch (err) {
-    console.error("[bitrate] setParameters failed:", err);
-  }
-}
-
 function createAudioPipeline(track: MediaStreamTrack): Omit<PeerAudio, "consumer"> {
   const stream = new MediaStream([track]);
   const audioEl = new Audio();
@@ -611,9 +589,7 @@ export function useMediasoup() {
       // Send the processed outgoing track (mic gain + limiter, + shared audio),
       // not the raw mic.
       const g = ensureOutGraph();
-      const voiceSender = pc.addTrack(g.outDest.stream.getAudioTracks()[0], g.outDest.stream);
-      // Match the room's current voice bitrate on this new P2P sender.
-      void setSenderBitrate(voiceSender, roomBitrateRef.current);
+      pc.addTrack(g.outDest.stream.getAudioTracks()[0], g.outDest.stream);
 
       // ICE candidates → relay via server
       pc.onicecandidate = (e) => {
@@ -768,6 +744,11 @@ export function useMediasoup() {
         return;
       }
 
+      // Drop any previous pipeline for this peer first (a re-consume on a mode
+      // switch, reconnect, or a live bitrate re-produce) so it never leaks or
+      // doubles up.
+      const existingPeerAudio = peerAudiosRef.current.get(peerId);
+      if (existingPeerAudio) destroyAudioPipeline(existingPeerAudio);
       peerAudiosRef.current.set(peerId, { ...pipeline, consumer });
 
       // Flag a music-caster peer (e.g. Ecobox) so the UI shows it as a media
@@ -988,8 +969,6 @@ export function useMediasoup() {
         stopTracks: false,
       });
       producerRef.current = producer;
-      // Also cap the live sender to the room bitrate (covers a later change).
-      void setSenderBitrate(producer.rtpSender, roomBitrateRef.current);
 
       // If we were already sharing audio (a mode switch into SFU, or a
       // reconnect mid-share), rebuild the separate stereo share producer too.
@@ -1306,14 +1285,45 @@ export function useMediasoup() {
         },
       );
 
-      // Room voice quality changed (by anyone, via the keyboard shortcut). Apply
-      // it live to our own outgoing voice sender(s) and announce it.
-      socket.on("bitrate-changed", ({ kbps, by }: { kbps: number; by?: string }) => {
+      // Room voice quality changed (by anyone, via the keyboard shortcut). Opus
+      // bitrate can't change without renegotiation, so re-create our outgoing
+      // voice stream at the new bitrate (a brief gap; listeners re-consume the
+      // new one and drop the old pipeline). Voice only — share/file stay hi-fi.
+      socket.on("bitrate-changed", async ({ kbps, by }: { kbps: number; by?: string }) => {
         roomBitrateRef.current = kbps;
-        void setSenderBitrate(producerRef.current?.rtpSender, kbps);
-        for (const pc of p2pConnectionsRef.current.values()) {
-          const sender = pc.getSenders().find((s) => s.track?.kind === "audio");
-          void setSenderBitrate(sender, kbps);
+        try {
+          if (modeRef.current === "sfu") {
+            const sendTransport = sendTransportRef.current;
+            const old = producerRef.current;
+            const track = ensureOutGraph().outDest.stream.getAudioTracks()[0];
+            if (sendTransport && track) {
+              const wasMuted = store.getState().isMuted || noMicRef.current;
+              if (old) {
+                await emit("close-producer", { producerId: old.id }).catch(() => {});
+                old.close();
+              }
+              const producer = await sendTransport.produce({
+                track,
+                codecOptions: {
+                  opusStereo: true,
+                  opusDtx: false,
+                  opusFec: true,
+                  opusMaxPlaybackRate: 48000,
+                  opusMaxAverageBitrate: kbps < 128 ? kbps * 1000 : 128000,
+                },
+                stopTracks: false,
+              });
+              producerRef.current = producer;
+              if (wasMuted) producer.pause();
+            }
+          } else {
+            // P2P: renegotiate each link (rebuild) so the new bitrate applies.
+            for (const peerId of Array.from(p2pConnectionsRef.current.keys())) {
+              await createP2pConnection(peerId, true);
+            }
+          }
+        } catch (err) {
+          console.error("[bitrate] apply failed:", err);
         }
         const name = by ?? announce_a_participant();
         store
