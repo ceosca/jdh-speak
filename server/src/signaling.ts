@@ -9,6 +9,7 @@ import {
   createPeer,
   createWebRtcTransport,
   removePeer,
+  rememberRoomBitrate,
   type Room,
   type Peer,
 } from "./room-manager.js";
@@ -697,7 +698,7 @@ export function createSignalingServer(
       if (!parsed.success || !allowed.includes(parsed.data.kbps)) {
         return cb?.({ ok: false, error: "Invalid bitrate" });
       }
-      currentRoom.audioBitrate = parsed.data.kbps;
+      rememberRoomBitrate(currentRoom.name, parsed.data.kbps);
       console.log(
         `[bitrate] ${currentPeer.displayName} set room "${currentRoom.name}" -> ${parsed.data.kbps}kbps; broadcasting to ${currentRoom.peers.size} peer(s)`,
       );

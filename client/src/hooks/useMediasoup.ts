@@ -1286,51 +1286,20 @@ export function useMediasoup() {
       );
 
       // Room voice quality changed (by anyone, via the keyboard shortcut). Opus
-      // bitrate can't change without renegotiation, so re-create our outgoing
-      // voice stream at the new bitrate (a brief gap; listeners re-consume the
-      // new one and drop the old pipeline). Voice only — share/file stay hi-fi.
-      socket.on("bitrate-changed", async ({ kbps, by }: { kbps: number; by?: string }) => {
+      // bitrate can't change without renegotiation, so reconnect: the connect
+      // handler rejoins and rebuilds ALL media (P2P mesh or SFU) using the room
+      // bitrate carried in the join response. Reliable for any size/topology —
+      // brief reconnect gap, which is fine for a deliberate quality change.
+      socket.on("bitrate-changed", ({ kbps, by }: { kbps: number; by?: string }) => {
         roomBitrateRef.current = kbps;
-        try {
-          if (modeRef.current === "sfu") {
-            const sendTransport = sendTransportRef.current;
-            const old = producerRef.current;
-            const track = ensureOutGraph().outDest.stream.getAudioTracks()[0];
-            if (sendTransport && track) {
-              const wasMuted = store.getState().isMuted || noMicRef.current;
-              if (old) {
-                await emit("close-producer", { producerId: old.id }).catch(() => {});
-                old.close();
-              }
-              const producer = await sendTransport.produce({
-                track,
-                codecOptions: {
-                  opusStereo: true,
-                  opusDtx: false,
-                  opusFec: true,
-                  opusMaxPlaybackRate: 48000,
-                  opusMaxAverageBitrate: kbps < 128 ? kbps * 1000 : 128000,
-                },
-                stopTracks: false,
-              });
-              producerRef.current = producer;
-              if (wasMuted) producer.pause();
-            }
-          } else {
-            // P2P: renegotiate each link (rebuild) so the new bitrate applies.
-            for (const peerId of Array.from(p2pConnectionsRef.current.keys())) {
-              await createP2pConnection(peerId, true);
-            }
-          }
-        } catch (err) {
-          console.error("[bitrate] apply failed:", err);
-        }
         const name = by ?? announce_a_participant();
         store
           .getState()
           .announce(
             kbps >= 128 ? announce_bitrate_original({ name }) : announce_bitrate({ name, kbps }),
           );
+        socket.disconnect();
+        socket.connect();
       });
 
       // P2P signaling relay

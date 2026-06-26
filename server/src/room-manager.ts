@@ -49,6 +49,17 @@ export interface Room {
 
 const rooms = new Map<string, Room>();
 
+// Room voice bitrate (kbps) kept BY NAME, surviving room destruction — so a
+// quality change isn't lost if every peer briefly reconnects at once (the
+// reconnect is how the new bitrate is applied) and the room is recreated.
+const roomBitrates = new Map<string, number>();
+
+export function rememberRoomBitrate(roomName: string, kbps: number): void {
+  roomBitrates.set(roomName, kbps);
+  const room = rooms.get(roomName);
+  if (room) room.audioBitrate = kbps;
+}
+
 let workers: Worker[] = [];
 let workerIdx = 0;
 
@@ -78,7 +89,7 @@ export async function getOrCreateRoom(roomName: string): Promise<Room> {
     casters: new Set(),
     sharers: new Set(),
     fileStreamers: new Set(),
-    audioBitrate: 128,
+    audioBitrate: roomBitrates.get(roomName) ?? 128,
     messages: [],
   };
   rooms.set(roomName, room);
