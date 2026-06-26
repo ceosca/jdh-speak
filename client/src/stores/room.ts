@@ -137,9 +137,11 @@ interface RoomState {
   // automatic gain). Defaults on for iOS/iPadOS and off elsewhere.
   voiceProcessingEnabled: boolean;
 
-  // Recording (a recording belongs to the room; visible to everyone)
+  // Recording (initiator-private). recordingStartedAt stamps the start time so
+  // the download filename can carry it.
   isRecording: boolean;
   recordingId: string | null;
+  recordingStartedAt: number | null;
 
   // Latest screen-reader announcement (peer join/leave, recording, etc.).
   // `announceSeq` changes on every announce() so React re-renders even when
@@ -224,6 +226,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   voiceProcessingEnabled: loadVoiceProcessing(),
   isRecording: false,
   recordingId: null,
+  recordingStartedAt: null,
   announcement: "",
   announceSeq: 0,
   chatAnnounceMode: loadChatAnnounceMode(),
@@ -273,6 +276,13 @@ export const useRoomStore = create<RoomState>((set, get) => ({
     set((s) => ({
       isRecording,
       recordingId: recordingId !== undefined ? recordingId : s.recordingId,
+      // Stamp the start time (for the download filename); clear it when the
+      // recording is dropped (recordingId explicitly null, e.g. expired).
+      recordingStartedAt: isRecording
+        ? (s.recordingStartedAt ?? Date.now())
+        : recordingId === null
+          ? null
+          : s.recordingStartedAt,
     })),
   announce: (message) => set((s) => ({ announcement: message, announceSeq: s.announceSeq + 1 })),
 
@@ -429,6 +439,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       fileStreamPlaying: false,
       isRecording: false,
       recordingId: null,
+      recordingStartedAt: null,
       announcement: "",
       announceSeq: 0,
       // Keep chatAnnounceMode (a persisted preference); only the live strings reset.

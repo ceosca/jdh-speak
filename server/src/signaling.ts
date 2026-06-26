@@ -275,6 +275,9 @@ export function createSignalingServer(
           mode: decision.mode,
           // Recording is private to whoever started it — not revealed to others.
           recording: null,
+          // Current room voice bitrate (kbps, 128 = original) so a late joiner
+          // matches the room's current quality.
+          audioBitrate: room.audioBitrate,
           // Recent chat so a late joiner can read/announce the last messages.
           messages: room.messages,
         });
@@ -659,6 +662,24 @@ export function createSignalingServer(
         displayName: parsed.data.displayName,
       });
       cb?.({ ok: true, displayName: parsed.data.displayName });
+    });
+
+    // --- Room audio quality (bitrate). No UI: changed live via a keyboard
+    // shortcut; whoever triggers it sets it for EVERYONE (broadcast). Each
+    // client applies it to its own outgoing voice sender (setParameters).
+    socket.on("set-bitrate", (data: unknown, cb?: (res: unknown) => void) => {
+      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
+      const parsed = z.object({ kbps: z.number().int() }).safeParse(data);
+      const allowed = [8, 16, 32, 64, 96, 128];
+      if (!parsed.success || !allowed.includes(parsed.data.kbps)) {
+        return cb?.({ ok: false, error: "Invalid bitrate" });
+      }
+      currentRoom.audioBitrate = parsed.data.kbps;
+      io.to(currentRoom.name).emit("bitrate-changed", {
+        kbps: parsed.data.kbps,
+        by: currentPeer.displayName,
+      });
+      cb?.({ ok: true });
     });
 
     socket.on("disconnect", (reason) => {

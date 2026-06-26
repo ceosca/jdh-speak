@@ -199,6 +199,9 @@
   "announce_recording_on": "Grabación iniciada",
   "announce_recording_off": "Grabación detenida (se puede descargar)",
 
+  "announce_bitrate": "{name} ajustó la calidad de la sala a {kbps} kbps",
+  "announce_bitrate_original": "{name} restauró la calidad original (128 kbps)",
+
   "room_participants_heading": "Participantes",
   "controls_heading": "Controles de audio",
   "room_change_name": "Cambiar nombre",

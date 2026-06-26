@@ -69,6 +69,7 @@ export function Room() {
     toggleFilePlayback,
     toggleRecording,
     rename,
+    cycleRoomBitrate,
     setPeerVolume,
     setMicGain,
     sendChatMessage,
@@ -233,6 +234,13 @@ export function Room() {
         return;
       }
 
+      // Room quality (bitrate) cycle: deliberate Alt+Ctrl+C (no UI, room-wide).
+      if (e.altKey && e.ctrlKey && (e.code === "KeyC" || e.key === "c" || e.key === "C")) {
+        e.preventDefault();
+        cycleRoomBitrate();
+        return;
+      }
+
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
       if (e.key === "m" || e.key === "M") {
@@ -249,7 +257,7 @@ export function Room() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [joinState, toggleMute, toggleAudioShare, toggleRecording]);
+  }, [joinState, toggleMute, toggleAudioShare, toggleRecording, cycleRoomBitrate]);
 
   // Name prompt overlay (first visit or "Change name"). Rendered above whatever
   // is behind it; on first visit nothing is behind yet.

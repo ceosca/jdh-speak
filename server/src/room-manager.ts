@@ -37,6 +37,11 @@ export interface Room {
   // voice track AND of any audio share), so the server has to route it — an
   // active file streamer forces SFU just like a caster/sharer does.
   fileStreamers: Set<string>;
+  // Current room voice bitrate in kbps (128 = original). Changed live via a
+  // keyboard shortcut and broadcast to everyone; each client applies it to its
+  // own outgoing voice sender. Persists for the room's lifetime so late joiners
+  // match the current quality.
+  audioBitrate: number;
   // Rolling chat history (bounded to CHAT_HISTORY_MAX) so late joiners receive
   // recent messages on join. Newest last.
   messages: ChatMessage[];
@@ -73,6 +78,7 @@ export async function getOrCreateRoom(roomName: string): Promise<Room> {
     casters: new Set(),
     sharers: new Set(),
     fileStreamers: new Set(),
+    audioBitrate: 128,
     messages: [],
   };
   rooms.set(roomName, room);

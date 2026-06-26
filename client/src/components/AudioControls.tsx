@@ -15,6 +15,22 @@ import { useRoomStore } from "../stores/room";
 import { DeviceSettings } from "./DeviceSettings";
 import { m } from "../paraglide/messages.js";
 
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+// jdh_record_dd-mm-aa-hh-mm-ss — the recording download filename.
+function recordingStamp(ts: number | null): string {
+  const d = ts ? new Date(ts) : new Date();
+  return [
+    pad2(d.getDate()),
+    pad2(d.getMonth() + 1),
+    pad2(d.getFullYear() % 100),
+    pad2(d.getHours()),
+    pad2(d.getMinutes()),
+    pad2(d.getSeconds()),
+  ].join("-");
+}
+
 interface AudioControlsProps {
   onToggleMute: () => void;
   onToggleAudioShare: () => void;
@@ -42,6 +58,7 @@ export function AudioControls({
   const isSharingAudio = useRoomStore((s) => s.isSharingAudio);
   const isStreamingFile = useRoomStore((s) => s.fileStreamName != null);
   const recordingId = useRoomStore((s) => s.recordingId);
+  const recordingStartedAt = useRoomStore((s) => s.recordingStartedAt);
   const voiceProcessingEnabled = useRoomStore((s) => s.voiceProcessingEnabled);
   const setVoiceProcessingEnabled = useRoomStore((s) => s.setVoiceProcessingEnabled);
 
@@ -179,7 +196,7 @@ export function AudioControls({
         {recordingId && (
           <a
             href={`/api/recordings/${encodeURIComponent(recordingId)}/download`}
-            download={`sonicroom-${recordingId}.ogg`}
+            download={`jdh_record_${recordingStamp(recordingStartedAt)}.ogg`}
             className={`${btn} ${idle}`}
             aria-label={m.controls_download_recording()}
             title={m.controls_download_title()}
@@ -191,7 +208,7 @@ export function AudioControls({
         {recordingId && (
           <a
             href={`/api/recordings/${encodeURIComponent(recordingId)}/tracks`}
-            download={`sonicroom-${recordingId}-tracks.zip`}
+            download={`jdh_record_${recordingStamp(recordingStartedAt)}-tracks.zip`}
             className={`${btn} ${idle}`}
             aria-label={m.controls_download_tracks_recording()}
             title={m.controls_download_tracks_title()}

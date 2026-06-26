@@ -18,6 +18,8 @@ import {
   announce_recording_off,
   announce_recording_unavailable,
   announce_recording_failed,
+  announce_bitrate,
+  announce_bitrate_original,
   announce_mic_muted,
   announce_mic_unmuted,
   announce_peer_muted,
@@ -139,6 +141,28 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") resumeSharedContext();
 });
 
+// Set the max outgoing bitrate (kbps) on a voice sender live, without
+// renegotiation. 128 (or more) = "original" → remove the cap. Used for the
+// room-wide quality command.
+async function setSenderBitrate(
+  sender: RTCRtpSender | null | undefined,
+  kbps: number,
+): Promise<void> {
+  if (!sender) return;
+  try {
+    const params = sender.getParameters();
+    if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+    const max = kbps >= 128 ? undefined : kbps * 1000;
+    for (const enc of params.encodings) {
+      if (max === undefined) delete enc.maxBitrate;
+      else enc.maxBitrate = max;
+    }
+    await sender.setParameters(params);
+  } catch (err) {
+    console.error("[bitrate] setParameters failed:", err);
+  }
+}
+
 function createAudioPipeline(track: MediaStreamTrack): Omit<PeerAudio, "consumer"> {
   const stream = new MediaStream([track]);
   const audioEl = new Audio();
@@ -191,6 +215,9 @@ export function useMediasoup() {
   const noMicRef = useRef(false);
   // True while the server reports someone is talking (drives music ducking).
   const isVoiceActiveRef = useRef(false);
+  // Current room voice bitrate in kbps (128 = original). Re-applied to new
+  // senders on (re)produce / new P2P connection so they match the room.
+  const roomBitrateRef = useRef(128);
   // P2P
   const p2pConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   // Remote ICE candidates that arrived before their peer connection had a
@@ -584,7 +611,9 @@ export function useMediasoup() {
       // Send the processed outgoing track (mic gain + limiter, + shared audio),
       // not the raw mic.
       const g = ensureOutGraph();
-      pc.addTrack(g.outDest.stream.getAudioTracks()[0], g.outDest.stream);
+      const voiceSender = pc.addTrack(g.outDest.stream.getAudioTracks()[0], g.outDest.stream);
+      // Match the room's current voice bitrate on this new P2P sender.
+      void setSenderBitrate(voiceSender, roomBitrateRef.current);
 
       // ICE candidates → relay via server
       pc.onicecandidate = (e) => {
@@ -944,7 +973,10 @@ export function useMediasoup() {
           opusDtx: false,
           opusFec: true,
           opusMaxPlaybackRate: 48000,
-          opusMaxAverageBitrate: 128000,
+          // Honour the room's current quality at produce time (a mode switch or
+          // late join rebuilds the producer); 128 = original.
+          opusMaxAverageBitrate:
+            roomBitrateRef.current < 128 ? roomBitrateRef.current * 1000 : 128000,
         },
         codec: device.recvRtpCapabilities.codecs?.find(
           (c) => c.mimeType.toLowerCase() === "audio/opus",
@@ -956,6 +988,8 @@ export function useMediasoup() {
         stopTracks: false,
       });
       producerRef.current = producer;
+      // Also cap the live sender to the room bitrate (covers a later change).
+      void setSenderBitrate(producer.rtpSender, roomBitrateRef.current);
 
       // If we were already sharing audio (a mode switch into SFU, or a
       // reconnect mid-share), rebuild the separate stereo share producer too.
@@ -1064,6 +1098,7 @@ export function useMediasoup() {
           recording: { recordingId: string } | null;
           voiceActive?: boolean;
           duckingEnabled?: boolean;
+          audioBitrate?: number;
           messages: ChatMessage[];
         };
         const joinPayload = {
@@ -1088,6 +1123,8 @@ export function useMediasoup() {
         // ducking toggle so effectiveGain is correct as producers are consumed.
         isVoiceActiveRef.current = !!joinRes.voiceActive;
         store.getState().setDuckingEnabled(joinRes.duckingEnabled ?? true);
+        // Match the room's current voice bitrate (late joiner / reconnect).
+        roomBitrateRef.current = joinRes.audioBitrate ?? 128;
 
         // Seed chat history (de-duped in the store, silent — no chime/announce).
         for (const m of joinRes.messages ?? []) store.getState().addMessage(m);
@@ -1268,6 +1305,23 @@ export function useMediasoup() {
           store.getState().setPeerName(peerId, displayName);
         },
       );
+
+      // Room voice quality changed (by anyone, via the keyboard shortcut). Apply
+      // it live to our own outgoing voice sender(s) and announce it.
+      socket.on("bitrate-changed", ({ kbps, by }: { kbps: number; by?: string }) => {
+        roomBitrateRef.current = kbps;
+        void setSenderBitrate(producerRef.current?.rtpSender, kbps);
+        for (const pc of p2pConnectionsRef.current.values()) {
+          const sender = pc.getSenders().find((s) => s.track?.kind === "audio");
+          void setSenderBitrate(sender, kbps);
+        }
+        const name = by ?? announce_a_participant();
+        store
+          .getState()
+          .announce(
+            kbps >= 128 ? announce_bitrate_original({ name }) : announce_bitrate({ name, kbps }),
+          );
+      });
 
       // P2P signaling relay
       socket.on(
@@ -1963,6 +2017,16 @@ export function useMediasoup() {
     [emit, store],
   );
 
+  // Cycle the room voice bitrate: 128 (original) → 96 → 64 → 32 → 16 → 8 → wrap.
+  // Room-wide and shortcut-only — the server broadcasts bitrate-changed back to
+  // everyone (us included), which is what actually applies it.
+  const cycleRoomBitrate = useCallback(() => {
+    const order = [128, 96, 64, 32, 16, 8];
+    const idx = order.indexOf(roomBitrateRef.current);
+    const next = order[(idx + 1) % order.length] ?? 96;
+    void emit("set-bitrate", { kbps: next }).catch(() => {});
+  }, [emit]);
+
   // Live mic-gain control: persists the value and ramps the outgoing gain node.
   const setMicGain = useCallback(
     (gain: number) => {
@@ -2069,6 +2133,7 @@ export function useMediasoup() {
     startRecording,
     stopRecording,
     rename,
+    cycleRoomBitrate,
     setPeerVolume,
     setMicGain,
     sendChatMessage,
