@@ -269,6 +269,10 @@ export function createSignalingServer(
         // also forces SFU even with <=2 peers.
         const decision = decideMode(room.peers.size, room.mode, shouldForceSfu(room));
 
+        console.log(
+          `[bitrate] join: ${displayName} -> mode=${decision.mode} audioBitrate=${room.audioBitrate}`,
+        );
+
         cb({
           ok: true,
           rtpCapabilities: room.router.rtpCapabilities,

@@ -1,16 +1,41 @@
 /**
- * Force low-latency Opus params on the P2P voice fmtp.
- * Sets stereo, useinbandfec=1 and minptime=10 for lowest packetization delay,
- * and the voice bitrate (kbps; 128 = original/full). The room-wide quality
- * command renegotiates P2P with the chosen kbps. (SFU voice uses the produce
+ * Force low-latency Opus params on the P2P voice fmtp, and cap the audio
+ * bandwidth to the chosen bitrate (kbps; 128 = original/full).
+ *
+ * For the bitrate to actually take effect we set TWO things:
+ *  - the Opus `maxaveragebitrate` fmtp param, and
+ *  - a `b=AS:<kbps>` bandwidth line on the audio m-section — browsers honour the
+ *    b=AS cap on the encoder far more reliably than maxaveragebitrate alone.
+ * At 128 (original) we add no cap. (SFU voice uses the produce
  * `opusMaxAverageBitrate` flag instead; this munger only touches P2P SDP.)
  */
 export function forceOpusParams(sdp: string, kbps = 128): string {
   const lines = sdp.split("\r\n");
   const result: string[] = [];
-  const bitrate = (kbps >= 128 ? 128 : kbps) * 1000;
+  const capped = kbps >= 128 ? 128 : kbps;
+  const bitrate = capped * 1000;
+  let inAudio = false;
 
   for (const line of lines) {
+    if (line.startsWith("m=")) {
+      inAudio = line.startsWith("m=audio");
+      result.push(line);
+      continue;
+    }
+
+    // Drop any existing bandwidth line in the audio section — we re-add our own
+    // (or none, at original quality) so a re-negotiation isn't stuck at an old cap.
+    if (inAudio && (line.startsWith("b=AS:") || line.startsWith("b=TIAS:"))) {
+      continue;
+    }
+
+    // Put our bandwidth cap right after the connection line in the audio section.
+    if (inAudio && line.startsWith("c=")) {
+      result.push(line);
+      if (capped < 128) result.push(`b=AS:${capped}`);
+      continue;
+    }
+
     if (line.startsWith("a=fmtp:") && line.includes("minptime")) {
       // This is an Opus fmtp line — force our params
       const colonIdx = line.indexOf(":");
