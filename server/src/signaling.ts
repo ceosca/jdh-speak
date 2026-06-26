@@ -413,6 +413,9 @@ export function createSignalingServer(
         });
 
         currentPeer.producers.set(producer.id, producer);
+        if ((source ?? "voice") === "voice") {
+          console.log(`[bitrate-diag] voice (re)produce from ${currentPeer.displayName}`);
+        }
 
         // If the room is being recorded, tap this producer too. Not awaited —
         // the produce callback should return promptly, and the recorder spins up
@@ -695,6 +698,9 @@ export function createSignalingServer(
         return cb?.({ ok: false, error: "Invalid bitrate" });
       }
       currentRoom.audioBitrate = parsed.data.kbps;
+      console.log(
+        `[bitrate] ${currentPeer.displayName} set room "${currentRoom.name}" -> ${parsed.data.kbps}kbps; broadcasting to ${currentRoom.peers.size} peer(s)`,
+      );
       io.to(currentRoom.name).emit("bitrate-changed", {
         kbps: parsed.data.kbps,
         by: currentPeer.displayName,
