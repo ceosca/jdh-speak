@@ -141,6 +141,28 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") resumeSharedContext();
 });
 
+// Cap a P2P sender's outgoing bitrate directly on the encoder via setParameters
+// (Chrome ignores SDP bitrate caps for the P2P audio sender). 128+ = original
+// (remove the cap).
+async function setSenderMaxBitrate(
+  sender: RTCRtpSender | null | undefined,
+  kbps: number,
+): Promise<void> {
+  if (!sender) return;
+  try {
+    const params = sender.getParameters();
+    if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+    const max = kbps >= 128 ? undefined : kbps * 1000;
+    for (const enc of params.encodings) {
+      if (max === undefined) delete enc.maxBitrate;
+      else enc.maxBitrate = max;
+    }
+    await sender.setParameters(params);
+  } catch (err) {
+    console.error("[bitrate] setParameters failed:", err);
+  }
+}
+
 function createAudioPipeline(track: MediaStreamTrack): Omit<PeerAudio, "consumer"> {
   const stream = new MediaStream([track]);
   const audioEl = new Audio();
@@ -589,7 +611,9 @@ export function useMediasoup() {
       // Send the processed outgoing track (mic gain + limiter, + shared audio),
       // not the raw mic.
       const g = ensureOutGraph();
-      pc.addTrack(g.outDest.stream.getAudioTracks()[0], g.outDest.stream);
+      const voiceSender = pc.addTrack(g.outDest.stream.getAudioTracks()[0], g.outDest.stream);
+      // Apply the current room bitrate to this new P2P sender's encoder.
+      void setSenderMaxBitrate(voiceSender, roomBitrateRef.current);
 
       // ICE candidates → relay via server
       pc.onicecandidate = (e) => {
@@ -1298,8 +1322,19 @@ export function useMediasoup() {
           .announce(
             kbps >= 128 ? announce_bitrate_original({ name }) : announce_bitrate({ name, kbps }),
           );
-        socket.disconnect();
-        socket.connect();
+        if (modeRef.current === "sfu") {
+          // SFU bitrate is set by mediasoup at produce time → reconnect to
+          // re-produce at the new bitrate (verified to actually lower it).
+          socket.disconnect();
+          socket.connect();
+        } else {
+          // P2P: cap each sender's encoder directly (SDP caps are ignored by
+          // Chrome for P2P audio; setParameters talks to the encoder).
+          for (const pc of p2pConnectionsRef.current.values()) {
+            const sender = pc.getSenders().find((s) => s.track?.kind === "audio");
+            void setSenderMaxBitrate(sender, kbps);
+          }
+        }
       });
 
       // P2P signaling relay

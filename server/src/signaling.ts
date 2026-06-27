@@ -269,10 +269,6 @@ export function createSignalingServer(
         // also forces SFU even with <=2 peers.
         const decision = decideMode(room.peers.size, room.mode, shouldForceSfu(room));
 
-        console.log(
-          `[bitrate] join: ${displayName} -> mode=${decision.mode} audioBitrate=${room.audioBitrate}`,
-        );
-
         cb({
           ok: true,
           rtpCapabilities: room.router.rtpCapabilities,
@@ -418,9 +414,6 @@ export function createSignalingServer(
         });
 
         currentPeer.producers.set(producer.id, producer);
-        if ((source ?? "voice") === "voice") {
-          console.log(`[bitrate-diag] voice (re)produce from ${currentPeer.displayName}`);
-        }
 
         // If the room is being recorded, tap this producer too. Not awaited —
         // the produce callback should return promptly, and the recorder spins up
@@ -672,26 +665,6 @@ export function createSignalingServer(
       cb?.({ ok: true, displayName: parsed.data.displayName });
     });
 
-    // Close one of this peer's producers (used when a client re-creates its
-    // voice producer to change bitrate live — the old server-side producer must
-    // be closed so it doesn't linger; mediasoup closes its consumers too).
-    socket.on("close-producer", (data: unknown, cb?: (res: unknown) => void) => {
-      if (!currentRoom || !currentPeer) return cb?.({ ok: false });
-      const parsed = z.object({ producerId: z.string() }).safeParse(data);
-      if (!parsed.success) return cb?.({ ok: false, error: "Invalid producerId" });
-      const producer = currentPeer.producers.get(parsed.data.producerId);
-      if (producer) {
-        producer.close();
-        currentPeer.producers.delete(parsed.data.producerId);
-        if (recordingManager.isRecording(currentRoom.name)) {
-          void recordingManager
-            .removeProducer(currentRoom.name, parsed.data.producerId)
-            .catch(() => {});
-        }
-      }
-      cb?.({ ok: true });
-    });
-
     // --- Room audio quality (bitrate). No UI: changed live via a keyboard
     // shortcut; whoever triggers it sets it for EVERYONE (broadcast). Each
     // client then re-creates its outgoing voice stream at the new bitrate.
@@ -703,9 +676,6 @@ export function createSignalingServer(
         return cb?.({ ok: false, error: "Invalid bitrate" });
       }
       rememberRoomBitrate(currentRoom.name, parsed.data.kbps);
-      console.log(
-        `[bitrate] ${currentPeer.displayName} set room "${currentRoom.name}" -> ${parsed.data.kbps}kbps; broadcasting to ${currentRoom.peers.size} peer(s)`,
-      );
       io.to(currentRoom.name).emit("bitrate-changed", {
         kbps: parsed.data.kbps,
         by: currentPeer.displayName,
