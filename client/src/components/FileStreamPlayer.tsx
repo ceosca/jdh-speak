@@ -124,7 +124,7 @@ export function FileStreamPlayer({
     Math.abs(opt.value - fileVolume) < Math.abs(best.value - fileVolume) ? opt : best,
   ).value;
 
-  const progressValueText = `${formatTime(playerTime)} de ${formatTime(playerDuration)}`;
+  const progressValueText = m.player_progress_valuetext({ current: formatTime(playerTime), total: formatTime(playerDuration) });
 
   return (
     <div
@@ -275,8 +275,8 @@ export function FileStreamPlayer({
               }}
             >
               <FileMusic className="h-3 w-3 shrink-0" aria-hidden="true" />
-              <span className="truncate" title={track.name}>
-                {track.name}
+              <span className="truncate" title={track.name || m.player_track_n({ n: i + 1 })}>
+                {track.name || m.player_track_n({ n: i + 1 })}
               </span>
             </li>
           ))}

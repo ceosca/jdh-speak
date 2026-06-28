@@ -2009,6 +2009,7 @@ export function useMediasoup() {
       const makeSlot = (active: boolean): FileSlot => {
         const audioEl = new Audio();
         (audioEl as unknown as Record<string, boolean>).playsInline = true;
+        audioEl.playbackRate = store.getState().playerRate;
         const source = sharedAudioContext.createMediaElementSource(audioEl);
         const xfadeGain = sharedAudioContext.createGain();
         xfadeGain.gain.value = active ? 1 : 0;
