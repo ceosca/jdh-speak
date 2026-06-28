@@ -8,10 +8,6 @@ import { isIOS, getMicrophoneStream } from "../lib/microphone";
 import { playCue } from "../lib/sounds";
 import { formatMessage, RateLimiter, META_SEP, type ChatMessage } from "../lib/chat";
 import {
-  announce_joined,
-  announce_left,
-  announce_music_started,
-  announce_music_stopped,
   announce_chat_hint,
   announce_a_participant,
   announce_recording_on,
@@ -20,25 +16,6 @@ import {
   announce_recording_failed,
   announce_bitrate,
   announce_bitrate_original,
-  announce_mic_muted,
-  announce_mic_unmuted,
-  announce_peer_muted,
-  announce_peer_unmuted,
-  announce_share_started_you,
-  announce_share_stopped_you,
-  announce_file_stream_started_you,
-  announce_file_stream_stopped_you,
-  announce_file_stream_ended,
-  announce_file_stream_error,
-  announce_file_stream_paused,
-  announce_file_stream_resumed,
-  announce_ducking_enabled,
-  announce_ducking_disabled,
-  announce_no_mic,
-  announce_voice_processing_on,
-  announce_voice_processing_off,
-  file_player_streaming,
-  player_now_playing,
 } from "../paraglide/messages.js";
 import { useRoomStore, type RoomMode } from "../stores/room";
 import type { PlayerRepeat } from "../stores/room";
@@ -597,15 +574,7 @@ export function useMediasoup() {
       localStreamRef.current = stream;
       connectMicToGraph(stream);
       old?.getTracks().forEach((t) => t.stop());
-      // Confirm the live change to screen readers when the voice-processing flag
-      // (not the device) is what changed.
-      if (previous.voiceProcessingEnabled !== voiceProcessingEnabled) {
-        store
-          .getState()
-          .announce(
-            voiceProcessingEnabled ? announce_voice_processing_on() : announce_voice_processing_off(),
-          );
-      }
+      // Voice-processing flag changed — no announcement needed.
     })();
     return () => {
       cancelled = true;
@@ -899,15 +868,8 @@ export function useMediasoup() {
       peerAudiosRef.current.set(peerId, { ...pipeline, consumer });
 
       // Flag a music-caster peer (e.g. Ecobox) so the UI shows it as a media
-      // source. Stereo is preserved end-to-end by createAudioPipeline. The
-      // first time we learn this peer casts music, announce + log it — a
-      // re-consume (mode switch / reconnect) finds isMusic already set, so it
-      // never re-announces.
+      // source. Stereo is preserved end-to-end by createAudioPipeline.
       if (source === "music") {
-        if (!store.getState().peers.get(peerId)?.isMusic) {
-          const name = store.getState().peers.get(peerId)?.displayName ?? announce_a_participant();
-          store.getState().announceEvent(announce_music_started({ name }));
-        }
         store.getState().setPeerMusic(peerId, true);
         store.getState().setPeerDuckAtReceiver(peerId, true);
       }
@@ -1256,7 +1218,6 @@ export function useMediasoup() {
         "peer-joined",
         ({ peerId, displayName: name }: { peerId: string; displayName: string }) => {
           store.getState().addPeer(peerId, name);
-          store.getState().announce(announce_joined({ name }));
           const joinTs = Date.now();
           store.getState().addMessage({
             id: `sys-join-${peerId}-${joinTs}`,
@@ -1287,12 +1248,7 @@ export function useMediasoup() {
           peerAudiosRef.current.delete(peerId);
         }
         store.getState().removePeer(peerId);
-        if (wasMusic) {
-          // A music caster (e.g. Ecobox) going away reads as the music
-          // stopping, not as a participant leaving.
-          store.getState().announceEvent(announce_music_stopped({ name }));
-        } else {
-          store.getState().announce(announce_left({ name }));
+        if (!wasMusic) {
           const leaveTs = Date.now();
           store.getState().addMessage({
             id: `sys-leave-${peerId}-${leaveTs}`,
@@ -1496,23 +1452,13 @@ export function useMediasoup() {
       // music stream to its new level (un-duck when turned off, re-duck when
       // turned back on if a voice is active), and log it. De-duped so an echo of
       // our own change — or one matching the value we already have — is a no-op.
-      socket.on("ducking-changed", ({ enabled, by }: { enabled: boolean; by?: string }) => {
+      socket.on("ducking-changed", ({ enabled }: { enabled: boolean; by?: string }) => {
         if (store.getState().duckingEnabled === enabled) return;
         store.getState().setDuckingEnabled(enabled);
         rampMusicGains();
         // Re-ramp our own outgoing share/file duck gains: turning ducking off
         // must un-duck the emitted audio even if no voice transition fires.
         rampEmitDuck(isVoiceActiveRef.current && enabled);
-        const name = by ?? announce_a_participant();
-        // Coalesced so mashing the ducking toggle doesn't spam the whole room's
-        // chat log (the gain change above still applies on every flip).
-        surfaceToggle("ducking", enabled, () => {
-          store
-            .getState()
-            .announceEvent(
-              enabled ? announce_ducking_enabled({ name }) : announce_ducking_disabled({ name }),
-            );
-        });
       });
 
       // A remote peer toggled their mic: reflect it, play a soft cue, and speak
@@ -1523,8 +1469,6 @@ export function useMediasoup() {
         // Coalesced per peer so a peer mashing their mic only blips us once or
         // twice, not on every flip (see surfaceToggle).
         surfaceToggle(`peer:${peerId}`, true, () => {
-          const name = store.getState().peers.get(peerId)?.displayName ?? announce_a_participant();
-          store.getState().announce(announce_peer_muted({ name }));
           playCue(sharedAudioContext, "peer-mute");
         });
       });
@@ -1532,8 +1476,6 @@ export function useMediasoup() {
       socket.on("peer-unmuted", ({ peerId }: { peerId: string }) => {
         store.getState().setPeerMuted(peerId, false);
         surfaceToggle(`peer:${peerId}`, false, () => {
-          const name = store.getState().peers.get(peerId)?.displayName ?? announce_a_participant();
-          store.getState().announce(announce_peer_unmuted({ name }));
           playCue(sharedAudioContext, "peer-unmute");
         });
       });
@@ -1560,10 +1502,7 @@ export function useMediasoup() {
       // reject if that initial join fails), so callers can flip to "joined".
       await ready;
 
-      // Once joined, let the user know (and log to chat) that they're in
-      // listen/chat-only mode, so it's not a silent surprise that they can't
-      // talk. Runs once — `ready` resolves only on the first successful join.
-      if (noMicRef.current) store.getState().announceEvent(announce_no_mic());
+      // No-mic mode: UI reflects listen/chat-only state via store flag.
     },
     [
       emit,
@@ -1605,9 +1544,8 @@ export function useMediasoup() {
       await emit("producer-pause", {}).catch(() => {});
     }
     store.getState().setMuted(true);
-    // Coalesced so mashing mute doesn't spam the chat log + cue (see surfaceToggle).
+    // Coalesced so mashing mute doesn't spam the cue (see surfaceToggle).
     surfaceToggle("mic", true, () => {
-      store.getState().announceEvent(announce_mic_muted());
       playCue(sharedAudioContext, "mute");
     });
   }, [emit, store, surfaceToggle]);
@@ -1628,7 +1566,6 @@ export function useMediasoup() {
     }
     store.getState().setMuted(false);
     surfaceToggle("mic", false, () => {
-      store.getState().announceEvent(announce_mic_unmuted());
       playCue(sharedAudioContext, "unmute");
     });
   }, [emit, store, surfaceToggle]);
@@ -1688,7 +1625,6 @@ export function useMediasoup() {
     detachSharedAudio();
     store.getState().setSharingAudio(false);
     // Local feedback.
-    store.getState().announceEvent(announce_share_stopped_you());
     playCue(sharedAudioContext, "share-stop");
   }, [store, detachSharedAudio]);
 
@@ -1746,7 +1682,6 @@ export function useMediasoup() {
     store.getState().setSharingAudio(true);
 
     // Local feedback.
-    store.getState().announceEvent(announce_share_started_you());
     playCue(sharedAudioContext, "share-start");
   }, [store, ensureOutGraph, stopAudioShare]);
 
@@ -1831,7 +1766,7 @@ export function useMediasoup() {
   );
 
   const stopFileStream = useCallback(
-    async (announcement?: string) => {
+    async () => {
       if (store.getState().fileStreamName == null) return;
       // Save the active slot's current position before teardown so it can be resumed.
       const g = outGraphRef.current;
@@ -1885,8 +1820,7 @@ export function useMediasoup() {
         }
       }
       // File now mixes into the voice track — no server-side pin or producer to
-      // close. Just announce and play the cue.
-      store.getState().announceEvent(announcement ?? announce_file_stream_stopped_you());
+      // close. Play the cue.
       playCue(sharedAudioContext, "share-stop");
     },
     [store],
@@ -1921,8 +1855,8 @@ export function useMediasoup() {
         slot,
         src,
         objectUrl,
-        () => void stopFileStream(announce_file_stream_ended()),
-        () => void stopFileStream(announce_file_stream_error()),
+        () => void stopFileStream(),
+        () => void stopFileStream(),
         fileSourceOnMetadata,
       );
 
@@ -1948,18 +1882,9 @@ export function useMediasoup() {
 
       if (firstStart) {
         // File now mixes into the voice track (outDest) — no SFU pin, no separate
-        // producer. Just announce that streaming has started.
-        store.getState().announceEvent(announce_file_stream_started_you());
+        // producer. Play the cue.
         playCue(sharedAudioContext, "share-start");
-      } else {
-        // Replacing the file mid-stream.
-        store.getState().announce(file_player_streaming({ name }));
       }
-      // Announce which track is now playing (logged to chat for NVDA).
-      // For folder playlists the first track goes through startFileSource, and
-      // subsequent tracks through playTrack (which announces there). So we always
-      // announce here; playTrack announces again for crossfade transitions.
-      store.getState().announceEvent(player_now_playing({ name }));
     },
     [store, ensureOutGraph, ensureFileSlots, loadIntoSlot, stopFileStream],
   );
@@ -2061,7 +1986,7 @@ export function useMediasoup() {
                 shuffleOrderRef.current = newOrder;
                 nextIdx = newOrder[0]!;
               } else {
-                void stopFileStream(announce_file_stream_ended());
+                void stopFileStream();
                 return;
               }
             } else {
@@ -2073,7 +1998,7 @@ export function useMediasoup() {
               if (repeat === "all") {
                 nextIdx = 0;
               } else {
-                void stopFileStream(announce_file_stream_ended());
+                void stopFileStream();
                 return;
               }
             } else {
@@ -2113,7 +2038,7 @@ export function useMediasoup() {
         track.objectUrl,
         undefined,
         onEnded,
-        () => void stopFileStream(announce_file_stream_error()),
+        () => void stopFileStream(),
         onMetadata,
       );
 
@@ -2163,8 +2088,6 @@ export function useMediasoup() {
 
       store.getState().setFileStream(track.name);
       store.getState().setFileStreamPlaying(true);
-      // Announce the newly active track to screen readers (logged to chat).
-      store.getState().announceEvent(player_now_playing({ name: track.name }));
     },
     [store, ensureOutGraph, ensureFileSlots, loadIntoSlot, stopFileStream],
   );
@@ -2290,10 +2213,10 @@ export function useMediasoup() {
               const pos = order.indexOf(s.playlistIndex);
               if (pos >= order.length - 1) {
                 if (s.playerRepeat === "all") { shuffleOrderRef.current = shuffleIndices(s.playlist.length); void pt(shuffleOrderRef.current[0]!); }
-                else void stopFileStream(announce_file_stream_ended());
+                else void stopFileStream();
               } else { void pt(order[pos + 1]!); }
             },
-            () => void stopFileStream(announce_file_stream_error()),
+            () => void stopFileStream(),
             onMetadataShuffle,
           );
           // Re-play (loadIntoSlot paused the element).
@@ -2331,10 +2254,10 @@ export function useMediasoup() {
               const cur = s.playlistIndex;
               if (cur >= s.playlist.length - 1) {
                 if (s.playerRepeat === "all") void pt(0);
-                else void stopFileStream(announce_file_stream_ended());
+                else void stopFileStream();
               } else { void pt(cur + 1); }
             },
-            () => void stopFileStream(announce_file_stream_error()),
+            () => void stopFileStream(),
             onMetadataFirst,
           );
           void slot.audioEl.play().catch(() => {});
@@ -2351,7 +2274,6 @@ export function useMediasoup() {
     if (el.paused) {
       void el.play().catch(() => {});
       store.getState().setFileStreamPlaying(true);
-      store.getState().announce(announce_file_stream_resumed());
     } else {
       // Save position on pause so the track can be resumed from here next session.
       const pausedName = store.getState().fileStreamName;
@@ -2361,7 +2283,6 @@ export function useMediasoup() {
       }
       el.pause();
       store.getState().setFileStreamPlaying(false);
-      store.getState().announce(announce_file_stream_paused());
     }
   }, [store]);
 
