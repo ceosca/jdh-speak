@@ -26,6 +26,9 @@ function loadMicGain(): number {
 const MIC_DEVICE_KEY = "sonicroom:micDeviceId";
 const SPEAKER_DEVICE_KEY = "sonicroom:speakerDeviceId";
 const VOICE_PROCESSING_KEY = "sonicroom:voiceProcessing";
+const SECONDARY_ENABLED_KEY = "sonicroom:secondaryEnabled";
+const SECONDARY_DEVICE_KEY = "sonicroom:secondaryDeviceId";
+const SECONDARY_MONITOR_KEY = "sonicroom:secondaryMonitor";
 
 function loadString(key: string): string {
   try {
@@ -136,6 +139,12 @@ interface RoomState {
   // Browser voice processing (echo cancellation, noise suppression and
   // automatic gain). Defaults on for iOS/iPadOS and off elsewhere.
   voiceProcessingEnabled: boolean;
+  // Secondary transmission device. Groundwork for a future feature that sends
+  // audio from a second input to a separate output. Not yet wired to the media
+  // graph — these are persisted preferences only.
+  secondaryEnabled: boolean;
+  secondaryDeviceId: string;
+  secondaryMonitor: boolean;
 
   // Recording (initiator-private). recordingStartedAt stamps the start time so
   // the download filename can carry it.
@@ -187,6 +196,9 @@ interface RoomState {
   setMicDeviceId: (deviceId: string) => void;
   setSpeakerDeviceId: (deviceId: string) => void;
   setVoiceProcessingEnabled: (enabled: boolean) => void;
+  setSecondaryEnabled: (enabled: boolean) => void;
+  setSecondaryDeviceId: (deviceId: string) => void;
+  setSecondaryMonitor: (monitor: boolean) => void;
   setRecording: (recording: boolean, recordingId?: string | null) => void;
   announce: (message: string) => void;
   announceEvent: (message: string) => void;
@@ -224,6 +236,9 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   micDeviceId: loadString(MIC_DEVICE_KEY),
   speakerDeviceId: loadString(SPEAKER_DEVICE_KEY),
   voiceProcessingEnabled: loadVoiceProcessing(),
+  secondaryEnabled: loadString(SECONDARY_ENABLED_KEY) === "true",
+  secondaryDeviceId: loadString(SECONDARY_DEVICE_KEY),
+  secondaryMonitor: loadString(SECONDARY_MONITOR_KEY) === "true",
   isRecording: false,
   recordingId: null,
   recordingStartedAt: null,
@@ -271,6 +286,18 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setVoiceProcessingEnabled: (voiceProcessingEnabled) => {
     saveString(VOICE_PROCESSING_KEY, String(voiceProcessingEnabled));
     set({ voiceProcessingEnabled });
+  },
+  setSecondaryEnabled: (secondaryEnabled) => {
+    saveString(SECONDARY_ENABLED_KEY, String(secondaryEnabled));
+    set({ secondaryEnabled });
+  },
+  setSecondaryDeviceId: (secondaryDeviceId) => {
+    saveString(SECONDARY_DEVICE_KEY, secondaryDeviceId);
+    set({ secondaryDeviceId });
+  },
+  setSecondaryMonitor: (secondaryMonitor) => {
+    saveString(SECONDARY_MONITOR_KEY, String(secondaryMonitor));
+    set({ secondaryMonitor });
   },
   setRecording: (isRecording, recordingId) =>
     set((s) => ({
