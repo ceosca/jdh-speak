@@ -188,9 +188,7 @@ interface RoomState {
   // Browser voice processing (echo cancellation, noise suppression and
   // automatic gain). Defaults on for iOS/iPadOS and off elsewhere.
   voiceProcessingEnabled: boolean;
-  // Secondary transmission device. Groundwork for a future feature that sends
-  // audio from a second input to a separate output. Not yet wired to the media
-  // graph — these are persisted preferences only.
+  // Secondary transmission device: a second recording device (mic or loopback) mixed into the outgoing voice stream. monitor = hear it locally. Persisted.
   secondaryEnabled: boolean;
   secondaryDeviceId: string;
   secondaryMonitor: boolean;

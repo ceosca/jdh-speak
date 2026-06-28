@@ -2890,6 +2890,10 @@ export function useMediasoup() {
     socketRef.current?.disconnect();
     socketRef.current = null;
     deviceRef.current = null;
+    // Revoke any remaining playlist object URLs before reset() clears the array.
+    for (const track of store.getState().playlist) {
+      try { URL.revokeObjectURL(track.objectUrl); } catch { /* best-effort */ }
+    }
     store.getState().reset();
   }, [teardownP2p, teardownSfu, detachSharedAudio, store]);
 
