@@ -28,15 +28,6 @@ export interface Room {
   // Peer ids of send-only "music caster" peers (e.g. Ecobox). While any are
   // present the room is forced to SFU (see decideMode's forceSfu).
   casters: Set<string>;
-  // Peer ids currently sharing system/tab audio. Their share is a *separate*
-  // stereo "share" producer (the voice track stays mono), which the server has
-  // to route — so an active sharer forces SFU just like a caster does.
-  sharers: Set<string>;
-  // Peer ids currently streaming a local file into the call. Like a share, a
-  // file stream is its own *separate* stereo "file" producer (independent of the
-  // voice track AND of any audio share), so the server has to route it — an
-  // active file streamer forces SFU just like a caster/sharer does.
-  fileStreamers: Set<string>;
   // Current room voice bitrate in kbps (128 = original). Changed live via a
   // keyboard shortcut and broadcast to everyone; each client applies it to its
   // own outgoing voice sender. Persists for the room's lifetime so late joiners
@@ -87,8 +78,6 @@ export async function getOrCreateRoom(roomName: string): Promise<Room> {
     mode: "p2p",
     disableP2p: false,
     casters: new Set(),
-    sharers: new Set(),
-    fileStreamers: new Set(),
     audioBitrate: roomBitrates.get(roomName) ?? 128,
     messages: [],
   };

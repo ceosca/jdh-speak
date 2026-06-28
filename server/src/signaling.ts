@@ -48,13 +48,6 @@ const joinSchema = z.object({
   // Explicitly disable P2P for this room (the `?p2p=off` room URL param). Pins
   // the room to the SFU even with <=2 peers; sticky once any joiner sets it.
   disableP2p: z.boolean().optional(),
-  // Set on a reconnect if this peer was sharing audio when it dropped, so the
-  // server re-pins SFU for the rejoin (the share producer is rebuilt right
-  // after, in setupSfu). On a first join it's always false.
-  sharing: z.boolean().optional(),
-  // Same as `sharing`, but for an in-progress local-file stream: re-pins SFU on
-  // a reconnect so the "file" producer rebuilds. Always false on a first join.
-  fileStreaming: z.boolean().optional(),
 });
 
 function closeSfuResources(peer: Peer) {
@@ -139,8 +132,6 @@ export function createSignalingServer(
     return (
       recordingManager.isRecording(room.name) ||
       room.casters.size > 0 ||
-      room.sharers.size > 0 ||
-      room.fileStreamers.size > 0 ||
       room.disableP2p
     );
   }
@@ -197,12 +188,9 @@ export function createSignalingServer(
       void recordingManager.discard(room.name).catch(() => {});
     }
 
-    // Drop from the caster/sharer/file-streamer sets before removePeer (which
-    // may destroy the room) so the mode decision no longer forces SFU once this
-    // music caster / audio-sharer / file-streamer is gone.
+    // Drop from the casters set before removePeer (which may destroy the room)
+    // so the mode decision no longer forces SFU once this music caster is gone.
     room.casters.delete(peerId);
-    room.sharers.delete(peerId);
-    room.fileStreamers.delete(peerId);
 
     removePeer(room, peerId);
 
@@ -218,7 +206,7 @@ export function createSignalingServer(
 
     socket.on("join", async (data: unknown, cb: (res: unknown) => void) => {
       try {
-        const { roomName, displayName, role, disableP2p, sharing, fileStreaming } =
+        const { roomName, displayName, role, disableP2p } =
           joinSchema.parse(data);
         const room = await getOrCreateRoom(roomName);
 
@@ -233,12 +221,6 @@ export function createSignalingServer(
         // forced-SFU room. disableP2p is sticky for the room's lifetime.
         if (role === "caster") room.casters.add(socket.id);
         if (disableP2p) room.disableP2p = true;
-        // A peer reconnecting mid-share re-pins SFU before the mode is decided,
-        // so the rejoin lands straight in SFU and its share producer rebuilds.
-        if (sharing) room.sharers.add(socket.id);
-        // Likewise for an in-progress local-file stream.
-        if (fileStreaming) room.fileStreamers.add(socket.id);
-
         currentRoom = room;
         currentPeer = peer;
 
@@ -523,87 +505,6 @@ export function createSignalingServer(
       socket.to(currentRoom.name).emit(parsed.data.muted ? "peer-muted" : "peer-unmuted", {
         peerId: socket.id,
       });
-      cb?.({ ok: true });
-    });
-
-    // --- Audio share (a peer casting system/tab audio as a stereo producer) ---
-    // start-share pins the room to SFU (a stereo producer must be routed by the
-    // server) and announces it; the client then produces a "share" track. We
-    // broadcast share-started/-stopped so peers play a cue + SR announcement.
-    socket.on("start-share", (_data: unknown, cb?: (res: unknown) => void) => {
-      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
-      currentRoom.sharers.add(socket.id);
-      socket.to(currentRoom.name).emit("share-started", {
-        peerId: socket.id,
-        displayName: currentPeer.displayName,
-      });
-      applyModeDecision(currentRoom);
-      cb?.({ ok: true });
-    });
-
-    socket.on("stop-share", (_data: unknown, cb?: (res: unknown) => void) => {
-      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
-      currentRoom.sharers.delete(socket.id);
-      // Close this peer's share producer(s) so consumers stop receiving the
-      // music; the matching consumers close client-side via share-stopped.
-      for (const [id, producer] of currentPeer.producers) {
-        if ((producer.appData?.source as string) === "share") {
-          producer.close();
-          currentPeer.producers.delete(id);
-          // Also stop its capture/feed if recording/streaming — otherwise the
-          // recorder/mixer idles on a dead port until it ends.
-          if (recordingManager.isRecording(currentRoom.name)) {
-            void recordingManager.removeProducer(currentRoom.name, id).catch(() => {});
-          }
-        }
-      }
-      socket.to(currentRoom.name).emit("share-stopped", {
-        peerId: socket.id,
-        displayName: currentPeer.displayName,
-      });
-      // No longer pins SFU — fall back to P2P if <=2 peers and nothing else forces it.
-      applyModeDecision(currentRoom);
-      cb?.({ ok: true });
-    });
-
-    // --- File streaming (a peer streaming a local audio file as a stereo
-    // producer). Independent of the audio share above and of any caster: a peer
-    // can stream a file AND share system audio at the same time. start-file-stream
-    // pins the room to SFU (a stereo producer must be routed by the server) and
-    // announces it; the client then produces a "file" track. ---
-    socket.on("start-file-stream", (_data: unknown, cb?: (res: unknown) => void) => {
-      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
-      currentRoom.fileStreamers.add(socket.id);
-      socket.to(currentRoom.name).emit("file-stream-started", {
-        peerId: socket.id,
-        displayName: currentPeer.displayName,
-      });
-      applyModeDecision(currentRoom);
-      cb?.({ ok: true });
-    });
-
-    socket.on("stop-file-stream", (_data: unknown, cb?: (res: unknown) => void) => {
-      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
-      currentRoom.fileStreamers.delete(socket.id);
-      // Close this peer's file producer(s) so consumers stop receiving the audio;
-      // the matching consumers close client-side via file-stream-stopped.
-      for (const [id, producer] of currentPeer.producers) {
-        if ((producer.appData?.source as string) === "file") {
-          producer.close();
-          currentPeer.producers.delete(id);
-          // Also stop its capture/feed if recording/streaming — otherwise the
-          // recorder/mixer idles on a dead port until it ends.
-          if (recordingManager.isRecording(currentRoom.name)) {
-            void recordingManager.removeProducer(currentRoom.name, id).catch(() => {});
-          }
-        }
-      }
-      socket.to(currentRoom.name).emit("file-stream-stopped", {
-        peerId: socket.id,
-        displayName: currentPeer.displayName,
-      });
-      // No longer pins SFU — fall back to P2P if <=2 peers and nothing else forces it.
-      applyModeDecision(currentRoom);
       cb?.({ ok: true });
     });
 
