@@ -112,9 +112,67 @@ export function FileStreamPlayer({
   }, []);
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    // Always handle Escape to stop, regardless of target.
     if (e.key === "Escape") {
       e.stopPropagation();
       onStop();
+      return;
+    }
+
+    // Don't intercept keys typed into inner form controls (volume/speed selects,
+    // range slider) — let the native control handle them.
+    if (
+      e.target instanceof HTMLInputElement ||
+      e.target instanceof HTMLSelectElement ||
+      e.target instanceof HTMLTextAreaElement
+    ) {
+      return;
+    }
+
+    // Space → play/pause.
+    if (e.code === "Space" || e.key === " ") {
+      e.preventDefault();
+      e.stopPropagation();
+      onTogglePlay();
+      return;
+    }
+
+    // Arrow keys with modifiers → seek.
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      const dir = e.key === "ArrowLeft" ? -1 : 1;
+      if (e.ctrlKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        onSeekBy(dir * 60);
+        return;
+      }
+      if (e.altKey) {
+        // preventDefault cancels browser Alt+Arrow back/forward navigation.
+        e.preventDefault();
+        e.stopPropagation();
+        onSeekBy(dir * 10);
+        return;
+      }
+      if (e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        onSeekBy(dir * 5);
+        return;
+      }
+    }
+
+    // Shift+P → previous track; Shift+N → next track.
+    if (e.shiftKey && (e.code === "KeyP" || e.key === "P" || e.key === "p")) {
+      e.preventDefault();
+      e.stopPropagation();
+      onPrev();
+      return;
+    }
+    if (e.shiftKey && (e.code === "KeyN" || e.key === "N" || e.key === "n")) {
+      e.preventDefault();
+      e.stopPropagation();
+      onNext();
+      return;
     }
   };
 
@@ -128,10 +186,12 @@ export function FileStreamPlayer({
 
   return (
     <div
+      id="conference-player"
       role="application"
       aria-label={m.file_player_heading()}
       onKeyDown={onKeyDown}
-      className="fixed bottom-28 right-4 z-20 w-80 rounded-xl border border-sonic-600 bg-sonic-800 p-3 shadow-2xl"
+      tabIndex={-1}
+      className="fixed bottom-28 right-4 z-20 w-80 rounded-xl border border-sonic-600 bg-sonic-800 p-3 shadow-2xl focus:outline-none focus:ring-2 focus:ring-sonic-accent"
     >
       {/* Track name + stop button */}
       <div className="mb-2 flex items-center gap-2">
@@ -216,7 +276,7 @@ export function FileStreamPlayer({
 
       {/* Keyboard guidance — tied to play button via aria-describedby. */}
       <p id="file-player-hint" className="mt-1 text-center text-xs text-sonic-400">
-        {m.file_player_hint()}
+        {m.player_focus_hint()}
       </p>
 
       {/* Repeat + shuffle controls (always visible when there's audio). */}

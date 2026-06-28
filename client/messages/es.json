@@ -249,5 +249,7 @@
   "player_shuffle": "Aleatorio",
   "player_playlist": "Lista de reproducción",
   "player_track_n": "Pista {n}",
-  "player_now_playing": "Ahora suena: {name}"
+  "player_now_playing": "Ahora suena: {name}",
+  "player_focus_hint": "Ctrl+Alt+P para enfocar el reproductor; Espacio para reproducir/pausar; Flechas+Ctrl ±60 s, +Alt ±10 s, +Mayús ±5 s; Mayús+P/N pista anterior/siguiente; Escape para detener",
+  "player_nothing_playing": "No hay nada reproduciéndose"
 }

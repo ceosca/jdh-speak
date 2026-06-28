@@ -269,6 +269,17 @@ export function Room() {
         return;
       }
 
+      // Player focus: Ctrl+Alt+P moves keyboard focus to the player container.
+      if (e.altKey && e.ctrlKey && (e.code === "KeyP" || e.key === "p" || e.key === "P")) {
+        e.preventDefault();
+        if (useRoomStore.getState().fileStreamName != null) {
+          document.getElementById("conference-player")?.focus();
+        } else {
+          useRoomStore.getState().announce(m.player_nothing_playing());
+        }
+        return;
+      }
+
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
       if (e.key === "m" || e.key === "M") {
