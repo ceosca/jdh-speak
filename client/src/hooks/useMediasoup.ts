@@ -399,6 +399,10 @@ export function useMediasoup() {
     const outDest = ctx.createMediaStreamDestination();
     micGain.connect(limiter);
     limiter.connect(outDest);
+    // Local mic monitor (hear yourself): tapped AFTER micGain so it plays at the
+    // same volume people receive — lowering "your mic level" lowers it too.
+    // micGain is permanent, so this edge survives mic re-acquisition.
+    if (store.getState().micMonitor) micGain.connect(ctx.destination);
     outGraphRef.current = {
       micSource: null,
       micGain,
@@ -425,13 +429,11 @@ export function useMediasoup() {
       g.micSource?.disconnect();
       g.micSource = sharedAudioContext.createMediaStreamSource(stream);
       g.micSource.connect(g.micGain);
-      // Re-establish the local mic monitor if it's on — the source node was just
-      // rebuilt, so its destination edge is gone. Raw source → destination is the
-      // lowest-latency self-monitoring path (no gain/limiter in between).
-      if (store.getState().micMonitor) g.micSource.connect(sharedAudioContext.destination);
+      // The mic monitor edge lives on micGain (a permanent node), not on
+      // micSource — so it survives this re-acquisition and needs no re-wiring here.
       g.micStream = stream;
     },
-    [ensureOutGraph, store],
+    [ensureOutGraph],
   );
 
   // --- Device selection (set in the lobby or via the in-call settings) ---
@@ -556,16 +558,17 @@ export function useMediasoup() {
     if (
       enabled === prev.enabled &&
       deviceId === prev.deviceId &&
-      g?.secondarySource
+      g?.secondaryGain
     ) {
       if (monitor) {
         // Guard against double-connect: disconnect first (no-op if not connected),
         // then reconnect — Web Audio silently allows duplicate connects but it
         // stacks, so a disconnect/reconnect cycle keeps exactly one connection.
-        try { g.secondarySource.disconnect(sharedAudioContext.destination); } catch { /* not connected */ }
-        g.secondarySource.connect(sharedAudioContext.destination);
+        // Tapped at secondaryGain (post-gain) so the monitor matches what's sent.
+        try { g.secondaryGain.disconnect(sharedAudioContext.destination); } catch { /* not connected */ }
+        g.secondaryGain.connect(sharedAudioContext.destination);
       } else {
-        try { g.secondarySource.disconnect(sharedAudioContext.destination); } catch { /* already disconnected */ }
+        try { g.secondaryGain.disconnect(sharedAudioContext.destination); } catch { /* already disconnected */ }
       }
       return;
     }
@@ -591,7 +594,8 @@ export function useMediasoup() {
       secondaryGain.gain.value = 1;
       secondarySource.connect(secondaryGain);
       secondaryGain.connect(graph.outDest);
-      if (mon) secondarySource.connect(ctx.destination);
+      // Monitor tapped at secondaryGain (post-gain) so it matches what's sent.
+      if (mon) secondaryGain.connect(ctx.destination);
 
       graph.secondarySource = secondarySource;
       graph.secondaryGain = secondaryGain;
@@ -602,20 +606,16 @@ export function useMediasoup() {
     };
   }, [secondaryEnabled, secondaryDeviceId, secondaryMonitor, applySecondaryDevice, store]);
 
-  // Toggle the local primary-mic monitor live: connect/disconnect the raw mic
-  // source → destination edge so you hear yourself through your speakers. It's
-  // for-you only (never reaches the room) and uses the most direct path —
-  // bypassing micGain/limiter — for the lowest latency the browser allows.
+  // Toggle the local primary-mic monitor live: connect/disconnect the
+  // micGain → destination edge so you hear yourself through your speakers AT THE
+  // SAME volume people receive (post-gain) — lowering "your mic level" lowers the
+  // monitor too. For-you only (never reaches the room). micGain is permanent, so
+  // a single disconnect-then-connect keeps exactly one edge.
   useEffect(() => {
     const g = outGraphRef.current;
-    if (!g?.micSource) return;
-    if (micMonitor) {
-      // Disconnect first (no-op if not connected) so we keep exactly one edge.
-      try { g.micSource.disconnect(sharedAudioContext.destination); } catch { /* not connected */ }
-      g.micSource.connect(sharedAudioContext.destination);
-    } else {
-      try { g.micSource.disconnect(sharedAudioContext.destination); } catch { /* already disconnected */ }
-    }
+    if (!g) return;
+    try { g.micGain.disconnect(sharedAudioContext.destination); } catch { /* not connected */ }
+    if (micMonitor) g.micGain.connect(sharedAudioContext.destination);
   }, [micMonitor]);
 
   // --- P2P: create a peer connection ---
