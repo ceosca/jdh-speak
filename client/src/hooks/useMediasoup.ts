@@ -1742,15 +1742,22 @@ export function useMediasoup() {
 
   const mute = useCallback(async () => {
     // Silence the mic track (feeds the voice graph only); any shared system
-    // audio is a separate track/producer, so it keeps flowing. The server
-    // pauses just the VOICE producer, so muting never cuts the music.
+    // audio is a separate track/producer, so it keeps flowing.
     const track = localStreamRef.current?.getAudioTracks()[0];
     if (track) track.enabled = false;
 
-    if (modeRef.current === "sfu" && producerRef.current) {
-      producerRef.current.pause();
+    // When the secondary device is active it's mixed into the same voice
+    // producer as the mic.  Pausing that producer would silence the secondary
+    // too, so instead we signal muted state via set-mute-state (which broadcasts
+    // peer-muted without touching the producer) and leave the producer running.
+    const secondaryActive =
+      store.getState().secondaryEnabled && !!outGraphRef.current?.secondarySource;
+    if (secondaryActive) {
+      await emit("set-mute-state", { muted: true }).catch(() => {});
+    } else {
+      if (modeRef.current === "sfu" && producerRef.current) producerRef.current.pause();
+      await emit("producer-pause", {}).catch(() => {});
     }
-    await emit("producer-pause", {}).catch(() => {});
     store.getState().setMuted(true);
     // Coalesced so mashing mute doesn't spam the chat log + cue (see surfaceToggle).
     surfaceToggle("mic", true, () => {
@@ -1763,10 +1770,14 @@ export function useMediasoup() {
     const track = localStreamRef.current?.getAudioTracks()[0];
     if (track) track.enabled = true;
 
-    if (modeRef.current === "sfu" && producerRef.current) {
-      producerRef.current.resume();
+    const secondaryActive =
+      store.getState().secondaryEnabled && !!outGraphRef.current?.secondarySource;
+    if (secondaryActive) {
+      await emit("set-mute-state", { muted: false }).catch(() => {});
+    } else {
+      if (modeRef.current === "sfu" && producerRef.current) producerRef.current.resume();
+      await emit("producer-resume", {}).catch(() => {});
     }
-    await emit("producer-resume", {}).catch(() => {});
     store.getState().setMuted(false);
     surfaceToggle("mic", false, () => {
       store.getState().announceEvent(announce_mic_unmuted());
