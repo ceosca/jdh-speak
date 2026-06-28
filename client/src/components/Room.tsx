@@ -67,6 +67,7 @@ export function Room() {
     startServerFileStream,
     stopFileStream,
     toggleFilePlayback,
+    setPlayerVolume,
     toggleRecording,
     rename,
     cycleRoomBitrate,
@@ -466,6 +467,7 @@ export function Room() {
           playing={fileStreamPlaying}
           onTogglePlay={toggleFilePlayback}
           onStop={() => stopFileStream()}
+          onVolumeChange={setPlayerVolume}
         />
       )}
 

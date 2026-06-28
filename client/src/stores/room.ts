@@ -29,6 +29,17 @@ const VOICE_PROCESSING_KEY = "sonicroom:voiceProcessing";
 const SECONDARY_ENABLED_KEY = "sonicroom:secondaryEnabled";
 const SECONDARY_DEVICE_KEY = "sonicroom:secondaryDeviceId";
 const SECONDARY_MONITOR_KEY = "sonicroom:secondaryMonitor";
+const FILE_VOLUME_KEY = "sonicroom:fileVolume";
+
+function loadFileVolume(): number {
+  try {
+    const v = parseFloat(localStorage.getItem(FILE_VOLUME_KEY) ?? "");
+    if (Number.isFinite(v)) return Math.min(1, Math.max(0, v));
+  } catch {
+    // localStorage unavailable — fall back to unity.
+  }
+  return 1;
+}
 
 function loadString(key: string): string {
   try {
@@ -128,6 +139,10 @@ interface RoomState {
   // toolbar button. The actual <audio> element lives in the media hook.
   fileStreamName: string | null;
   fileStreamPlaying: boolean;
+  // Source-side volume for the file stream (0–1, default 1). Applied on the
+  // SENT path before the duck gain so lowering it quiets the file for all
+  // listeners. Persisted to localStorage.
+  fileVolume: number;
   // Outgoing (send-side) mic gain applied before the track reaches peers/SFU,
   // 0–MAX_MIC_GAIN. 1 = unity (raw mic). Lets a quiet/cheap mic be boosted for
   // everyone, independent of each listener's per-peer playback volume.
@@ -192,6 +207,7 @@ interface RoomState {
   setSharingAudio: (sharing: boolean) => void;
   setFileStream: (name: string | null) => void;
   setFileStreamPlaying: (playing: boolean) => void;
+  setFileVolume: (volume: number) => void;
   setMicGain: (gain: number) => void;
   setMicDeviceId: (deviceId: string) => void;
   setSpeakerDeviceId: (deviceId: string) => void;
@@ -232,6 +248,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   isSharingAudio: false,
   fileStreamName: null,
   fileStreamPlaying: false,
+  fileVolume: loadFileVolume(),
   micGain: loadMicGain(),
   micDeviceId: loadString(MIC_DEVICE_KEY),
   speakerDeviceId: loadString(SPEAKER_DEVICE_KEY),
@@ -267,6 +284,14 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setSharingAudio: (isSharingAudio) => set({ isSharingAudio }),
   setFileStream: (fileStreamName) => set({ fileStreamName }),
   setFileStreamPlaying: (fileStreamPlaying) => set({ fileStreamPlaying }),
+  setFileVolume: (fileVolume) => {
+    try {
+      localStorage.setItem(FILE_VOLUME_KEY, String(fileVolume));
+    } catch {
+      // Persistence is best-effort; keep the in-memory value regardless.
+    }
+    set({ fileVolume });
+  },
   setMicGain: (micGain) => {
     try {
       localStorage.setItem(MIC_GAIN_KEY, String(micGain));

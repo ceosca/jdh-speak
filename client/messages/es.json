@@ -143,6 +143,7 @@
   "file_player_stop": "Detener la emisión del archivo",
   "file_player_streaming": "Emitiendo {name}",
   "file_player_hint": "Espacio para reproducir o pausar, Escape para detener la emisión",
+  "player_volume_label": "Volumen para todos",
   "audio_source_heading": "Emitir audio",
   "audio_source_computer": "Elegir del ordenador",
   "audio_source_url_label": "URL de audio",

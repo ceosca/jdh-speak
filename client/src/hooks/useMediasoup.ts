@@ -267,6 +267,12 @@ export function useMediasoup() {
     // and are NOT ducked. Null until the respective share/file path is started.
     shareDuckGain: GainNode | null;
     fileDuckGain: GainNode | null;
+    // Source-side volume gain for the file stream on the SENT path. Inserted
+    // before fileDuckGain so lowering it quiets the file for ALL listeners.
+    // The local monitor (source → destination) is bypassed and stays at full
+    // volume. Null until the file path is first started; persists across file
+    // replaces (like fileDuckGain/fileDest).
+    fileVolumeGain: GainNode | null;
     micStream: MediaStream | null;
     // Secondary input device: captured stereo + no voice-processing, mixed
     // directly into outDest alongside the mic chain.
@@ -492,6 +498,7 @@ export function useMediasoup() {
       fileDest: null,
       shareDuckGain: null,
       fileDuckGain: null,
+      fileVolumeGain: null,
       micStream: null,
       secondarySource: null,
       secondaryGain: null,
@@ -1952,10 +1959,12 @@ export function useMediasoup() {
       }
       const g = outGraphRef.current;
       g?.fileSource?.disconnect();
+      g?.fileVolumeGain?.disconnect();
       g?.fileDuckGain?.disconnect();
       g?.fileDest?.disconnect();
       if (g) {
         g.fileSource = null;
+        g.fileVolumeGain = null;
         g.fileDuckGain = null;
         g.fileDest = null;
       }
@@ -2023,7 +2032,12 @@ export function useMediasoup() {
         g.fileDuckGain.gain.value = emitDuckTarget();
         g.fileDuckGain.connect(g.fileDest);
       }
-      source.connect(g.fileDuckGain);
+      if (!g.fileVolumeGain) {
+        g.fileVolumeGain = sharedAudioContext.createGain();
+        g.fileVolumeGain.gain.value = store.getState().fileVolume;
+        g.fileVolumeGain.connect(g.fileDuckGain);
+      }
+      source.connect(g.fileVolumeGain);
       // Also monitor it locally at full volume (not ducked), so the streamer
       // hears what they're playing.
       source.connect(sharedAudioContext.destination);
@@ -2113,6 +2127,17 @@ export function useMediasoup() {
       store.getState().announce(announce_file_stream_paused());
     }
   }, [store]);
+
+  // Set the source-side file volume for ALL listeners. Persists the value and
+  // ramps the fileVolumeGain node live (smooth, 50 ms time-constant).
+  const setPlayerVolume = useCallback(
+    (v: number) => {
+      store.getState().setFileVolume(v);
+      const gain = outGraphRef.current?.fileVolumeGain;
+      if (gain) gain.gain.setTargetAtTime(v, sharedAudioContext.currentTime, 0.05);
+    },
+    [store],
+  );
 
   // --- Recording ---
   // Recording is server-side: the server taps every participant's stream off
@@ -2282,6 +2307,7 @@ export function useMediasoup() {
     startServerFileStream,
     stopFileStream,
     toggleFilePlayback,
+    setPlayerVolume,
     toggleRecording,
     startRecording,
     stopRecording,
