@@ -5,6 +5,7 @@ import { m } from "../paraglide/messages.js";
 interface AudioSourceDialogProps {
   onClose: () => void;
   onChooseComputerFile: () => void;
+  onChooseComputerFolder: () => void;
   onStartUrl: (url: string) => Promise<void>;
   // `relPath` may include subfolders, e.g. "Movies/Dune.mp3".
   onStartServerFile: (relPath: string) => Promise<void>;
@@ -18,6 +19,7 @@ interface LibraryEntry {
 export function AudioSourceDialog({
   onClose,
   onChooseComputerFile,
+  onChooseComputerFolder,
   onStartUrl,
   onStartServerFile,
 }: AudioSourceDialogProps) {
@@ -203,16 +205,28 @@ export function AudioSourceDialog({
         </button>
       </div>
 
-      <button
-        ref={browseRef}
-        type="button"
-        disabled={starting}
-        onClick={onChooseComputerFile}
-        className="mb-4 flex w-full items-center justify-center gap-2 rounded-lg bg-sonic-700 px-3 py-2 text-sm font-medium text-sonic-100 hover:bg-sonic-600 disabled:opacity-50"
-      >
-        <FolderOpen className="h-4 w-4" />
-        {m.audio_source_computer()}
-      </button>
+      <div className="mb-4 flex gap-2">
+        <button
+          ref={browseRef}
+          type="button"
+          disabled={starting}
+          onClick={onChooseComputerFile}
+          className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-sonic-700 px-3 py-2 text-sm font-medium text-sonic-100 hover:bg-sonic-600 disabled:opacity-50"
+        >
+          <FolderOpen className="h-4 w-4" />
+          {m.audio_source_computer()}
+        </button>
+        <button
+          type="button"
+          disabled={starting}
+          onClick={onChooseComputerFolder}
+          className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-sonic-700 px-3 py-2 text-sm font-medium text-sonic-100 hover:bg-sonic-600 disabled:opacity-50"
+          title={m.audio_source_folder_title()}
+        >
+          <Folder className="h-4 w-4" />
+          {m.audio_source_folder()}
+        </button>
+      </div>
 
       <form onSubmit={submitUrl} className="mb-4">
         <label htmlFor="audio-source-url" className="mb-1 block text-xs font-medium text-sonic-300">

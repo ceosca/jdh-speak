@@ -1,7 +1,7 @@
 import { useEffect, useRef, type KeyboardEvent } from "react";
-import { Play, Pause, X, FileMusic } from "lucide-react";
+import { Play, Pause, X, FileMusic, SkipBack, SkipForward, Repeat, Repeat1, Shuffle } from "lucide-react";
 import { m } from "../paraglide/messages.js";
-import { useRoomStore } from "../stores/room";
+import { useRoomStore, type PlayerRepeat } from "../stores/room";
 
 interface FileStreamPlayerProps {
   // The name of the file currently being streamed.
@@ -11,6 +11,16 @@ interface FileStreamPlayerProps {
   onStop: () => void;
   // Called with a 0–1 volume value when the user changes the combobox.
   onVolumeChange: (v: number) => void;
+  // Playlist navigation (only shown when playlist.length > 1).
+  playlist: { name: string; objectUrl: string }[];
+  playlistIndex: number;
+  playerRepeat: PlayerRepeat;
+  playerShuffle: boolean;
+  onPlayTrack: (index: number) => void;
+  onNext: () => void;
+  onPrev: () => void;
+  onSetRepeat: (repeat: PlayerRepeat) => void;
+  onToggleShuffle: () => void;
 }
 
 // Volume options: label → 0–1 value.
@@ -33,9 +43,25 @@ export function FileStreamPlayer({
   onTogglePlay,
   onStop,
   onVolumeChange,
+  playlist,
+  playlistIndex,
+  playerRepeat,
+  playerShuffle,
+  onPlayTrack,
+  onNext,
+  onPrev,
+  onSetRepeat,
+  onToggleShuffle,
 }: FileStreamPlayerProps) {
   const playRef = useRef<HTMLButtonElement>(null);
   const fileVolume = useRoomStore((s) => s.fileVolume);
+  const hasPlaylist = playlist.length > 1;
+
+  // Cycle repeat: off → one → all → off.
+  const cycleRepeat = () => {
+    const next: PlayerRepeat = playerRepeat === "off" ? "one" : playerRepeat === "one" ? "all" : "off";
+    onSetRepeat(next);
+  };
 
   // Autofocus the play/pause control the moment the window opens (i.e. as soon
   // as a file is picked), so keyboard/SR users land on it without tabbing.
@@ -61,7 +87,7 @@ export function FileStreamPlayer({
       role="dialog"
       aria-label={m.file_player_heading()}
       onKeyDown={onKeyDown}
-      className="fixed bottom-28 right-4 z-20 w-72 rounded-xl border border-sonic-600 bg-sonic-800 p-3 shadow-2xl"
+      className="fixed bottom-28 right-4 z-20 w-80 rounded-xl border border-sonic-600 bg-sonic-800 p-3 shadow-2xl"
     >
       <div className="mb-2 flex items-center gap-2">
         <FileMusic className="h-4 w-4 shrink-0 text-sonic-accent" />
@@ -78,7 +104,17 @@ export function FileStreamPlayer({
         </button>
       </div>
 
+      {/* Playback controls row. Prev/Next only shown for multi-track playlists. */}
       <div className="flex items-center gap-2">
+        {hasPlaylist && (
+          <button
+            onClick={onPrev}
+            className="flex h-8 w-8 items-center justify-center rounded-full text-sonic-300 hover:bg-sonic-700 hover:text-sonic-100"
+            aria-label={m.file_player_prev()}
+          >
+            <SkipBack className="h-4 w-4" />
+          </button>
+        )}
         <button
           ref={playRef}
           onClick={onTogglePlay}
@@ -89,12 +125,76 @@ export function FileStreamPlayer({
         >
           {playing ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
         </button>
+        {hasPlaylist && (
+          <button
+            onClick={onNext}
+            className="flex h-8 w-8 items-center justify-center rounded-full text-sonic-300 hover:bg-sonic-700 hover:text-sonic-100"
+            aria-label={m.file_player_next()}
+          >
+            <SkipForward className="h-4 w-4" />
+          </button>
+        )}
         {/* Keyboard guidance for the autofocused play button (Space toggles,
             Escape stops) — tied to it via aria-describedby. */}
         <p id="file-player-hint" className="text-xs text-sonic-400">
           {m.file_player_hint()}
         </p>
       </div>
+
+      {/* Repeat + shuffle controls (only for multi-track playlists). */}
+      {hasPlaylist && (
+        <div className="mt-1.5 flex items-center gap-1">
+          <button
+            onClick={cycleRepeat}
+            className={`flex h-7 w-7 items-center justify-center rounded text-sonic-300 hover:bg-sonic-700 ${playerRepeat !== "off" ? "text-sonic-accent" : ""}`}
+            aria-label={m.file_player_repeat({ mode: playerRepeat })}
+            aria-pressed={playerRepeat !== "off"}
+          >
+            {playerRepeat === "one" ? (
+              <Repeat1 className="h-4 w-4" />
+            ) : (
+              <Repeat className="h-4 w-4" />
+            )}
+          </button>
+          <button
+            onClick={onToggleShuffle}
+            className={`flex h-7 w-7 items-center justify-center rounded text-sonic-300 hover:bg-sonic-700 ${playerShuffle ? "text-sonic-accent" : ""}`}
+            aria-label={m.file_player_shuffle()}
+            aria-pressed={playerShuffle}
+          >
+            <Shuffle className="h-4 w-4" />
+          </button>
+          <span className="ml-auto text-xs text-sonic-400">
+            {playlistIndex + 1} / {playlist.length}
+          </span>
+        </div>
+      )}
+
+      {/* Playlist track list (only for multi-track playlists). */}
+      {hasPlaylist && (
+        <ul
+          className="mt-1.5 max-h-28 overflow-y-auto rounded-lg border border-sonic-600 bg-sonic-900/40 p-1"
+          aria-label={m.file_player_playlist_label()}
+        >
+          {playlist.map((track, i) => (
+            <li
+              key={track.objectUrl}
+              className={`flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-xs ${
+                i === playlistIndex
+                  ? "bg-sonic-700 text-sonic-100"
+                  : "text-sonic-300 hover:bg-sonic-700/60"
+              }`}
+              onClick={() => onPlayTrack(i)}
+              aria-current={i === playlistIndex ? "true" : undefined}
+            >
+              <FileMusic className="h-3 w-3 shrink-0" aria-hidden="true" />
+              <span className="truncate" title={track.name}>
+                {track.name}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
 
       {/* Source-side volume: lowers the transmitted audio for all listeners. */}
       <div className="mt-2 flex items-center gap-2">

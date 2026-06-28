@@ -46,6 +46,7 @@ import {
   share_stream_name,
 } from "../paraglide/messages.js";
 import { useRoomStore, type RoomMode } from "../stores/room";
+import type { PlayerRepeat } from "../stores/room";
 
 interface ConsumeResult {
   ok: boolean;
@@ -131,9 +132,14 @@ const GAIN_RAMP = 0.03;
 const TOGGLE_DEDUP_MS = 1000;
 
 // Soft limiter sitting after the outgoing mic gain so boosting a quiet/cheap
-// mic doesn't clip: transparent until peaks approach 0 dBFS, then ~20:1 with a
+// mic doesn't clip: transparent until peaks approaching 0 dBFS, then ~20:1 with a
 // fast attack. Adds ~5 ms of look-ahead latency, negligible for voice.
 const MIC_LIMITER = { threshold: -3, knee: 0, ratio: 20, attack: 0.003, release: 0.25 };
+
+// Crossfade duration (in setTargetAtTime time-constant seconds). ~3 s total
+// perceived fade because setTargetAtTime reaches 63 % at one τ; the remainder
+// fades exponentially. This value gives a clean, perceptible 3-second cross.
+const XFADE_TAU = 1.0;
 
 // Keep the shared context running. iOS needs a user gesture to start it, and it
 // also drops to "suspended" or the WebKit-only "interrupted" state whenever the
@@ -154,6 +160,9 @@ sharedAudioContext.addEventListener("statechange", resumeSharedContext);
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") resumeSharedContext();
 });
+
+// Audio file extensions accepted by the folder-playlist picker.
+const AUDIO_EXTENSIONS = new Set(["mp3", "m4a", "aac", "ogg", "opus", "wav", "flac", "m4b"]);
 
 // Cap a P2P sender's outgoing bitrate directly on the encoder via setParameters
 // (Chrome ignores SDP bitrate caps for the P2P audio sender). 128+ = original
@@ -315,6 +324,12 @@ export function useMediasoup() {
   // Local anti-spam guard for instant "thunk" feedback (the server enforces the
   // same 5-per-10s budget authoritatively).
   const chatLimiterRef = useRef(new RateLimiter());
+  // Precomputed shuffled play order for the current playlist. Rebuilt whenever
+  // the playlist is set or shuffle is toggled. Each entry is a playlist index.
+  const shuffleOrderRef = useRef<number[]>([]);
+  // Stable ref so that ended handlers can call playTrack without a stale closure.
+  // Updated synchronously every render after playTrack is defined.
+  const playTrackRef = useRef<((index: number) => Promise<void>) | null>(null);
   // The first received chat message carries a one-time hint that Alt+1..0
   // reads recent messages aloud even with the chat panel closed.
   const chatHintGivenRef = useRef(false);
@@ -2065,6 +2080,16 @@ export function useMediasoup() {
       }
       store.getState().setFileStream(null);
       store.getState().setFileStreamPlaying(false);
+      // Revoke all playlist object URLs to avoid memory leaks. The slot
+      // teardown above already revoked the two per-slot objectUrls; here we
+      // handle any remaining entries in the playlist that were not yet played.
+      const { playlist } = store.getState();
+      for (const track of playlist) {
+        try { URL.revokeObjectURL(track.objectUrl); } catch { /* best-effort */ }
+      }
+      store.getState().setPlaylist([]);
+      store.getState().setPlaylistIndex(0);
+      shuffleOrderRef.current = [];
       // Tell the server: drop us from the file-streamer set (may release the SFU
       // pin) and close the server-side producer so peers' tiles disappear.
       await emit("stop-file-stream").catch(() => {});
@@ -2167,6 +2192,287 @@ export function useMediasoup() {
       await startFileSource(`/api/audio-library/file?path=${encodeURIComponent(relPath)}`, name);
     },
     [startFileSource],
+  );
+
+  // --- Folder playlist: crossfade-based track navigation ---
+
+  // Fisher-Yates shuffle returning a new array of indices [0..len-1].
+  const shuffleIndices = (len: number): number[] => {
+    const arr = Array.from({ length: len }, (_, i) => i);
+    for (let i = len - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j]!, arr[i]!];
+    }
+    return arr;
+  };
+
+  // Cross-fade to a track by playlist index. Loads the track into the IDLE
+  // slot, plays it, ramps xfadeGains, flips activeSlot, then pauses the
+  // formerly-active element after the fade. Does NOT recreate the producer or
+  // fileDest — only gain values change.
+  const playTrack = useCallback(
+    async (index: number) => {
+      const state = store.getState();
+      const { playlist } = state;
+      if (playlist.length === 0 || index < 0 || index >= playlist.length) return;
+      const track = playlist[index]!;
+
+      state.setPlaylistIndex(index);
+
+      const g = ensureOutGraph();
+      resumeSharedContext();
+
+      // Ensure slots are built (first track has already built them via
+      // startFileSource, so ensureFileSlots is idempotent here).
+      const slots = ensureFileSlots(g);
+      const activeIdx = g.activeSlot;
+      const idleIdx: 0 | 1 = activeIdx === 0 ? 1 : 0;
+      const idleSlot = slots[idleIdx]!;
+      const activeSlotNode = slots[activeIdx]!;
+
+      // The ended handler for this track. Uses playTrackRef so the closure
+      // always calls the latest version of playTrack without a forward-reference
+      // lint error (playTrack hasn't been returned yet when this function runs).
+      const onEnded = () => {
+        const s = store.getState();
+        const repeat: PlayerRepeat = s.playerRepeat;
+        const pt = playTrackRef.current;
+        if (!pt) return;
+        if (repeat === "one") {
+          void pt(s.playlistIndex);
+        } else {
+          // Determine the next track index (respecting shuffle).
+          const pl = s.playlist;
+          if (pl.length === 0) return;
+          let nextIdx: number;
+          if (s.playerShuffle) {
+            const order = shuffleOrderRef.current;
+            const pos = order.indexOf(s.playlistIndex);
+            if (pos < 0 || pos >= order.length - 1) {
+              // At the end of shuffled order.
+              if (repeat === "all") {
+                // Rebuild shuffle order and start again.
+                const newOrder = shuffleIndices(pl.length);
+                shuffleOrderRef.current = newOrder;
+                nextIdx = newOrder[0]!;
+              } else {
+                void stopFileStream(announce_file_stream_ended());
+                return;
+              }
+            } else {
+              nextIdx = order[pos + 1]!;
+            }
+          } else {
+            const cur = s.playlistIndex;
+            if (cur >= pl.length - 1) {
+              if (repeat === "all") {
+                nextIdx = 0;
+              } else {
+                void stopFileStream(announce_file_stream_ended());
+                return;
+              }
+            } else {
+              nextIdx = cur + 1;
+            }
+          }
+          void pt(nextIdx);
+        }
+      };
+
+      // Load idle slot (abort old ended/error, revoke previous object URL for
+      // that slot, swap .src). Source node and xfadeGain are untouched.
+      loadIntoSlot(
+        idleSlot,
+        track.objectUrl,
+        track.objectUrl,
+        onEnded,
+        () => void stopFileStream(announce_file_stream_error()),
+      );
+
+      // Local monitor: disconnect old idle monitor, connect new idle slot monitor.
+      try { idleSlot.source.disconnect(sharedAudioContext.destination); } catch { /* not connected */ }
+      idleSlot.source.connect(sharedAudioContext.destination);
+
+      // Start playing the idle slot (at gain 0 — the ramp will bring it up).
+      idleSlot.xfadeGain.gain.setValueAtTime(0, sharedAudioContext.currentTime);
+      try {
+        await idleSlot.audioEl.play();
+      } catch {
+        // Autoplay refused; the user can press play.
+      }
+
+      // Ramp: idle slot 0→1, active slot 1→0 over ~3 s (XFADE_TAU time-constant).
+      const now = sharedAudioContext.currentTime;
+      idleSlot.xfadeGain.gain.setTargetAtTime(1, now, XFADE_TAU);
+      activeSlotNode.xfadeGain.gain.setTargetAtTime(0, now, XFADE_TAU);
+
+      // Flip activeSlot immediately so new ended events are associated with the
+      // right slot. The old active element will be paused after the fade.
+      g.activeSlot = idleIdx;
+
+      // Pause the now-idle (old-active) element after the fade has completed.
+      // We wait 5×τ ≈ 99.3% completion so the tail is inaudible.
+      const oldActive = activeSlotNode;
+      window.setTimeout(() => {
+        oldActive.audioEl.pause();
+        // Disconnect the old monitor path so we don't stack connections.
+        try { oldActive.source.disconnect(sharedAudioContext.destination); } catch { /* ok */ }
+      }, XFADE_TAU * 5 * 1000);
+
+      store.getState().setFileStream(track.name);
+      store.getState().setFileStreamPlaying(true);
+    },
+    [store, ensureOutGraph, ensureFileSlots, loadIntoSlot, stopFileStream],
+  );
+  // Keep the ref in sync so ended handlers always call the latest playTrack.
+  playTrackRef.current = playTrack;
+
+  // playerNext: advance to the next track respecting shuffle and repeat.
+  const playerNext = useCallback(() => {
+    const state = store.getState();
+    const { playlist, playlistIndex, playerShuffle, playerRepeat: repeat } = state;
+    if (playlist.length === 0) return;
+    let nextIdx: number;
+    if (playerShuffle) {
+      const order = shuffleOrderRef.current;
+      const pos = order.indexOf(playlistIndex);
+      if (pos < 0 || pos >= order.length - 1) {
+        if (repeat === "all" || repeat === "one") {
+          const newOrder = shuffleIndices(playlist.length);
+          shuffleOrderRef.current = newOrder;
+          nextIdx = newOrder[0]!;
+        } else {
+          return; // at end, no wrap
+        }
+      } else {
+        nextIdx = order[pos + 1]!;
+      }
+    } else {
+      if (playlistIndex >= playlist.length - 1) {
+        if (repeat === "all" || repeat === "one") {
+          nextIdx = 0;
+        } else {
+          return; // at end, no wrap
+        }
+      } else {
+        nextIdx = playlistIndex + 1;
+      }
+    }
+    void playTrack(nextIdx);
+  }, [store, playTrack]);
+
+  // playerPrev: go back to the previous track (or restart if near the beginning).
+  const playerPrev = useCallback(() => {
+    const state = store.getState();
+    const { playlist, playlistIndex, playerShuffle } = state;
+    if (playlist.length === 0) return;
+    let prevIdx: number;
+    if (playerShuffle) {
+      const order = shuffleOrderRef.current;
+      const pos = order.indexOf(playlistIndex);
+      prevIdx = pos > 0 ? order[pos - 1]! : order[order.length - 1]!;
+    } else {
+      prevIdx = playlistIndex > 0 ? playlistIndex - 1 : playlist.length - 1;
+    }
+    void playTrack(prevIdx);
+  }, [store, playTrack]);
+
+  // Start a playlist from an array of Files. Filters to audio files, builds
+  // object URLs, persists the playlist in the store, and starts track 0.
+  // A single-file array produces a 1-item playlist.
+  const startFolderStream = useCallback(
+    async (files: File[]) => {
+      const audioFiles = files.filter(
+        (f) =>
+          f.type.startsWith("audio/") ||
+          AUDIO_EXTENSIONS.has(f.name.split(".").pop()?.toLowerCase() ?? ""),
+      );
+      if (audioFiles.length === 0) return;
+
+      // Sort by full relative path so folder-picker order is deterministic.
+      audioFiles.sort((a, b) => {
+        const pa = (a as File & { webkitRelativePath?: string }).webkitRelativePath ?? a.name;
+        const pb = (b as File & { webkitRelativePath?: string }).webkitRelativePath ?? b.name;
+        return pa.localeCompare(pb);
+      });
+
+      const playlist = audioFiles.map((f) => ({
+        name: f.name,
+        objectUrl: URL.createObjectURL(f),
+      }));
+
+      store.getState().setPlaylist(playlist);
+      store.getState().setPlaylistIndex(0);
+
+      // Precompute shuffle order if shuffle is on.
+      if (store.getState().playerShuffle) {
+        shuffleOrderRef.current = shuffleIndices(playlist.length);
+        const firstIdx = shuffleOrderRef.current[0]!;
+        // Start with a regular startFileSource for the first track (handles
+        // first-start SFU setup + producer). The object URL is already in the
+        // playlist; pass it through loadIntoSlot via startFileSource.
+        const firstTrack = playlist[firstIdx]!;
+        await startFileSource(firstTrack.objectUrl, firstTrack.name, firstTrack.objectUrl);
+        store.getState().setPlaylistIndex(firstIdx);
+        // Reattach the ended handler from playTrack logic (startFileSource sets
+        // a simple stopFileStream handler — override it now).
+        const g = outGraphRef.current;
+        if (g?.fileSlots) {
+          const slot = g.fileSlots[g.activeSlot]!;
+          // Re-bind with the playlist-aware ended handler by reusing loadIntoSlot.
+          // We do NOT pass an objectUrl here — the slot already holds it and we
+          // don't want it revoked and recreated (objectUrl is already in playlist).
+          loadIntoSlot(
+            slot,
+            firstTrack.objectUrl,
+            undefined, // don't revoke — the playlist owns these URLs
+            () => {
+              const s = store.getState();
+              const pt = playTrackRef.current;
+              if (!pt) return;
+              if (s.playerRepeat === "one") { void pt(s.playlistIndex); return; }
+              const order = shuffleOrderRef.current;
+              const pos = order.indexOf(s.playlistIndex);
+              if (pos >= order.length - 1) {
+                if (s.playerRepeat === "all") { shuffleOrderRef.current = shuffleIndices(s.playlist.length); void pt(shuffleOrderRef.current[0]!); }
+                else void stopFileStream(announce_file_stream_ended());
+              } else { void pt(order[pos + 1]!); }
+            },
+            () => void stopFileStream(announce_file_stream_error()),
+          );
+          // Re-play (loadIntoSlot paused the element).
+          void slot.audioEl.play().catch(() => {});
+        }
+      } else {
+        shuffleOrderRef.current = Array.from({ length: playlist.length }, (_, i) => i);
+        const firstTrack = playlist[0]!;
+        await startFileSource(firstTrack.objectUrl, firstTrack.name, firstTrack.objectUrl);
+        // Reattach playlist-aware ended handler.
+        const g = outGraphRef.current;
+        if (g?.fileSlots) {
+          const slot = g.fileSlots[g.activeSlot]!;
+          loadIntoSlot(
+            slot,
+            firstTrack.objectUrl,
+            undefined,
+            () => {
+              const s = store.getState();
+              const pt = playTrackRef.current;
+              if (!pt) return;
+              if (s.playerRepeat === "one") { void pt(s.playlistIndex); return; }
+              const cur = s.playlistIndex;
+              if (cur >= s.playlist.length - 1) {
+                if (s.playerRepeat === "all") void pt(0);
+                else void stopFileStream(announce_file_stream_ended());
+              } else { void pt(cur + 1); }
+            },
+            () => void stopFileStream(announce_file_stream_error()),
+          );
+          void slot.audioEl.play().catch(() => {});
+        }
+      }
+    },
+    [store, startFileSource, loadIntoSlot, stopFileStream],
   );
 
   const toggleFilePlayback = useCallback(() => {
@@ -2364,9 +2670,13 @@ export function useMediasoup() {
     toggleDucking,
     toggleAudioShare,
     startFileStream,
+    startFolderStream,
     startUrlStream,
     startServerFileStream,
     stopFileStream,
+    playTrack,
+    playerNext,
+    playerPrev,
     toggleFilePlayback,
     setPlayerVolume,
     toggleRecording,

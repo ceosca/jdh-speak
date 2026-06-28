@@ -224,5 +224,14 @@
   "controls_noise_suppression_off_title": "Supresión de ruidos desactivada: el micrófono se envía sin procesar",
 
   "card_mic_on": "micrófono activado",
-  "card_mic_off": "micrófono desactivado"
+  "card_mic_off": "micrófono desactivado",
+
+  "audio_source_folder": "Carpeta",
+  "audio_source_folder_title": "Seleccionar una carpeta de audio para crear una lista de reproducción",
+
+  "file_player_prev": "Pista anterior",
+  "file_player_next": "Pista siguiente",
+  "file_player_repeat": "Repetir: {mode}",
+  "file_player_shuffle": "Aleatorio",
+  "file_player_playlist_label": "Lista de reproducción"
 }

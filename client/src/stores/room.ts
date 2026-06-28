@@ -30,6 +30,15 @@ const SECONDARY_ENABLED_KEY = "sonicroom:secondaryEnabled";
 const SECONDARY_DEVICE_KEY = "sonicroom:secondaryDeviceId";
 const SECONDARY_MONITOR_KEY = "sonicroom:secondaryMonitor";
 const FILE_VOLUME_KEY = "sonicroom:fileVolume";
+const PLAYER_REPEAT_KEY = "sonicroom:playerRepeat";
+const PLAYER_SHUFFLE_KEY = "sonicroom:playerShuffle";
+
+export type PlayerRepeat = "off" | "one" | "all";
+
+function loadPlayerRepeat(): PlayerRepeat {
+  const v = loadString(PLAYER_REPEAT_KEY);
+  return v === "one" || v === "all" ? v : "off";
+}
 
 function loadFileVolume(): number {
   try {
@@ -143,6 +152,14 @@ interface RoomState {
   // SENT path before the duck gain so lowering it quiets the file for all
   // listeners. Persisted to localStorage.
   fileVolume: number;
+  // Folder-playlist state. `playlist` is the ordered track list for the
+  // current session (empty when not streaming). `playlistIndex` is the
+  // currently-playing entry. `playerRepeat` and `playerShuffle` are persisted
+  // user preferences; the shuffled order is computed in the hook at pick time.
+  playlist: { name: string; objectUrl: string }[];
+  playlistIndex: number;
+  playerRepeat: PlayerRepeat;
+  playerShuffle: boolean;
   // Outgoing (send-side) mic gain applied before the track reaches peers/SFU,
   // 0–MAX_MIC_GAIN. 1 = unity (raw mic). Lets a quiet/cheap mic be boosted for
   // everyone, independent of each listener's per-peer playback volume.
@@ -208,6 +225,10 @@ interface RoomState {
   setFileStream: (name: string | null) => void;
   setFileStreamPlaying: (playing: boolean) => void;
   setFileVolume: (volume: number) => void;
+  setPlaylist: (playlist: { name: string; objectUrl: string }[]) => void;
+  setPlaylistIndex: (index: number) => void;
+  setPlayerRepeat: (repeat: PlayerRepeat) => void;
+  setPlayerShuffle: (shuffle: boolean) => void;
   setMicGain: (gain: number) => void;
   setMicDeviceId: (deviceId: string) => void;
   setSpeakerDeviceId: (deviceId: string) => void;
@@ -249,6 +270,10 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   fileStreamName: null,
   fileStreamPlaying: false,
   fileVolume: loadFileVolume(),
+  playlist: [],
+  playlistIndex: 0,
+  playerRepeat: loadPlayerRepeat(),
+  playerShuffle: loadString(PLAYER_SHUFFLE_KEY) === "true",
   micGain: loadMicGain(),
   micDeviceId: loadString(MIC_DEVICE_KEY),
   speakerDeviceId: loadString(SPEAKER_DEVICE_KEY),
@@ -291,6 +316,16 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       // Persistence is best-effort; keep the in-memory value regardless.
     }
     set({ fileVolume });
+  },
+  setPlaylist: (playlist) => set({ playlist }),
+  setPlaylistIndex: (playlistIndex) => set({ playlistIndex }),
+  setPlayerRepeat: (playerRepeat) => {
+    saveString(PLAYER_REPEAT_KEY, playerRepeat);
+    set({ playerRepeat });
+  },
+  setPlayerShuffle: (playerShuffle) => {
+    saveString(PLAYER_SHUFFLE_KEY, String(playerShuffle));
+    set({ playerShuffle });
   },
   setMicGain: (micGain) => {
     try {
@@ -489,6 +524,8 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       isSharingAudio: false,
       fileStreamName: null,
       fileStreamPlaying: false,
+      playlist: [],
+      playlistIndex: 0,
       isRecording: false,
       recordingId: null,
       recordingStartedAt: null,

@@ -63,9 +63,13 @@ export function Room() {
     toggleMute,
     toggleAudioShare,
     startFileStream,
+    startFolderStream,
     startUrlStream,
     startServerFileStream,
     stopFileStream,
+    playTrack,
+    playerNext,
+    playerPrev,
     toggleFilePlayback,
     setPlayerVolume,
     toggleRecording,
@@ -104,6 +108,21 @@ export function Room() {
     },
     [startFileStream],
   );
+
+  // Hidden folder picker for playlist mode.
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  const pickFolder = useCallback(() => {
+    setAudioSourceOpen(false);
+    folderInputRef.current?.click();
+  }, []);
+  const onFolderChosen = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files ?? []);
+      e.target.value = "";
+      if (files.length > 0) void startFolderStream(files);
+    },
+    [startFolderStream],
+  );
   const toggleFileStream = useCallback(() => {
     if (useRoomStore.getState().fileStreamName != null) void stopFileStream();
     else setAudioSourceOpen(true);
@@ -119,6 +138,10 @@ export function Room() {
   const isRecording = useRoomStore((s) => s.isRecording);
   const fileStreamName = useRoomStore((s) => s.fileStreamName);
   const fileStreamPlaying = useRoomStore((s) => s.fileStreamPlaying);
+  const playlist = useRoomStore((s) => s.playlist);
+  const playlistIndex = useRoomStore((s) => s.playlistIndex);
+  const playerRepeat = useRoomStore((s) => s.playerRepeat);
+  const playerShuffle = useRoomStore((s) => s.playerShuffle);
   const announcement = useRoomStore((s) => s.announcement);
   const announceSeq = useRoomStore((s) => s.announceSeq);
   const chatPoliteMsg = useRoomStore((s) => s.chatPoliteMsg);
@@ -446,6 +469,7 @@ export function Room() {
         <AudioSourceDialog
           onClose={() => setAudioSourceOpen(false)}
           onChooseComputerFile={pickFile}
+          onChooseComputerFolder={pickFolder}
           onStartUrl={startUrlStream}
           onStartServerFile={startServerFileStream}
         />
@@ -460,6 +484,17 @@ export function Room() {
         aria-hidden="true"
         tabIndex={-1}
       />
+      <input
+        ref={folderInputRef}
+        type="file"
+        // webkitdirectory enables folder selection in all major browsers.
+        // The attribute is non-standard but widely supported; cast to satisfy TS.
+        {...({ webkitdirectory: "", multiple: true } as React.InputHTMLAttributes<HTMLInputElement>)}
+        onChange={onFolderChosen}
+        className="hidden"
+        aria-hidden="true"
+        tabIndex={-1}
+      />
 
       {fileStreamName && (
         <FileStreamPlayer
@@ -468,6 +503,17 @@ export function Room() {
           onTogglePlay={toggleFilePlayback}
           onStop={() => stopFileStream()}
           onVolumeChange={setPlayerVolume}
+          playlist={playlist}
+          playlistIndex={playlistIndex}
+          playerRepeat={playerRepeat}
+          playerShuffle={playerShuffle}
+          onPlayTrack={playTrack}
+          onNext={playerNext}
+          onPrev={playerPrev}
+          onSetRepeat={(r) => useRoomStore.getState().setPlayerRepeat(r)}
+          onToggleShuffle={() =>
+            useRoomStore.getState().setPlayerShuffle(!useRoomStore.getState().playerShuffle)
+          }
         />
       )}
 
