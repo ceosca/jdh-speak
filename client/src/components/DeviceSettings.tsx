@@ -14,11 +14,22 @@ export function DeviceSettings() {
   const setMicDeviceId = useRoomStore((s) => s.setMicDeviceId);
   const setSpeakerDeviceId = useRoomStore((s) => s.setSpeakerDeviceId);
 
+  const secondaryEnabled = useRoomStore((s) => s.secondaryEnabled);
+  const secondaryDeviceId = useRoomStore((s) => s.secondaryDeviceId);
+  const secondaryMonitor = useRoomStore((s) => s.secondaryMonitor);
+  const setSecondaryEnabled = useRoomStore((s) => s.setSecondaryEnabled);
+  const setSecondaryDeviceId = useRoomStore((s) => s.setSecondaryDeviceId);
+  const setSecondaryMonitor = useRoomStore((s) => s.setSecondaryMonitor);
+
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
   const [speakers, setSpeakers] = useState<MediaDeviceInfo[]>([]);
   const micSelectId = useId();
   const micHintId = useId();
   const speakerSelectId = useId();
+  const secondaryCheckId = useId();
+  const secondaryHintId = useId();
+  const secondarySelectId = useId();
+  const secondaryMonitorId = useId();
 
   const refresh = useCallback(async () => {
     try {
@@ -92,6 +103,62 @@ export function DeviceSettings() {
             ))}
           </select>
         </div>
+      )}
+
+      <div>
+        <div className="flex items-start gap-2">
+          <input
+            type="checkbox"
+            id={secondaryCheckId}
+            checked={secondaryEnabled}
+            onChange={(e) => setSecondaryEnabled(e.target.checked)}
+            aria-describedby={secondaryHintId}
+            className="mt-0.5 shrink-0 accent-sonic-accent"
+          />
+          <label htmlFor={secondaryCheckId} className="text-xs font-medium text-sonic-300 cursor-pointer">
+            {m.settings_secondary_label()}
+          </label>
+        </div>
+        <p id={secondaryHintId} className="mt-1 text-xs text-sonic-400">
+          {m.settings_secondary_hint()}
+        </p>
+      </div>
+
+      {secondaryEnabled && (
+        <>
+          <div>
+            <label htmlFor={secondarySelectId} className="mb-1 block text-xs font-medium text-sonic-300">
+              {m.settings_secondary_device_label()}
+            </label>
+            <select
+              id={secondarySelectId}
+              value={mics.some((d) => d.deviceId === secondaryDeviceId) ? secondaryDeviceId : ""}
+              onChange={(e) => setSecondaryDeviceId(e.target.value)}
+              onFocus={() => void refresh()}
+              className={selectClass}
+            >
+              <option value="">{m.settings_default_device()}</option>
+              {mics.map((d, i) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {d.label || m.settings_mic_fallback({ n: i + 1 })}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id={secondaryMonitorId}
+              checked={secondaryMonitor}
+              onChange={(e) => setSecondaryMonitor(e.target.checked)}
+              className="shrink-0 accent-sonic-accent"
+            />
+            <label htmlFor={secondaryMonitorId} className="text-xs font-medium text-sonic-300 cursor-pointer">
+              {m.settings_secondary_monitor_label()}
+            </label>
+          </div>
+        </>
       )}
 
       {/* Browsers hide device names until mic permission is granted (e.g. in

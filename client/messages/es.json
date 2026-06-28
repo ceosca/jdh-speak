@@ -108,6 +108,11 @@
   "settings_voice_processing_label": "Procesamiento de voz",
   "settings_voice_processing_hint": "Control de eco, limpieza de ruido y nivel automático",
 
+  "settings_secondary_label": "Activar placa de transmisión secundaria",
+  "settings_secondary_device_label": "Dispositivo secundario",
+  "settings_secondary_monitor_label": "Escuchar tu placa secundaria",
+  "settings_secondary_hint": "Mezcla un segundo dispositivo de grabación (otro micro o un loopback) en tu audio. Al silenciar, solo se silencia tu micro principal.",
+
   "settings_streaming_heading": "Retransmisión en directo",
   "settings_streaming_hint": "Retransmite toda la llamada —cada voz, el audio compartido y la música— a un servidor Icecast2. Funciona junto a la grabación (o en su lugar).",
   "streaming_host_label": "Servidor Icecast",
