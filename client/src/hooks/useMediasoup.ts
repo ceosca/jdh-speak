@@ -191,6 +191,10 @@ function savePlayerPositions(map: Map<string, number>): void {
     let entries = [...map.entries()];
     if (entries.length > PLAYER_POSITIONS_MAX) {
       entries = entries.slice(entries.length - PLAYER_POSITIONS_MAX);
+      // Also trim the in-memory Map to the same most-recent-N entries so it can't
+      // grow unboundedly during a long session.
+      map.clear();
+      for (const [k, v] of entries) map.set(k, v);
     }
     localStorage.setItem(PLAYER_POSITIONS_KEY, JSON.stringify(entries));
   } catch {
@@ -2545,6 +2549,16 @@ export function useMediasoup() {
           // Re-bind with the playlist-aware ended handler by reusing loadIntoSlot.
           // We do NOT pass an objectUrl here — the slot already holds it and we
           // don't want it revoked and recreated (objectUrl is already in playlist).
+          // Re-register the resume-seek onMetadata closure so the first track's
+          // saved position survives this second loadIntoSlot call (which aborts
+          // the AbortController that startFileSource's loadIntoSlot registered).
+          const firstTrackNameShuffle = firstTrack.name;
+          const onMetadataShuffle = () => {
+            const saved = playerPositionsRef.current.get(firstTrackNameShuffle);
+            if (saved && saved > 0 && isFinite(slot.audioEl.duration) && saved < slot.audioEl.duration) {
+              slot.audioEl.currentTime = saved;
+            }
+          };
           loadIntoSlot(
             slot,
             firstTrack.objectUrl,
@@ -2562,6 +2576,7 @@ export function useMediasoup() {
               } else { void pt(order[pos + 1]!); }
             },
             () => void stopFileStream(announce_file_stream_error()),
+            onMetadataShuffle,
           );
           // Re-play (loadIntoSlot paused the element).
           void slot.audioEl.play().catch(() => {});
@@ -2576,6 +2591,16 @@ export function useMediasoup() {
         const g = outGraphRef.current;
         if (g?.fileSlots) {
           const slot = g.fileSlots[g.activeSlot]!;
+          // Re-register the resume-seek onMetadata closure so the first track's
+          // saved position survives this second loadIntoSlot call (which aborts
+          // the AbortController that startFileSource's loadIntoSlot registered).
+          const firstTrackName = firstTrack.name;
+          const onMetadataFirst = () => {
+            const saved = playerPositionsRef.current.get(firstTrackName);
+            if (saved && saved > 0 && isFinite(slot.audioEl.duration) && saved < slot.audioEl.duration) {
+              slot.audioEl.currentTime = saved;
+            }
+          };
           loadIntoSlot(
             slot,
             firstTrack.objectUrl,
@@ -2592,6 +2617,7 @@ export function useMediasoup() {
               } else { void pt(cur + 1); }
             },
             () => void stopFileStream(announce_file_stream_error()),
+            onMetadataFirst,
           );
           void slot.audioEl.play().catch(() => {});
         }
