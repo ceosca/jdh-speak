@@ -576,6 +576,10 @@ export function useMediasoup() {
     };
   }, [micDeviceId, voiceProcessingEnabled, connectMicToGraph, store]);
 
+  // Track previously-applied secondary settings so a monitor-only change can
+  // skip the getUserMedia round-trip (mirrors prevMicSettingsRef pattern).
+  const prevSecondaryRef = useRef({ enabled: secondaryEnabled, deviceId: secondaryDeviceId });
+
   // Acquire/release the secondary input device and wire it into outDest.
   // Re-runs whenever secondaryEnabled, secondaryDeviceId, or secondaryMonitor
   // changes. Uses a cancellation flag to avoid stale getUserMedia races.
@@ -626,14 +630,43 @@ export function useMediasoup() {
 
   // Live effect: acquire/release the secondary device whenever its settings change.
   useEffect(() => {
+    const state = store.getState();
+    const enabled = state.secondaryEnabled;
+    const deviceId = state.secondaryDeviceId;
+    const monitor = state.secondaryMonitor;
+    const prev = prevSecondaryRef.current;
+    const g = outGraphRef.current;
+
+    // Monitor-only change: enabled and deviceId are unchanged, and the source
+    // node is already live — just connect/disconnect the destination edge
+    // without re-acquiring the device (avoids an audible gap on monitor toggle).
+    if (
+      enabled === prev.enabled &&
+      deviceId === prev.deviceId &&
+      g?.secondarySource
+    ) {
+      if (monitor) {
+        // Guard against double-connect: disconnect first (no-op if not connected),
+        // then reconnect — Web Audio silently allows duplicate connects but it
+        // stacks, so a disconnect/reconnect cycle keeps exactly one connection.
+        try { g.secondarySource.disconnect(sharedAudioContext.destination); } catch { /* not connected */ }
+        g.secondarySource.connect(sharedAudioContext.destination);
+      } else {
+        try { g.secondarySource.disconnect(sharedAudioContext.destination); } catch { /* already disconnected */ }
+      }
+      return;
+    }
+
+    // Enabled or deviceId changed — full acquire/release path.
+    prevSecondaryRef.current = { enabled, deviceId };
     let cancelled = false;
     void (async () => {
       const result = await applySecondaryDevice();
       if (cancelled || !result) return;
 
-      const { stream, monitor } = result;
-      const g = outGraphRef.current;
-      if (!g) {
+      const { stream, monitor: mon } = result;
+      const graph = outGraphRef.current;
+      if (!graph) {
         // Graph was torn down (leave) between the async call and here.
         stream.getTracks().forEach((t) => t.stop());
         return;
@@ -644,17 +677,17 @@ export function useMediasoup() {
       const secondaryGain = ctx.createGain();
       secondaryGain.gain.value = 1;
       secondarySource.connect(secondaryGain);
-      secondaryGain.connect(g.outDest);
-      if (monitor) secondarySource.connect(ctx.destination);
+      secondaryGain.connect(graph.outDest);
+      if (mon) secondarySource.connect(ctx.destination);
 
-      g.secondarySource = secondarySource;
-      g.secondaryGain = secondaryGain;
-      g.secondaryStream = stream;
+      graph.secondarySource = secondarySource;
+      graph.secondaryGain = secondaryGain;
+      graph.secondaryStream = stream;
     })();
     return () => {
       cancelled = true;
     };
-  }, [secondaryEnabled, secondaryDeviceId, secondaryMonitor, applySecondaryDevice]);
+  }, [secondaryEnabled, secondaryDeviceId, secondaryMonitor, applySecondaryDevice, store]);
 
   // --- P2P: create a peer connection ---
   const ensureLocalStream = useCallback(async () => {
