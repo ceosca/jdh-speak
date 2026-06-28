@@ -511,6 +511,21 @@ export function createSignalingServer(
       cb({ ok: true });
     });
 
+    // Visual mute toggle that does NOT pause the producer — used when a peer has a
+    // secondary transmission device mixed into their voice track, so muting their
+    // mic must not stop the producer (the secondary keeps flowing). Mirrors the
+    // peer-muted/-unmuted broadcast of producer-pause without touching media.
+    socket.on("set-mute-state", (data: unknown, cb?: (res: unknown) => void) => {
+      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
+      const parsed = z.object({ muted: z.boolean() }).safeParse(data);
+      if (!parsed.success) return cb?.({ ok: false, error: "Invalid value" });
+      currentPeer.muted = parsed.data.muted;
+      socket.to(currentRoom.name).emit(parsed.data.muted ? "peer-muted" : "peer-unmuted", {
+        peerId: socket.id,
+      });
+      cb?.({ ok: true });
+    });
+
     // --- Audio share (a peer casting system/tab audio as a stereo producer) ---
     // start-share pins the room to SFU (a stereo producer must be routed by the
     // server) and announces it; the client then produces a "share" track. We
