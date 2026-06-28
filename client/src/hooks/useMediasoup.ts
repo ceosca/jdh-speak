@@ -64,6 +64,20 @@ interface PeerAudio {
   consumer?: Consumer;
 }
 
+// One of the two persistent file-audio slots. The source and xfadeGain are
+// created once (createMediaElementSource may only be called once per element);
+// only audioEl.src is swapped when loading a different track.
+interface FileSlot {
+  audioEl: HTMLAudioElement;
+  source: MediaElementAudioSourceNode;
+  xfadeGain: GainNode;
+  // Per-load AbortController so ended/error handlers from a previous load are
+  // revoked cleanly when the slot is reused for a new track.
+  abortCtrl: AbortController | null;
+  // The object URL for the current track (if any); revoked on next load.
+  objectUrl: string | null;
+}
+
 // ICE servers — self-hosted coturn at turn.oriolgomez.com (shared with the
 // games on the same VPS). STUN is tried first, so most P2P connections
 // never hit the relay; TURN/TURNS only kick in for symmetric NATs and
@@ -255,10 +269,13 @@ export function useMediasoup() {
     // separate high-bitrate stereo "share" track.
     shareDest: MediaStreamAudioDestinationNode | null;
     // A streamed local file gets its OWN destination too, so it's produced as a
-    // separate stereo "file" track, independent of voice AND of any share. The
-    // <audio> element feeding it is swapped (replace file) without touching this
-    // destination or its producer.
-    fileSource: MediaElementAudioSourceNode | null;
+    // separate stereo "file" track, independent of voice AND of any share.
+    // Two persistent slots feed the shared fileVolumeGain → fileDuckGain →
+    // fileDest chain. The active slot's xfadeGain is 1; the idle slot's is 0.
+    // (createMediaElementSource may only be called once per element — the slots
+    // are created lazily and reused; only .src is swapped per load.)
+    fileSlots: [FileSlot, FileSlot] | null;
+    activeSlot: 0 | 1;
     fileDest: MediaStreamAudioDestinationNode | null;
     // Duck gain nodes inserted before shareDest/fileDest on the SENT path so
     // the transmitted producer is already attenuated during voice — the server's
@@ -288,13 +305,9 @@ export function useMediasoup() {
   // tear down a share "music" tile when its owner stops sharing or leaves.
   const shareOwnersRef = useRef<Map<string, string>>(new Map());
   // Local file streaming (independent of the audio share above): the stereo
-  // "file" producer (SFU), the <audio> element decoding the file, its object
-  // URL, the Web Audio source node, and an AbortController for the element's
-  // ended/error listeners (so swapping the file never fires a stale handler).
+  // "file" producer (SFU). The two persistent FileSlots live inside outGraphRef
+  // (fileSlots/activeSlot); only the producer ref lives here.
   const fileProducerRef = useRef<Producer | null>(null);
-  const fileAudioRef = useRef<HTMLAudioElement | null>(null);
-  const fileObjectUrlRef = useRef<string | null>(null);
-  const fileAbortRef = useRef<AbortController | null>(null);
   // Other peers' incoming file streams: producerId -> owner peerId, mirroring
   // shareOwnersRef so a peer can stream a file AND share system audio at once
   // without the two tearing each other's tiles down.
@@ -494,7 +507,8 @@ export function useMediasoup() {
       outDest,
       displaySource: null,
       shareDest: null,
-      fileSource: null,
+      fileSlots: null,
+      activeSlot: 0,
       fileDest: null,
       shareDuckGain: null,
       fileDuckGain: null,
@@ -1944,38 +1958,110 @@ export function useMediasoup() {
 
   // --- File streaming: stream a local audio file into the call as a SEPARATE
   // stereo "file" producer. Independent of the audio share; the file is decoded
-  // by an <audio> element whose Web Audio source feeds its own destination
-  // (produced) and the local speakers (monitored). Like a share it forces SFU
-  // and is auto-tapped by recording/streaming server-side. ---
+  // by one of two persistent <audio> slots whose Web Audio source feeds its own
+  // destination (produced) and the local speakers (monitored). Like a share it
+  // forces SFU and is auto-tapped by recording/streaming server-side. ---
+
+  // Build the two persistent file slots lazily (called once per session, on
+  // first file start). Each slot: createMediaElementSource once, xfadeGain once,
+  // connected source → xfadeGain → fileVolumeGain. Active slot xfadeGain = 1,
+  // idle = 0.
+  const ensureFileSlots = useCallback(
+    (g: NonNullable<typeof outGraphRef.current>) => {
+      if (g.fileSlots) return g.fileSlots;
+
+      // Ensure the shared downstream chain is ready before wiring slots into it.
+      if (!g.fileDest) g.fileDest = sharedAudioContext.createMediaStreamDestination();
+      if (!g.fileDuckGain) {
+        g.fileDuckGain = sharedAudioContext.createGain();
+        g.fileDuckGain.gain.value = emitDuckTarget();
+        g.fileDuckGain.connect(g.fileDest);
+      }
+      if (!g.fileVolumeGain) {
+        g.fileVolumeGain = sharedAudioContext.createGain();
+        g.fileVolumeGain.gain.value = store.getState().fileVolume;
+        g.fileVolumeGain.connect(g.fileDuckGain);
+      }
+
+      const makeSlot = (active: boolean): FileSlot => {
+        const audioEl = new Audio();
+        (audioEl as unknown as Record<string, boolean>).playsInline = true;
+        const source = sharedAudioContext.createMediaElementSource(audioEl);
+        const xfadeGain = sharedAudioContext.createGain();
+        xfadeGain.gain.value = active ? 1 : 0;
+        source.connect(xfadeGain);
+        xfadeGain.connect(g.fileVolumeGain!);
+        return { audioEl, source, xfadeGain, abortCtrl: null, objectUrl: null };
+      };
+
+      g.fileSlots = [makeSlot(true), makeSlot(false)];
+      return g.fileSlots;
+    },
+    [emitDuckTarget, store],
+  );
+
+  // Load a new track into a slot: revoke its previous object URL, swap .src,
+  // re-bind ended/error with a fresh AbortController. The source node and
+  // xfadeGain are untouched (they are permanent). Returns the slot.
+  const loadIntoSlot = useCallback(
+    (
+      slot: FileSlot,
+      src: string,
+      objectUrl: string | undefined,
+      onEnded: () => void,
+      onError: () => void,
+    ): FileSlot => {
+      // Revoke previous AbortController so stale ended/error don't fire.
+      slot.abortCtrl?.abort();
+      // Revoke the previous object URL for this slot.
+      if (slot.objectUrl) {
+        URL.revokeObjectURL(slot.objectUrl);
+      }
+      slot.objectUrl = objectUrl ?? null;
+      slot.audioEl.pause();
+      slot.audioEl.src = src;
+
+      const ac = new AbortController();
+      slot.abortCtrl = ac;
+      slot.audioEl.addEventListener("ended", onEnded, { signal: ac.signal });
+      slot.audioEl.addEventListener("error", onError, { signal: ac.signal });
+      return slot;
+    },
+    [],
+  );
+
   const stopFileStream = useCallback(
     async (announcement?: string) => {
       if (store.getState().fileStreamName == null) return;
-      // Drop the element's ended/error listeners first so teardown can't fire them.
-      fileAbortRef.current?.abort();
-      fileAbortRef.current = null;
+      // Abort ended/error listeners on both slots before teardown so they
+      // cannot re-trigger stopFileStream recursively.
+      const g = outGraphRef.current;
+      if (g?.fileSlots) {
+        // Use indexed access + local destructuring so the linter doesn't trace
+        // mutations back to outGraphRef through a for-of loop variable.
+        for (let i = 0; i < 2; i++) {
+          const { abortCtrl, audioEl, source, xfadeGain, objectUrl } = g.fileSlots[i]!;
+          abortCtrl?.abort();
+          audioEl.pause();
+          audioEl.src = "";
+          if (objectUrl) URL.revokeObjectURL(objectUrl);
+          source.disconnect();
+          xfadeGain.disconnect();
+        }
+        g.fileSlots = null;
+        g.activeSlot = 0;
+      }
       if (fileProducerRef.current) {
         if (!fileProducerRef.current.closed) fileProducerRef.current.close();
         fileProducerRef.current = null;
       }
-      const g = outGraphRef.current;
-      g?.fileSource?.disconnect();
-      g?.fileVolumeGain?.disconnect();
-      g?.fileDuckGain?.disconnect();
-      g?.fileDest?.disconnect();
       if (g) {
-        g.fileSource = null;
+        g.fileVolumeGain?.disconnect();
+        g.fileDuckGain?.disconnect();
+        g.fileDest?.disconnect();
         g.fileVolumeGain = null;
         g.fileDuckGain = null;
         g.fileDest = null;
-      }
-      if (fileAudioRef.current) {
-        fileAudioRef.current.pause();
-        fileAudioRef.current.src = "";
-        fileAudioRef.current = null;
-      }
-      if (fileObjectUrlRef.current) {
-        URL.revokeObjectURL(fileObjectUrlRef.current);
-        fileObjectUrlRef.current = null;
       }
       store.getState().setFileStream(null);
       store.getState().setFileStreamPlaying(false);
@@ -1995,66 +2081,35 @@ export function useMediasoup() {
 
       const firstStart = store.getState().fileStreamName == null;
 
-      // Replace path: tear down the previous element/source but KEEP fileDest and
-      // its producer, so swapping the file causes no mode flap or peer tile churn
-      // (the produced track is fileDest's, which never changes — only its input).
-      fileAbortRef.current?.abort();
-      fileAbortRef.current = null;
-      g.fileSource?.disconnect();
-      g.fileSource = null;
-      if (fileAudioRef.current) {
-        fileAudioRef.current.pause();
-        fileAudioRef.current.src = "";
-        fileAudioRef.current = null;
-      }
-      if (fileObjectUrlRef.current) {
-        URL.revokeObjectURL(fileObjectUrlRef.current);
-        fileObjectUrlRef.current = null;
-      }
+      // Build (or reuse) the two persistent slots and the shared downstream chain.
+      const slots = ensureFileSlots(g);
+      const slotIdx = g.activeSlot;
+      const slot = slots[slotIdx];
 
-      // New <audio> element decoding a local object URL or same-origin server
-      // source (library file / proxied public URL).
-      fileObjectUrlRef.current = objectUrl ?? null;
-      const audioEl = new Audio();
-      audioEl.src = src;
-      (audioEl as unknown as Record<string, boolean>).playsInline = true;
-      fileAudioRef.current = audioEl;
+      // Load the new track into the active slot. Stops the element, revokes the
+      // previous object URL for this slot, re-binds ended/error with a fresh
+      // AbortController. The source node and xfadeGain are untouched.
+      loadIntoSlot(
+        slot,
+        src,
+        objectUrl,
+        () => void stopFileStream(announce_file_stream_ended()),
+        () => void stopFileStream(announce_file_stream_error()),
+      );
 
-      const source = sharedAudioContext.createMediaElementSource(audioEl);
-      g.fileSource = source;
-      // Its OWN destination → produced as a separate stereo "file" track.
-      // Insert a duck gain node on the SENT path so the transmitted producer is
-      // attenuated during voice (recording/streaming taps see the ducked signal).
-      // The gain persists across file replaces (fileDest/fileDuckGain are kept).
-      if (!g.fileDest) g.fileDest = sharedAudioContext.createMediaStreamDestination();
-      if (!g.fileDuckGain) {
-        g.fileDuckGain = sharedAudioContext.createGain();
-        g.fileDuckGain.gain.value = emitDuckTarget();
-        g.fileDuckGain.connect(g.fileDest);
-      }
-      if (!g.fileVolumeGain) {
-        g.fileVolumeGain = sharedAudioContext.createGain();
-        g.fileVolumeGain.gain.value = store.getState().fileVolume;
-        g.fileVolumeGain.connect(g.fileDuckGain);
-      }
-      source.connect(g.fileVolumeGain);
-      // Also monitor it locally at full volume (not ducked), so the streamer
-      // hears what they're playing.
-      source.connect(sharedAudioContext.destination);
+      // Active slot xfadeGain = 1; idle slot remains at 0.
+      slot.xfadeGain.gain.value = 1;
+      slots[slotIdx === 0 ? 1 : 0].xfadeGain.gain.value = 0;
 
-      // Stop the whole stream when the file ends or fails to decode.
-      const ac = new AbortController();
-      fileAbortRef.current = ac;
-      audioEl.addEventListener("ended", () => void stopFileStream(announce_file_stream_ended()), {
-        signal: ac.signal,
-      });
-      audioEl.addEventListener("error", () => void stopFileStream(announce_file_stream_error()), {
-        signal: ac.signal,
-      });
+      // Monitor locally at full volume (not ducked), so the streamer hears
+      // what they're playing. Reconnect after each load (disconnect first to
+      // avoid double-connections if called on an already-playing element).
+      try { slot.source.disconnect(sharedAudioContext.destination); } catch { /* not connected */ }
+      slot.source.connect(sharedAudioContext.destination);
 
       store.getState().setFileStream(name);
       try {
-        await audioEl.play();
+        await slot.audioEl.play();
         store.getState().setFileStreamPlaying(true);
       } catch {
         // Autoplay refused (rare — we're in a user gesture); land paused so the
@@ -2076,7 +2131,7 @@ export function useMediasoup() {
         store.getState().announce(file_player_streaming({ name }));
       }
     },
-    [store, ensureOutGraph, emitDuckTarget, emit, produceFile, stopFileStream],
+    [store, ensureOutGraph, ensureFileSlots, loadIntoSlot, emit, produceFile, stopFileStream],
   );
 
   const startFileStream = useCallback(
@@ -2115,7 +2170,8 @@ export function useMediasoup() {
   );
 
   const toggleFilePlayback = useCallback(() => {
-    const el = fileAudioRef.current;
+    const g = outGraphRef.current;
+    const el = g?.fileSlots?.[g.activeSlot]?.audioEl;
     if (!el) return;
     if (el.paused) {
       void el.play().catch(() => {});
@@ -2237,18 +2293,6 @@ export function useMediasoup() {
 
   const leave = useCallback(() => {
     detachSharedAudio();
-    // Tear down any active file stream (stops the <audio>, revokes its URL).
-    fileAbortRef.current?.abort();
-    fileAbortRef.current = null;
-    if (fileAudioRef.current) {
-      fileAudioRef.current.pause();
-      fileAudioRef.current.src = "";
-      fileAudioRef.current = null;
-    }
-    if (fileObjectUrlRef.current) {
-      URL.revokeObjectURL(fileObjectUrlRef.current);
-      fileObjectUrlRef.current = null;
-    }
     teardownP2p();
     teardownSfu();
     // Tear down the outgoing graph (nodes live in the shared context, so just
@@ -2261,7 +2305,24 @@ export function useMediasoup() {
       g.displaySource?.disconnect();
       g.shareDuckGain?.disconnect();
       g.shareDest?.disconnect();
-      g.fileSource?.disconnect();
+      // Tear down both file slots: abort listeners, stop elements, revoke URLs,
+      // disconnect source nodes. xfadeGain/fileVolumeGain/fileDuckGain/fileDest
+      // are all disconnected below.
+      if (g.fileSlots) {
+        // Use indexed access + local destructuring so the linter doesn't trace
+        // mutations back to outGraphRef through a for-of loop variable.
+        for (let i = 0; i < 2; i++) {
+          const { abortCtrl, audioEl, source, xfadeGain, objectUrl } = g.fileSlots[i]!;
+          abortCtrl?.abort();
+          audioEl.pause();
+          audioEl.src = "";
+          if (objectUrl) URL.revokeObjectURL(objectUrl);
+          source.disconnect();
+          xfadeGain.disconnect();
+        }
+        g.fileSlots = null;
+      }
+      g.fileVolumeGain?.disconnect();
       g.fileDuckGain?.disconnect();
       g.fileDest?.disconnect();
       // Secondary device: disconnect nodes and stop the MediaStream tracks.
