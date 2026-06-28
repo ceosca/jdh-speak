@@ -24,12 +24,8 @@ import {
   announce_mic_unmuted,
   announce_peer_muted,
   announce_peer_unmuted,
-  announce_share_started,
-  announce_share_stopped,
   announce_share_started_you,
   announce_share_stopped_you,
-  announce_file_stream_started,
-  announce_file_stream_stopped,
   announce_file_stream_started_you,
   announce_file_stream_stopped_you,
   announce_file_stream_ended,
@@ -41,9 +37,7 @@ import {
   announce_no_mic,
   announce_voice_processing_on,
   announce_voice_processing_off,
-  file_stream_name,
   file_player_streaming,
-  share_stream_name,
   player_now_playing,
 } from "../paraglide/messages.js";
 import { useRoomStore, type RoomMode } from "../stores/room";
@@ -333,13 +327,6 @@ export function useMediasoup() {
   } | null>(null);
   // Audio share (system / tab audio mixed into the voice track via outDest)
   const displayStreamRef = useRef<MediaStream | null>(null);
-  // Other peers' incoming share streams: producerId -> owner peerId, so we can
-  // tear down a share "music" tile when its owner stops sharing or leaves.
-  const shareOwnersRef = useRef<Map<string, string>>(new Map());
-  // Other peers' incoming file streams: producerId -> owner peerId, mirroring
-  // shareOwnersRef so a peer can stream a file AND share system audio at once
-  // without the two tearing each other's tiles down.
-  const fileOwnersRef = useRef<Map<string, string>>(new Map());
   // Local anti-spam guard for instant "thunk" feedback (the server enforces the
   // same 5-per-10s budget authoritatively).
   const chatLimiterRef = useRef(new RateLimiter());
@@ -510,10 +497,6 @@ export function useMediasoup() {
       destroyAudioPipeline(pa);
     }
     peerAudiosRef.current.clear();
-    // Share + file streams are keyed in peerAudiosRef too; drop their owner
-    // mappings so a re-consume (mode switch / reconnect) rebuilds them cleanly.
-    shareOwnersRef.current.clear();
-    fileOwnersRef.current.clear();
   }, []);
 
   // --- Outgoing audio graph (mic gain + soft limiter, + optional shared audio) ---
@@ -908,37 +891,6 @@ export function useMediasoup() {
 
       const pipeline = createAudioPipeline(consumer.track);
 
-      // A "share" is a peer casting system/tab audio as a SEPARATE stereo
-      // producer. Represent it as its
-      // own "music stream" participant keyed by the producer id, so a peer that
-      // produces BOTH voice and a share never collides in the peer/audio maps.
-      // Stereo is preserved end-to-end by createAudioPipeline.
-      if (source === "share") {
-        const ownerName =
-          store.getState().peers.get(peerId)?.displayName ?? announce_a_participant();
-        store.getState().addPeer(producerId, share_stream_name({ name: ownerName }));
-        store.getState().setPeerMusic(producerId, true);
-        shareOwnersRef.current.set(producerId, peerId);
-        peerAudiosRef.current.set(producerId, { ...pipeline, consumer });
-        pipeline.gainNode.gain.value = effectiveGain(producerId);
-        return;
-      }
-
-      // A "file" is a peer streaming a local audio file as a SEPARATE stereo
-      // producer — same treatment as a share (its own music-stream tile keyed by
-      // producer id, ducks under voice), but tracked in its own owner map so a
-      // peer streaming a file AND sharing system audio keeps the two independent.
-      if (source === "file") {
-        const ownerName =
-          store.getState().peers.get(peerId)?.displayName ?? announce_a_participant();
-        store.getState().addPeer(producerId, file_stream_name({ name: ownerName }));
-        store.getState().setPeerMusic(producerId, true);
-        fileOwnersRef.current.set(producerId, peerId);
-        peerAudiosRef.current.set(producerId, { ...pipeline, consumer });
-        pipeline.gainNode.gain.value = effectiveGain(producerId);
-        return;
-      }
-
       // Drop any previous pipeline for this peer first (a re-consume on a mode
       // switch, reconnect, or a live bitrate re-produce) so it never leaks or
       // doubles up.
@@ -965,34 +917,6 @@ export function useMediasoup() {
       pipeline.gainNode.gain.value = effectiveGain(peerId);
     },
     [emit, store, effectiveGain],
-  );
-
-  // Tear down an incoming peer's share "music stream" (they stopped, or left).
-  const removeShareStream = useCallback(
-    (producerId: string) => {
-      const pa = peerAudiosRef.current.get(producerId);
-      if (pa) {
-        destroyAudioPipeline(pa);
-        peerAudiosRef.current.delete(producerId);
-      }
-      shareOwnersRef.current.delete(producerId);
-      store.getState().removePeer(producerId);
-    },
-    [store],
-  );
-
-  // Tear down an incoming peer's file "music stream" (they stopped, or left).
-  const removeFileStream = useCallback(
-    (producerId: string) => {
-      const pa = peerAudiosRef.current.get(producerId);
-      if (pa) {
-        destroyAudioPipeline(pa);
-        peerAudiosRef.current.delete(producerId);
-      }
-      fileOwnersRef.current.delete(producerId);
-      store.getState().removePeer(producerId);
-    },
-    [store],
   );
 
   // --- SFU: set up transports and produce ---
@@ -1362,14 +1286,6 @@ export function useMediasoup() {
           destroyAudioPipeline(peerAudio);
           peerAudiosRef.current.delete(peerId);
         }
-        // Drop any share / file "music stream" tiles this peer owned (they may
-        // have left mid-share/-stream, without a stop event first).
-        for (const [producerId, owner] of shareOwnersRef.current) {
-          if (owner === peerId) removeShareStream(producerId);
-        }
-        for (const [producerId, owner] of fileOwnersRef.current) {
-          if (owner === peerId) removeFileStream(producerId);
-        }
         store.getState().removePeer(peerId);
         if (wasMusic) {
           // A music caster (e.g. Ecobox) going away reads as the music
@@ -1599,49 +1515,6 @@ export function useMediasoup() {
         });
       });
 
-      // A peer started sharing system/tab audio — announce it + play a cue.
-      // Their stereo "share" stream arrives separately via new-producer.
-      socket.on(
-        "share-started",
-        ({ displayName: name }: { peerId: string; displayName: string }) => {
-          store.getState().announceEvent(announce_share_started({ name }));
-          playCue(sharedAudioContext, "share-start");
-        },
-      );
-
-      // A peer stopped sharing — tear down their share "music stream" tile(s),
-      // announce it, and play a cue.
-      socket.on(
-        "share-stopped",
-        ({ peerId, displayName: name }: { peerId: string; displayName: string }) => {
-          for (const [producerId, owner] of shareOwnersRef.current) {
-            if (owner === peerId) removeShareStream(producerId);
-          }
-          store.getState().announceEvent(announce_share_stopped({ name }));
-          playCue(sharedAudioContext, "share-stop");
-        },
-      );
-
-      // A peer started streaming a local file — announce it + play a cue. Their
-      // stereo "file" stream arrives separately via new-producer.
-      socket.on("file-stream-started", ({ displayName: name }: { displayName: string }) => {
-        store.getState().announceEvent(announce_file_stream_started({ name }));
-        playCue(sharedAudioContext, "share-start");
-      });
-
-      // A peer stopped their file stream — tear down their file "music stream"
-      // tile(s), announce it, and play a cue.
-      socket.on(
-        "file-stream-stopped",
-        ({ peerId, displayName: name }: { peerId: string; displayName: string }) => {
-          for (const [producerId, owner] of fileOwnersRef.current) {
-            if (owner === peerId) removeFileStream(producerId);
-          }
-          store.getState().announceEvent(announce_file_stream_stopped({ name }));
-          playCue(sharedAudioContext, "share-stop");
-        },
-      );
-
       // A remote peer toggled their mic: reflect it, play a soft cue, and speak
       // it on the polite ARIA region. Unlike other room events this is NOT
       // logged to chat (announce, not announceEvent) — it'd be too noisy.
@@ -1705,8 +1578,6 @@ export function useMediasoup() {
       rampMusicGains,
       rampEmitDuck,
       surfaceToggle,
-      removeShareStream,
-      removeFileStream,
       runTransition,
       flushPendingCandidates,
       store,
@@ -2719,8 +2590,6 @@ export function useMediasoup() {
       g.secondaryStream?.getTracks().forEach((t) => t.stop());
       outGraphRef.current = null;
     }
-    shareOwnersRef.current.clear();
-    fileOwnersRef.current.clear();
     // Cancel any pending coalesced mute/duck announcements.
     for (const s of surfaceRef.current.values()) {
       if (s.timer !== null) clearTimeout(s.timer);
