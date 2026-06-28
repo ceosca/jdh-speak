@@ -2537,6 +2537,81 @@ export function useMediasoup() {
     [store],
   );
 
+  // Seek the active slot by `sec` seconds (clamped to [0, duration]).
+  const playerSeekBy = useCallback((sec: number) => {
+    const g = outGraphRef.current;
+    const el = g?.fileSlots?.[g.activeSlot]?.audioEl;
+    if (!el) return;
+    el.currentTime = Math.min(el.duration || 0, Math.max(0, el.currentTime + sec));
+  }, []);
+
+  // Seek the active slot to an absolute position (clamped to [0, duration]).
+  const playerSeekTo = useCallback((sec: number) => {
+    const g = outGraphRef.current;
+    const el = g?.fileSlots?.[g.activeSlot]?.audioEl;
+    if (!el) return;
+    el.currentTime = Math.min(el.duration || 0, Math.max(0, sec));
+  }, []);
+
+  // Toggle play/pause — alias exposed under the brief's name.
+  const playerTogglePlay = toggleFilePlayback;
+
+  // Set the playback rate on both slots so it persists across crossfades.
+  const setPlayerRate = useCallback(
+    (r: number) => {
+      store.getState().setPlayerRate(r);
+      const g = outGraphRef.current;
+      if (!g?.fileSlots) return;
+      for (const slot of g.fileSlots) {
+        slot.audioEl.playbackRate = r;
+      }
+    },
+    [store],
+  );
+
+  // Subscribe timeupdate / durationchange / loadedmetadata on the active slot's
+  // element so the store stays current. Throttle writes to ~250 ms so React
+  // doesn't re-render at 60 fps while seeking. Re-runs whenever the active slot
+  // element changes (track swap writes a new audioEl into the slot).
+  //
+  // We poll via a ref rather than subscribing to audioEl directly, because the
+  // slot element is stable for the session — only .src changes. The listeners
+  // are lightweight (no allocation; store.setPlayerTime is a zustand setter).
+  useEffect(() => {
+    let lastWrite = 0;
+    let rafId: number | null = null;
+
+    const tick = () => {
+      const g = outGraphRef.current;
+      const el = g?.fileSlots?.[g.activeSlot]?.audioEl;
+      if (!el) return;
+      const now = performance.now();
+      if (now - lastWrite >= 250) {
+        lastWrite = now;
+        store.getState().setPlayerTime(isFinite(el.currentTime) ? el.currentTime : 0);
+        store.getState().setPlayerDuration(isFinite(el.duration) ? el.duration : 0);
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+
+    // Only run the loop while we have an active file stream.
+    const unsubscribe = useRoomStore.subscribe((s) => {
+      if (s.fileStreamName != null && rafId == null) {
+        rafId = requestAnimationFrame(tick);
+      } else if (s.fileStreamName == null && rafId != null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+        store.getState().setPlayerTime(0);
+        store.getState().setPlayerDuration(0);
+      }
+    });
+
+    return () => {
+      unsubscribe();
+      if (rafId != null) cancelAnimationFrame(rafId);
+    };
+  }, [store]);
+
   // --- Recording ---
   // Recording is server-side: the server taps every participant's stream off
   // the SFU. Starting it forces the room out of P2P (the server can't see P2P
@@ -2721,6 +2796,10 @@ export function useMediasoup() {
     playerNext,
     playerPrev,
     toggleFilePlayback,
+    playerTogglePlay,
+    playerSeekBy,
+    playerSeekTo,
+    setPlayerRate,
     setPlayerVolume,
     toggleRecording,
     startRecording,

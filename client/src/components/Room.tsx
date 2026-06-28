@@ -70,7 +70,10 @@ export function Room() {
     playTrack,
     playerNext,
     playerPrev,
-    toggleFilePlayback,
+    playerTogglePlay,
+    playerSeekBy,
+    playerSeekTo,
+    setPlayerRate,
     setPlayerVolume,
     toggleRecording,
     rename,
@@ -142,6 +145,7 @@ export function Room() {
   const playlistIndex = useRoomStore((s) => s.playlistIndex);
   const playerRepeat = useRoomStore((s) => s.playerRepeat);
   const playerShuffle = useRoomStore((s) => s.playerShuffle);
+  const playerRate = useRoomStore((s) => s.playerRate);
   const announcement = useRoomStore((s) => s.announcement);
   const announceSeq = useRoomStore((s) => s.announceSeq);
   const chatPoliteMsg = useRoomStore((s) => s.chatPoliteMsg);
@@ -500,9 +504,11 @@ export function Room() {
         <FileStreamPlayer
           name={fileStreamName}
           playing={fileStreamPlaying}
-          onTogglePlay={toggleFilePlayback}
+          onTogglePlay={playerTogglePlay}
           onStop={() => stopFileStream()}
           onVolumeChange={setPlayerVolume}
+          onSeekBy={playerSeekBy}
+          onSeekTo={playerSeekTo}
           playlist={playlist}
           playlistIndex={playlistIndex}
           playerRepeat={playerRepeat}
@@ -514,6 +520,8 @@ export function Room() {
           onToggleShuffle={() =>
             useRoomStore.getState().setPlayerShuffle(!useRoomStore.getState().playerShuffle)
           }
+          playerRate={playerRate}
+          onSetRate={setPlayerRate}
         />
       )}
 

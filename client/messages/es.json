@@ -233,5 +233,20 @@
   "file_player_next": "Pista siguiente",
   "file_player_repeat": "Repetir: {mode}",
   "file_player_shuffle": "Aleatorio",
-  "file_player_playlist_label": "Lista de reproducción"
+  "file_player_playlist_label": "Lista de reproducción",
+
+  "player_progress": "Progreso de reproducción",
+  "player_progress_valuetext": "{current} de {total}",
+  "player_back10": "Retroceder 10 segundos",
+  "player_fwd10": "Avanzar 10 segundos",
+  "player_prev": "Pista anterior",
+  "player_next": "Pista siguiente",
+  "player_speed": "Velocidad",
+  "player_repeat": "Repetir",
+  "player_repeat_off": "Sin repetición",
+  "player_repeat_all": "Repetir todo",
+  "player_repeat_one": "Repetir una",
+  "player_shuffle": "Aleatorio",
+  "player_playlist": "Lista de reproducción",
+  "player_track_n": "Pista {n}"
 }

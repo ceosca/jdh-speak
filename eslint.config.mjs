@@ -30,6 +30,9 @@ export default defineConfig(
       // (rules-of-hooks, exhaustive-deps) and skip the stylistic ones.
       "react-hooks/set-state-in-effect": "off",
       "react-hooks/refs": "off",
+      // Mutable property writes on ref-derived DOM elements (currentTime,
+      // playbackRate) are deliberate imperatives, not mutations of shared state.
+      "react-hooks/immutability": "off",
     },
   },
 
