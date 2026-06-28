@@ -1719,13 +1719,15 @@ export function useMediasoup() {
     const track = localStreamRef.current?.getAudioTracks()[0];
     if (track) track.enabled = false;
 
-    // When the secondary device is active it's mixed into the same voice
-    // producer as the mic.  Pausing that producer would silence the secondary
-    // too, so instead we signal muted state via set-mute-state (which broadcasts
+    // When extra audio (secondary device, audio share, or file stream) is mixed
+    // into the same voice producer as the mic, pausing that producer would silence
+    // it too.  Instead we signal muted state via set-mute-state (which broadcasts
     // peer-muted without touching the producer) and leave the producer running.
-    const secondaryActive =
-      store.getState().secondaryEnabled && !!outGraphRef.current?.secondarySource;
-    if (secondaryActive) {
+    const outDestHasExtraAudio = () =>
+      (store.getState().secondaryEnabled && !!outGraphRef.current?.secondarySource) ||
+      store.getState().isSharingAudio ||
+      store.getState().fileStreamName != null;
+    if (outDestHasExtraAudio()) {
       await emit("set-mute-state", { muted: true }).catch(() => {});
     } else {
       if (modeRef.current === "sfu" && producerRef.current) producerRef.current.pause();
@@ -1743,9 +1745,11 @@ export function useMediasoup() {
     const track = localStreamRef.current?.getAudioTracks()[0];
     if (track) track.enabled = true;
 
-    const secondaryActive =
-      store.getState().secondaryEnabled && !!outGraphRef.current?.secondarySource;
-    if (secondaryActive) {
+    const outDestHasExtraAudio = () =>
+      (store.getState().secondaryEnabled && !!outGraphRef.current?.secondarySource) ||
+      store.getState().isSharingAudio ||
+      store.getState().fileStreamName != null;
+    if (outDestHasExtraAudio()) {
       await emit("set-mute-state", { muted: false }).catch(() => {});
     } else {
       if (modeRef.current === "sfu" && producerRef.current) producerRef.current.resume();
