@@ -1,5 +1,5 @@
 {
-  "name": "sonicroom",
+  "name": "jdh-speak",
   "private": true,
   "scripts": {
     "dev": "pnpm --filter server dev & pnpm --filter client dev",

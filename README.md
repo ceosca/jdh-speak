@@ -1,10 +1,10 @@
-# SonicRoom
+# JDH Speak
 
 **Low-latency, screen-reader-first browser audio conferencing — with hi-fi stereo music casting.**
 
-## What is SonicRoom?
+## What is JDH Speak?
 
-SonicRoom is a website where a group of people can **talk to each other live, with really good sound** — like a phone call or a voice chat, but in your web browser, with nothing to install. You open a link, type a name for your "room" and your own name, and you're in.
+JDH Speak is a website where a group of people can **talk to each other live, with really good sound** — like a phone call or a voice chat, but in your web browser, with nothing to install. You open a link, type a name for your "room" and your own name, and you're in.
 
 In plain terms, it lets you:
 
@@ -16,7 +16,7 @@ In plain terms, it lets you:
 
 It's built to work really well with **screen readers and keyboards**: everything that happens is announced out loud and written into the chat, and you can drive the whole thing without a mouse.
 
-You can use a SonicRoom that someone else is hosting, or **run your own server** — see ["Set up your own server"](#set-up-your-own-server) below for a step-by-step guide.
+You can use a JDH Speak that someone else is hosting, or **run your own server** — see ["Set up your own server"](#set-up-your-own-server) below for a step-by-step guide.
 
 ---
 
@@ -24,7 +24,7 @@ You can use a SonicRoom that someone else is hosting, or **run your own server**
 
 **For everyone**
 
-- [What is SonicRoom?](#what-is-sonicroom)
+- [What is JDH Speak?](#what-is-jdh-speak)
 - [Features](#features)
 - [Set up your own server](#set-up-your-own-server)
 
@@ -69,15 +69,15 @@ You can use a SonicRoom that someone else is hosting, or **run your own server**
 
 ## Set up your own server
 
-This guide is for someone who is comfortable copying and pasting commands but is **not** a developer. By the end you'll have your own SonicRoom running that you and your friends can connect to.
+This guide is for someone who is comfortable copying and pasting commands but is **not** a developer. By the end you'll have your own JDH Speak running that you and your friends can connect to.
 
 > Just want to try it on your own laptop first, without making it public? Jump to [Run it locally](#run-it-locally-development) — it's simpler and skips the networking parts.
 
 ### What you'll need
 
 - **A server that's on all the time and reachable from the internet.** This is usually a cheap "VPS" (virtual server) you rent by the month from a cloud host. Linux is the normal choice. You connect to it with a tool called SSH and type commands.
-- **Node.js** — the program that actually runs SonicRoom. Free, from [nodejs.org](https://nodejs.org) (pick the "LTS" version).
-- **pnpm** — a helper that downloads and assembles SonicRoom's parts. You don't install it separately; it comes with Node through a built-in tool called `corepack` (step 2 below switches it on).
+- **Node.js** — the program that actually runs JDH Speak. Free, from [nodejs.org](https://nodejs.org) (pick the "LTS" version).
+- **pnpm** — a helper that downloads and assembles JDH Speak's parts. You don't install it separately; it comes with Node through a built-in tool called `corepack` (step 2 below switches it on).
 - **ffmpeg** _(optional)_ — only needed if you want the **recording** or **live broadcast** features. Everything else works without it.
 
 ### Step by step
@@ -96,14 +96,14 @@ Run these on your server, one line at a time.
    corepack enable
    ```
 
-3. **Download SonicRoom and go into its folder:**
+3. **Download JDH Speak and go into its folder:**
 
    ```bash
-   git clone <this-repository-url> sonicroom
-   cd sonicroom
+   git clone <this-repository-url> jdh-speak
+   cd jdh-speak
    ```
 
-4. **Install all of SonicRoom's parts:**
+4. **Install all of JDH Speak's parts:**
 
    ```bash
    pnpm install
@@ -121,7 +121,7 @@ Run these on your server, one line at a time.
    pnpm build
    ```
 
-7. **Tell SonicRoom your server's public address.** For people's audio to actually connect, the server has to advertise the public IP address others reach it on. Set it like this (replace the example with your server's real public IP — your host shows it in their dashboard, or run `curl ifconfig.me`):
+7. **Tell JDH Speak your server's public address.** For people's audio to actually connect, the server has to advertise the public IP address others reach it on. Set it like this (replace the example with your server's real public IP — your host shows it in their dashboard, or run `curl ifconfig.me`):
 
    ```bash
    export ANNOUNCED_IP=203.0.113.10
@@ -134,13 +134,13 @@ Run these on your server, one line at a time.
    pnpm start
    ```
 
-   SonicRoom is now running and listening on **port 3100**.
+   JDH Speak is now running and listening on **port 3100**.
 
 9. **Open it in a browser:** `http://YOUR-SERVER-ADDRESS:3100`.
 
 ### Two things that trip people up
 
-- **Microphones need a secure (HTTPS) page.** Browsers only allow microphone access on `https://…` pages (or on `localhost`). For a real public server you'll want a domain name and HTTPS. The easy route is to put a **reverse proxy** in front of SonicRoom — [Caddy](https://caddyserver.com) gets you automatic HTTPS in about three lines of config and forwards traffic to port 3100. (Until then, people **can still join with the "Join without a microphone" option and use text chat.**)
+- **Microphones need a secure (HTTPS) page.** Browsers only allow microphone access on `https://…` pages (or on `localhost`). For a real public server you'll want a domain name and HTTPS. The easy route is to put a **reverse proxy** in front of JDH Speak — [Caddy](https://caddyserver.com) gets you automatic HTTPS in about three lines of config and forwards traffic to port 3100. (Until then, people **can still join with the "Join without a microphone" option and use text chat.**)
 - **Open the audio ports in your firewall.** Voice/music travels over **UDP ports 40000–40100**. With [`ufw`](https://help.ubuntu.com/community/UFW) (the common Debian/Ubuntu firewall) you can open the whole range in one line — note the **colon** for the range and the `/udp` (both are required):
 
   ```bash
@@ -152,23 +152,23 @@ Run these on your server, one line at a time.
 
 ### Rename your instance
 
-Want it to show your own name instead of "SonicRoom" in the lobby and the browser tab? Create a `.env` file in the project folder (copy the example with `cp .env.example .env`) and set:
+Want it to show your own name instead of "JDH Speak" in the lobby and the browser tab? Create a `.env` file in the project folder (copy the example with `cp .env.example .env`) and set:
 
 ```bash
 INSTANCE_NAME=Acme Voice Rooms
 ```
 
-Then restart the server (`pnpm start`, or `systemctl restart sonicroom` if you set up the service). **No rebuild needed** — the name is applied when the page loads. (The small "Powered by SonicRoom" credit in the footer stays, like a "Made with" badge.)
+Then restart the server (`pnpm start`, or `systemctl restart jdh-speak` if you set up the service). **No rebuild needed** — the name is applied when the page loads. (The small "Powered by JDH Speak" credit in the footer stays, like a "Made with" badge.)
 
 ### Keeping it running
 
-`pnpm start` stops when you close your SSH session. To keep SonicRoom running in the background and restart it automatically, run it as a service — see [Deployment & runtime](#deployment--runtime) for a ready-made `systemd` setup. Optional settings (like notifications) live in a `.env` file — see [Environment variables](#environment-variables).
+`pnpm start` stops when you close your SSH session. To keep JDH Speak running in the background and restart it automatically, run it as a service — see [Deployment & runtime](#deployment--runtime) for a ready-made `systemd` setup. Optional settings (like notifications) live in a `.env` file — see [Environment variables](#environment-variables).
 
 ---
 
 # For developers
 
-The sections below are reference material for working on SonicRoom's code.
+The sections below are reference material for working on JDH Speak's code.
 
 ## Tech stack
 
@@ -181,7 +181,7 @@ The sections below are reference material for working on SonicRoom's code.
 
 ## Run it locally (development)
 
-For hacking on SonicRoom on your own machine (no public server, no HTTPS needed — `localhost` is treated as secure, so microphones work).
+For hacking on JDH Speak on your own machine (no public server, no HTTPS needed — `localhost` is treated as secure, so microphones work).
 
 ### Prerequisites
 
@@ -354,7 +354,7 @@ Only the server has tests (`node:test`, run via `tsx`). They cover both the pure
 
 In production the server runs the signaling **and** serves the built client statically, so a single Node process is all you need.
 
-- A reference setup runs it under systemd as `sonicroom.service` (`ExecStart=/usr/bin/pnpm start`) with `NODE_ENV=production`.
+- A reference setup runs it under systemd as `jdh-speak.service` (`ExecStart=/usr/bin/pnpm start`) with `NODE_ENV=production`.
 - **Client-only changes need just `pnpm build`** — `express.static(client/dist)` serves the new bundle on the next page load, with no restart and no dropped calls. **Restart the service only for server-code changes** (the server runs TS live via `tsx`).
 - ICE is **UDP-only** by design; TCP/TLS fallback is delegated to an external coturn. TURN credentials live in client code intentionally (WebRTC requires them browser-side).
 
@@ -376,7 +376,7 @@ The server loads a gitignored `.env` from the repo root at startup (see `.env.ex
 
 | Variable                                  | Purpose                                                                                                                                                         |
 | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `INSTANCE_NAME`                           | Display name of your instance (lobby heading + browser tab). Defaults to `SonicRoom`; change it to rebrand — see [Rename your instance](#rename-your-instance). |
+| `INSTANCE_NAME`                           | Display name of your instance (lobby heading + browser tab). Defaults to `JDH Speak`; change it to rebrand — see [Rename your instance](#rename-your-instance). |
 | `PORT`                                    | HTTP/signaling port (default `3100`).                                                                                                                           |
 | `ANNOUNCED_IP` / `ANNOUNCED_IP6`          | The VPS public IPv4/IPv6 announced to ICE — **required in production** for media to connect.                                                                    |
 | `NODE_ENV`                                | Set to `production` for production runs.                                                                                                                        |

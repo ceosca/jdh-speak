@@ -8,7 +8,7 @@ const CHAT_MESSAGES_MAX = 200;
 
 // Outgoing mic gain is a per-device preference, so it's persisted and survives
 // reloads — and carries from the lobby's mic preview into the room.
-const MIC_GAIN_KEY = "sonicroom:micGain";
+const MIC_GAIN_KEY = "jdh-speak:micGain";
 export const MAX_MIC_GAIN = 4;
 
 function loadMicGain(): number {
@@ -23,16 +23,17 @@ function loadMicGain(): number {
 
 // Selected audio devices ("" = browser default). Per-device preferences like
 // micGain: persisted, and carried from the lobby preview into the call.
-const MIC_DEVICE_KEY = "sonicroom:micDeviceId";
-const SPEAKER_DEVICE_KEY = "sonicroom:speakerDeviceId";
-const VOICE_PROCESSING_KEY = "sonicroom:voiceProcessing";
-const SECONDARY_ENABLED_KEY = "sonicroom:secondaryEnabled";
-const SECONDARY_DEVICE_KEY = "sonicroom:secondaryDeviceId";
-const SECONDARY_MONITOR_KEY = "sonicroom:secondaryMonitor";
-const FILE_VOLUME_KEY = "sonicroom:fileVolume";
-const PLAYER_REPEAT_KEY = "sonicroom:playerRepeat";
-const PLAYER_SHUFFLE_KEY = "sonicroom:playerShuffle";
-const PLAYER_RATE_KEY = "sonicroom:playerRate";
+const MIC_DEVICE_KEY = "jdh-speak:micDeviceId";
+const SPEAKER_DEVICE_KEY = "jdh-speak:speakerDeviceId";
+const VOICE_PROCESSING_KEY = "jdh-speak:voiceProcessing";
+const SECONDARY_ENABLED_KEY = "jdh-speak:secondaryEnabled";
+const SECONDARY_DEVICE_KEY = "jdh-speak:secondaryDeviceId";
+const SECONDARY_MONITOR_KEY = "jdh-speak:secondaryMonitor";
+const MIC_MONITOR_KEY = "jdh-speak:micMonitor";
+const FILE_VOLUME_KEY = "jdh-speak:fileVolume";
+const PLAYER_REPEAT_KEY = "jdh-speak:playerRepeat";
+const PLAYER_SHUFFLE_KEY = "jdh-speak:playerShuffle";
+const PLAYER_RATE_KEY = "jdh-speak:playerRate";
 
 export type PlayerRepeat = "off" | "one" | "all";
 
@@ -89,7 +90,7 @@ function loadVoiceProcessing(): boolean {
 // Display name persisted across ALL sessions (set on first visit, changed via
 // the "Change name" button). "" = not chosen yet, so the Room shows a one-time
 // name prompt before joining.
-const DISPLAY_NAME_KEY = "sonicroom:displayName";
+const DISPLAY_NAME_KEY = "jdh-speak:displayName";
 
 export function loadStoredDisplayName(): string {
   return loadString(DISPLAY_NAME_KEY);
@@ -105,7 +106,7 @@ export function loadStoredDisplayName(): string {
 //  - "off"       — not announced at all (still shown in the chat list).
 export type ChatAnnounceMode = "polite" | "assertive" | "tts" | "off";
 
-const CHAT_ANNOUNCE_KEY = "sonicroom:chatAnnounceMode";
+const CHAT_ANNOUNCE_KEY = "jdh-speak:chatAnnounceMode";
 
 function loadChatAnnounceMode(): ChatAnnounceMode {
   const v = loadString(CHAT_ANNOUNCE_KEY);
@@ -121,11 +122,6 @@ export interface PeerState {
   // True for a send-only "music caster" peer (e.g. Ecobox): rendered with a
   // music icon and treated as a media source rather than a talking participant.
   isMusic: boolean;
-  // True only for an EXTERNAL music caster (Ecobox, source "music"), which
-  // sends raw stereo and cannot duck itself — so listeners duck it. A browser
-  // emitter's share/file producer is ducked at the source instead, so it is
-  // NOT receiver-ducked (duckAtReceiver false) to avoid double-ducking.
-  duckAtReceiver: boolean;
 }
 
 export type RoomMode = "p2p" | "sfu";
@@ -147,11 +143,6 @@ interface RoomState {
   // Local controls
   isMuted: boolean;
   isDeafened: boolean;
-  isPushToTalk: boolean;
-  pttActive: boolean;
-  // Room-wide auto-ducking toggle (default on). When off, no music-type stream
-  // (caster/share/file) is ducked under voice. Synced from the server.
-  duckingEnabled: boolean;
   isSharingAudio: boolean;
   // Local-file streaming (independent of the audio share): the name of the file
   // currently being streamed into the call (null = not streaming), and whether
@@ -160,8 +151,8 @@ interface RoomState {
   fileStreamName: string | null;
   fileStreamPlaying: boolean;
   // Source-side volume for the file stream (0–1, default 1). Applied on the
-  // SENT path before the duck gain so lowering it quiets the file for all
-  // listeners. Persisted to localStorage.
+  // SENT path (and the local monitor) so lowering it quiets the file for all
+  // listeners and for the streamer. Persisted to localStorage.
   fileVolume: number;
   // Folder-playlist state. `playlist` is the ordered track list for the
   // current session (empty when not streaming). `playlistIndex` is the
@@ -188,6 +179,9 @@ interface RoomState {
   // Browser voice processing (echo cancellation, noise suppression and
   // automatic gain). Defaults on for iOS/iPadOS and off elsewhere.
   voiceProcessingEnabled: boolean;
+  // Monitor your own primary mic locally (hear yourself through your speakers).
+  // Off by default; for-you only (like the secondary monitor). Persisted.
+  micMonitor: boolean;
   // Secondary transmission device: a second recording device (mic or loopback) mixed into the outgoing voice stream. monitor = hear it locally. Persisted.
   secondaryEnabled: boolean;
   secondaryDeviceId: string;
@@ -233,9 +227,6 @@ interface RoomState {
   setHasMic: (hasMic: boolean) => void;
   setMuted: (muted: boolean) => void;
   setDeafened: (deafened: boolean) => void;
-  setPttActive: (active: boolean) => void;
-  togglePushToTalk: () => void;
-  setDuckingEnabled: (enabled: boolean) => void;
   setSharingAudio: (sharing: boolean) => void;
   setFileStream: (name: string | null) => void;
   setFileStreamPlaying: (playing: boolean) => void;
@@ -251,6 +242,7 @@ interface RoomState {
   setMicDeviceId: (deviceId: string) => void;
   setSpeakerDeviceId: (deviceId: string) => void;
   setVoiceProcessingEnabled: (enabled: boolean) => void;
+  setMicMonitor: (monitor: boolean) => void;
   setSecondaryEnabled: (enabled: boolean) => void;
   setSecondaryDeviceId: (deviceId: string) => void;
   setSecondaryMonitor: (monitor: boolean) => void;
@@ -268,7 +260,6 @@ interface RoomState {
   setPeerName: (peerId: string, displayName: string) => void;
   setPeerVolume: (peerId: string, volume: number) => void;
   setPeerMusic: (peerId: string, isMusic: boolean) => void;
-  setPeerDuckAtReceiver: (peerId: string, value: boolean) => void;
   reset: () => void;
 }
 
@@ -281,9 +272,6 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   hasMic: true,
   isMuted: false,
   isDeafened: false,
-  isPushToTalk: false,
-  pttActive: false,
-  duckingEnabled: true,
   isSharingAudio: false,
   fileStreamName: null,
   fileStreamPlaying: false,
@@ -299,6 +287,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   micDeviceId: loadString(MIC_DEVICE_KEY),
   speakerDeviceId: loadString(SPEAKER_DEVICE_KEY),
   voiceProcessingEnabled: loadVoiceProcessing(),
+  micMonitor: loadString(MIC_MONITOR_KEY) === "true",
   secondaryEnabled: loadString(SECONDARY_ENABLED_KEY) === "true",
   secondaryDeviceId: loadString(SECONDARY_DEVICE_KEY),
   secondaryMonitor: loadString(SECONDARY_MONITOR_KEY) === "true",
@@ -324,9 +313,6 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setHasMic: (hasMic) => set({ hasMic }),
   setMuted: (isMuted) => set({ isMuted }),
   setDeafened: (isDeafened) => set({ isDeafened }),
-  setPttActive: (pttActive) => set({ pttActive }),
-  togglePushToTalk: () => set((s) => ({ isPushToTalk: !s.isPushToTalk })),
-  setDuckingEnabled: (duckingEnabled) => set({ duckingEnabled }),
   setSharingAudio: (isSharingAudio) => set({ isSharingAudio }),
   setFileStream: (fileStreamName) => set({ fileStreamName }),
   setFileStreamPlaying: (fileStreamPlaying) => set({ fileStreamPlaying }),
@@ -373,6 +359,10 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setVoiceProcessingEnabled: (voiceProcessingEnabled) => {
     saveString(VOICE_PROCESSING_KEY, String(voiceProcessingEnabled));
     set({ voiceProcessingEnabled });
+  },
+  setMicMonitor: (micMonitor) => {
+    saveString(MIC_MONITOR_KEY, String(micMonitor));
+    set({ micMonitor });
   },
   setSecondaryEnabled: (secondaryEnabled) => {
     saveString(SECONDARY_ENABLED_KEY, String(secondaryEnabled));
@@ -475,7 +465,6 @@ export const useRoomStore = create<RoomState>((set, get) => ({
         isMuted: false,
         volume: 1,
         isMusic: false,
-        duckAtReceiver: false,
       });
       return { peers };
     }),
@@ -527,14 +516,6 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       return { peers };
     }),
 
-  setPeerDuckAtReceiver: (peerId, value) =>
-    set((state) => {
-      const peers = new Map(state.peers);
-      const peer = peers.get(peerId);
-      if (peer) peers.set(peerId, { ...peer, duckAtReceiver: value });
-      return { peers };
-    }),
-
   reset: () =>
     set({
       connected: false,
@@ -545,9 +526,6 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       hasMic: true,
       isMuted: false,
       isDeafened: false,
-      isPushToTalk: false,
-      pttActive: false,
-      duckingEnabled: true,
       isSharingAudio: false,
       fileStreamName: null,
       fileStreamPlaying: false,

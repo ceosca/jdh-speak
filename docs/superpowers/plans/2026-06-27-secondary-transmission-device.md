@@ -29,9 +29,9 @@
 
 Near the other device keys (`MIC_DEVICE_KEY`, etc.) add:
 ```ts
-const SECONDARY_ENABLED_KEY = "sonicroom:secondaryEnabled";
-const SECONDARY_DEVICE_KEY = "sonicroom:secondaryDeviceId";
-const SECONDARY_MONITOR_KEY = "sonicroom:secondaryMonitor";
+const SECONDARY_ENABLED_KEY = "jdh-speak:secondaryEnabled";
+const SECONDARY_DEVICE_KEY = "jdh-speak:secondaryDeviceId";
+const SECONDARY_MONITOR_KEY = "jdh-speak:secondaryMonitor";
 ```
 Use the existing `loadString` for the device id, and a boolean read (`loadString(KEY) === "true"`) for the two booleans.
 

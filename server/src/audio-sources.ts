@@ -30,6 +30,11 @@ export function isAudioFileName(name: string): boolean {
 
 export function isAudioContentType(value: string): boolean {
   const type = value.split(";", 1)[0].trim().toLowerCase();
+  // HLS manifests are sometimes served as audio/(x-)mpegurl, but they are
+  // playlists, not decodable audio — a browser <audio> (outside Safari) can't
+  // play them. Treat them as a stream so they take the ffmpeg transcode path
+  // (which extracts the audio track, even from a video HLS, via -vn).
+  if (type === "audio/mpegurl" || type === "audio/x-mpegurl") return false;
   return type.startsWith("audio/") || type === "application/ogg";
 }
 
@@ -144,7 +149,7 @@ function requestAudio(
         lookup: pinnedLookup,
         headers: {
           Accept: "audio/*,application/ogg;q=0.9,*/*;q=0.1",
-          "User-Agent": "SonicRoom/1.0",
+          "User-Agent": "JDH-Speak/1.0",
           ...(range ? { Range: range } : {}),
         },
       },

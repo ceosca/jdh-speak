@@ -157,7 +157,7 @@ export function createDefaultDeps(overrides: Partial<RecordingDeps> = {}): Recor
       return t;
     },
     clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-    tmpRoot: path.join(os.tmpdir(), "sonicroom-recordings"),
+    tmpRoot: path.join(os.tmpdir(), "jdh-speak-recordings"),
     ports: new PortAllocator(),
     ffmpegPath: process.env.FFMPEG_PATH || "ffmpeg",
     rtpListenIp: "127.0.0.1",

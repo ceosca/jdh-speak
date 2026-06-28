@@ -1,11 +1,11 @@
-# Design: Simplificar SonicRoom → "JDH Speak"
+# Design: Simplificar y renombrar el proyecto a "JDH Speak"
 
 **Fecha:** 2026-06-16
 **Estado:** Aprobado (pendiente revisión del spec por el usuario)
 
 ## Contexto
 
-El proyecto SonicRoom se va a adaptar a un uso más simple y se rebautiza como
+El proyecto se va a adaptar a un uso más simple y se rebautiza como
 **JDH Speak**. El dueño quiere quitar la complejidad que no necesita: la calidad
 de voz opcional, las opciones extra de la pantalla de entrada, el crédito al
 proyecto original, y todo el sistema de salas públicas + moderación colectiva.
@@ -69,7 +69,7 @@ El idioma se detecta del navegador; `?lang=` y `?displayName=` por URL siguen
 operativos. El fallback "sin micro" cuando el permiso se deniega **se conserva**
 en `Room` (solo desaparece el checkbox explícito del lobby).
 
-## Cambio 3 — Quitar "Powered by SonicRoom"
+## Cambio 3 — Quitar "Powered by JDH Speak"
 
 - `client/src/components/Footer.tsx` — eliminar el archivo (`PoweredBy` + `Footer`).
 - `client/src/components/Lobby.tsx` — quitar `<Footer />`.

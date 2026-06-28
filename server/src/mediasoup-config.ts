@@ -41,7 +41,7 @@ export const routerOptions: RouterOptions = {
 //
 // IMPORTANT: these are read at import time (before index.ts loads the .env), so
 // in production the env MUST be present before the process starts. Use systemd's
-// EnvironmentFile=...  (see sonicroom.service) — relying on the app's own .env
+// EnvironmentFile=...  (see jdh-speak.service) — relying on the app's own .env
 // loader alone leaves ANNOUNCED_IP unset here and ICE falls back to 127.0.0.1.
 const listenInfos: TransportListenInfo[] = [
   {

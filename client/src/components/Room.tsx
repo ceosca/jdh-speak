@@ -44,7 +44,7 @@ function sanitizeName(input: string): string {
 // host page via postMessage so it can play sounds / reset its view.
 function postToHost(type: string, payload?: Record<string, unknown>) {
   if (typeof window !== "undefined" && window.parent !== window) {
-    window.parent.postMessage({ source: "sonicroom", type, ...payload }, "*");
+    window.parent.postMessage({ source: "jdh-speak", type, ...payload }, "*");
   }
 }
 
@@ -52,7 +52,7 @@ export function Room() {
   const params = useParams<{ roomName: string }>();
   const roomName = params.roomName || DEFAULT_ROOM;
   const [searchParams] = useSearchParams();
-  const p2pStorageKey = `sonicroom:p2p-off:${roomName}`;
+  const p2pStorageKey = `jdh-speak:p2p-off:${roomName}`;
   const disableP2p =
     isP2pDisabled(searchParams.get("p2p")) ||
     sessionStorage.getItem(p2pStorageKey) === "1";
@@ -137,6 +137,8 @@ export function Room() {
   const isMuted = useRoomStore((s) => s.isMuted);
   const hasMic = useRoomStore((s) => s.hasMic);
   const micGain = useRoomStore((s) => s.micGain);
+  const micMonitor = useRoomStore((s) => s.micMonitor);
+  const setMicMonitor = useRoomStore((s) => s.setMicMonitor);
   const mode = useRoomStore((s) => s.mode);
   const isRecording = useRoomStore((s) => s.isRecording);
   const fileStreamName = useRoomStore((s) => s.fileStreamName);
@@ -431,13 +433,14 @@ export function Room() {
                     isMuted,
                     volume: 1,
                     isMusic: false,
-                    duckAtReceiver: false,
                   }}
                   isLocal
                   textOnly={!hasMic}
                   micGain={micGain}
                   onMicGainChange={hasMic ? setMicGain : undefined}
                   onChangeName={openChangeName}
+                  micMonitor={micMonitor}
+                  onToggleMicMonitor={hasMic ? () => setMicMonitor(!micMonitor) : undefined}
                 />
               )}
               {peerList.map((peer) => (

@@ -28,7 +28,7 @@ Delivers the "lower volume for everyone" on the existing single-file player, sta
 **Interfaces:**
 - Produces: store `fileVolume: number` (0–1, default 1, persisted) + `setFileVolume(v)`; graph field `fileVolumeGain: GainNode | null`; `setFileVolume` applies live to the gain.
 
-- [ ] **Step 1: Store** — add `fileVolume` (load from localStorage `sonicroom:fileVolume`, default 1) + `setFileVolume` (persist + `set`).
+- [ ] **Step 1: Store** — add `fileVolume` (load from localStorage `jdh-speak:fileVolume`, default 1) + `setFileVolume` (persist + `set`).
 - [ ] **Step 2: Graph** — add `fileVolumeGain` to the `outGraphRef` type and init null. In `startFileSource` (~line 1885) build it once: `fileVolumeGain = ctx.createGain(); fileVolumeGain.gain.value = store.getState().fileVolume; fileVolumeGain.connect(g.fileDuckGain)`. Change `source.connect(g.fileDuckGain)` to `source.connect(g.fileVolumeGain)`. Keep the local monitor (`source.connect(destination)`) at full volume. In the file teardown (~1820) disconnect+null `fileVolumeGain`.
 - [ ] **Step 3: Apply live** — add a `useCallback setPlayerVolume(v)` that calls `store.getState().setFileVolume(v)` and ramps `outGraphRef.current?.fileVolumeGain?.gain.setTargetAtTime(v, ctx.currentTime, 0.05)`. Expose it from the hook’s return.
 - [ ] **Step 4: UI** — in `FileStreamPlayer.tsx` add a `<select>` (combobox) with options 100/75/50/25/10 % bound to `fileVolume` (value → `setPlayerVolume`). Add `settings`/player i18n keys (`player_volume_label`) in `es.json`; regenerate paraglide.

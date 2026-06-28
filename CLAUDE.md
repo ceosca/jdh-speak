@@ -2,9 +2,30 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## ⚠️ Migration note (2026-06-28) — read after pulling
+
+The project was fully renamed from **SonicRoom** to **JDH Speak**. Anyone pulling
+these changes should know:
+
+- **localStorage keys changed** from `sonicroom:*` to `jdh-speak:*`. Locally saved
+  settings (mic gain, display name, player volume/speed/repeat, selected devices,
+  per-room `p2p-off`) **reset once** on the next page load. Harmless — just re-set them.
+- **Deployment paths renamed.** The systemd unit is now `jdh-speak.service` (was
+  `sonicroom.service`) and it expects the app at **`/home/jdh-speak`** (was
+  `/home/sonicroom`), with `EnvironmentFile=/home/jdh-speak/.env`. The default
+  `AUDIO_LIBRARY_DIR` is now `/var/lib/jdh-speak/media`. If you run a live server
+  from the old paths, move it (or override via env) before restarting, and
+  reinstall the renamed unit (`systemctl daemon-reload`).
+- **Package name** is now `jdh-speak`; the runtime config global is
+  `window.__JDH_SPEAK_CONFIG__`; recording download files are `jdh-speak-*.ogg/.zip`.
+- No `sonicroom`/`SonicRoom` string remains anywhere in the repo — keep it that way.
+
+Also removed as dead code this round: the entire **auto-ducking** subsystem
+(server stopped driving it) and **push-to-talk** store state (no UI used it).
+
 ## What this is
 
-SonicRoom — low-latency browser audio conferencing (voice) with hi-fi stereo music casting. pnpm monorepo:
+JDH Speak — low-latency browser audio conferencing (voice) with hi-fi stereo music casting. pnpm monorepo:
 
 - `client/` — React 19 + Vite + Tailwind v4 + zustand, using `mediasoup-client` and `socket.io-client`.
 - `server/` — Express 5 + socket.io + `mediasoup` (SFU) + `zod`. Runs TypeScript **directly via `tsx`** (no build artifact).
@@ -67,7 +88,7 @@ The server's `AudioLevelObserver` watches **voice producers only** — music/cas
 
 ### Music caster (Ecobox)
 
-A send-only "music caster" peer joins with `role: "caster"` (see `joinSchema`). It produces a stereo track but never consumes or sets up P2P, so its presence forces the room onto the SFU. Voice defaults to **mono ~64 kbps** for everyone; it's a **per-user opt-in** to send **stereo ~128 kbps** ("Hi-fi voice" toggle in `DeviceSettings`, persisted as `sonicroom:hifiVoice`, default off — `hifiVoiceEnabled` in the store). The flag is read at **call start** — `forceOpusParams(sdp, hifi)` in `client/src/lib/sdp-munger.ts` sets `stereo`/`maxaveragebitrate` on the P2P fmtp, and the SFU `produce` sets `opusStereo`/`opusMaxAverageBitrate`; `microphoneConstraints` captures 1 vs 2 channels to match. It applies on the **next** call (the live producer's codec can't be re-negotiated mid-call). Why opt-in: most mics are mono (so stereo adds nothing audible) and 128k voice costs **every listener** bandwidth in the SFU fan-out. The router's `maxaveragebitrate: 256000` (`mediasoup-config.ts`) is a **ceiling** above even hi-fi voice — it lets the dedicated stereo caster/share/file producers negotiate full hi-fi — **do not lower it to 64000**, that silently clamps music to voice quality.
+A send-only "music caster" peer joins with `role: "caster"` (see `joinSchema`). It produces a stereo track but never consumes or sets up P2P, so its presence forces the room onto the SFU. Voice defaults to **mono ~64 kbps** for everyone; it's a **per-user opt-in** to send **stereo ~128 kbps** ("Hi-fi voice" toggle in `DeviceSettings`, persisted as `jdh-speak:hifiVoice`, default off — `hifiVoiceEnabled` in the store). The flag is read at **call start** — `forceOpusParams(sdp, hifi)` in `client/src/lib/sdp-munger.ts` sets `stereo`/`maxaveragebitrate` on the P2P fmtp, and the SFU `produce` sets `opusStereo`/`opusMaxAverageBitrate`; `microphoneConstraints` captures 1 vs 2 channels to match. It applies on the **next** call (the live producer's codec can't be re-negotiated mid-call). Why opt-in: most mics are mono (so stereo adds nothing audible) and 128k voice costs **every listener** bandwidth in the SFU fan-out. The router's `maxaveragebitrate: 256000` (`mediasoup-config.ts`) is a **ceiling** above even hi-fi voice — it lets the dedicated stereo caster/share/file producers negotiate full hi-fi — **do not lower it to 64000**, that silently clamps music to voice quality.
 
 ### Server-side recording (`server/src/recording.ts` + `recording-util.ts`)
 
@@ -83,7 +104,7 @@ Key constraint: a **paused** producer (peer muted) sends no RTP and would stall 
 
 The in-call "Stream audio" chooser (`AudioSourceDialog.tsx`) plays into the **same per-stream `<audio>` → file producer** as the local-file path (`startFileSource` in `useMediasoup.ts`), from three sources: a local file (object URL), a **server-side library** file, or a **public URL**.
 
-- **Library**: a browsable **folder tree** under `AUDIO_LIBRARY_DIR` (default `/var/lib/sonicroom/media`). `GET /api/audio-library?path=<subfolder>` lists (`{ path, entries:[{name,dir}] }` — folders first then audio files, dotfiles/symlinks dropped); `GET /api/audio-library/file?path=<relpath>` serves one file. `resolveLibraryPath` is the traversal guard (neutralizes leading slashes/backslashes, collapses `..`, rejects anything escaping the root incl. sibling-prefix), `isAudioFileName` gates the served basename, and `sendFile` is rooted with `dotfiles: deny`. The picker (`AudioSourceDialog`) is a file browser: click a folder to descend, a back button / **Backspace** goes up, names truncate via CSS while the full name stays in each button's `aria-label`.
+- **Library**: a browsable **folder tree** under `AUDIO_LIBRARY_DIR` (default `/var/lib/jdh-speak/media`). `GET /api/audio-library?path=<subfolder>` lists (`{ path, entries:[{name,dir}] }` — folders first then audio files, dotfiles/symlinks dropped); `GET /api/audio-library/file?path=<relpath>` serves one file. `resolveLibraryPath` is the traversal guard (neutralizes leading slashes/backslashes, collapses `..`, rejects anything escaping the root incl. sibling-prefix), `isAudioFileName` gates the served basename, and `sendFile` is rooted with `dotfiles: deny`. The picker (`AudioSourceDialog`) is a file browser: click a folder to descend, a back button / **Backspace** goes up, names truncate via CSS while the full name stays in each button's `aria-label`.
 - **URL proxy**: `GET /api/audio-proxy?url=…` is a same-origin proxy so Web Audio can consume sources lacking CORS headers. It first tries a **direct** pass-through (preserving `Range`/seek for plain audio + Icecast radio), and if the body isn't browser-playable, **transcodes** via the fallback resolvers — ffmpeg for direct media streams (IPTV `.ts`/HLS/DASH/raw, picked by extension _or_ content-type) and yt-dlp for sites (YouTube/SoundCloud/…), each backing the other.
 - **SSRF guard** (`resolvePublicAudioUrl`): http(s) only, no credentials, ≤4 KB; rejects any address resolving to private/loopback/link-local/CGNAT/metadata (IPv4 + IPv6 incl. `::ffff:` mapped); the direct fetch **pins DNS** to the validated address (rebinding-proof) and **re-validates every redirect**. Caveat: the **transcode fallback can't be DNS-pinned** — ffmpeg/yt-dlp resolve the host themselves, so a rebind between the Node check and their connect is a residual gap (ffmpeg's `-protocol_whitelist` still blocks `file:`). The three endpoints are **unauthenticated** like the rest of `/api`; the transcode path (which spawns processes) is bounded by a **concurrency cap** — `MAX_CONCURRENT_TRANSCODES` (env `AUDIO_TRANSCODE_LIMIT`, default 32; a slot is held for the whole playback, and only transcoded URLs count — plain audio/radio/library/local don't); over the cap returns **503**. If this is internet-facing, gate/rate-limit it further.
 
@@ -116,7 +137,7 @@ UI strings live in `client/messages/{en,es,fr}.json` (flat key→string, `{var}`
 
 ## Deployment / runtime
 
-- Runs under systemd as **`sonicroom.service`** (`ExecStart=/usr/bin/pnpm start`, `WorkingDirectory=/home/sonicroom`). Env: `PORT` (3100), `ANNOUNCED_IP` / `ANNOUNCED_IP6` (the VPS public IPs — required for ICE), `NODE_ENV=production`, optional `INSTANCE_NAME` (rebrands the app title — injected into the served `index.html` at runtime, read client-side via `getInstanceName()` in `client/src/lib/branding.ts`, so no rebuild). Restart with `systemctl restart sonicroom`.
+- Runs under systemd as **`jdh-speak.service`** (`ExecStart=/usr/bin/pnpm start`, `WorkingDirectory=/home/jdh-speak`). Env: `PORT` (3100), `ANNOUNCED_IP` / `ANNOUNCED_IP6` (the VPS public IPs — required for ICE), `NODE_ENV=production`, optional `INSTANCE_NAME` (rebrands the app title — injected into the served `index.html` at runtime, read client-side via `getInstanceName()` in `client/src/lib/branding.ts`, so no rebuild). Restart with `systemctl restart jdh-speak`.
 - **Client changes need only `pnpm build`** — `express.static(client/dist)` serves the new bundle on the next page load, so no server restart and no dropped calls. **Restart the service only for server-code changes** (server runs TS live via tsx).
 - Ports: WebRTC media UDP **40000–40100**; recording RTP **50000–50998**; Icecast-streaming RTP **51000–51998**. (The recording/streaming RTP ranges are loopback-only — mediasoup→ffmpeg on 127.0.0.1 — so no firewall change; only the outbound Icecast connection leaves the box.) ICE is **UDP-only** by design; TCP/TLS fallback is handled by an external coturn (`turn.oriolgomez.com`). TURN credentials are in client code intentionally (WebRTC requires them browser-side).
 - **Outbound egress**: besides the Icecast push, the `/api/audio-proxy` URL streamer makes the server fetch arbitrary **public** http(s) hosts (and run yt-dlp, which hits site CDNs) — the SSRF guard blocks private targets but egress to the public internet is the feature. Keep `ffmpeg`/`yt-dlp` installed and yt-dlp current (see top of this file). Optional env: `AUDIO_LIBRARY_DIR`, `FFMPEG_PATH`, `YTDLP_PATH`, `AUDIO_TRANSCODE_LIMIT`.

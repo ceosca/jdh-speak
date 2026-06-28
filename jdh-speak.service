@@ -1,11 +1,11 @@
 [Unit]
-Description=SonicRoom audio conferencing server
+Description=JDH Speak audio conferencing server
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/sonicroom
+WorkingDirectory=/home/jdh-speak
 ExecStart=/usr/bin/pnpm start
 Restart=on-failure
 RestartSec=3
@@ -16,12 +16,12 @@ RestartSec=3
 # they must already be in the environment here — otherwise ICE falls back to
 # 127.0.0.1 and SFU media (3+ participants) never connects. Put PORT, NODE_ENV,
 # ANNOUNCED_IP, ANNOUNCED_IP_LOCAL, INSTANCE_NAME, etc. in that .env.
-EnvironmentFile=/home/sonicroom/.env
+EnvironmentFile=/home/jdh-speak/.env
 
 # Hardening
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/home/sonicroom
+ReadWritePaths=/home/jdh-speak
 ProtectHome=read-only
 PrivateTmp=true
 

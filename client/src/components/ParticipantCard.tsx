@@ -14,6 +14,9 @@ interface ParticipantCardProps {
   onMicGainChange?: (gain: number) => void;
   // Local card only: open the "change name" prompt.
   onChangeName?: () => void;
+  // Local card only: monitor your own primary mic locally (hear yourself).
+  micMonitor?: boolean;
+  onToggleMicMonitor?: () => void;
 }
 
 function getInitials(name: string): string {
@@ -40,6 +43,8 @@ export function ParticipantCard({
   micGain,
   onMicGainChange,
   onChangeName,
+  micMonitor,
+  onToggleMicMonitor,
 }: ParticipantCardProps) {
   const handleVolume = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -95,6 +100,21 @@ export function ParticipantCard({
           <UserPen aria-hidden="true" className="h-3.5 w-3.5" />
           {m.room_change_name()}
         </button>
+      )}
+
+      {/* Local: monitor your own mic (hear yourself), between change-name and your
+          own level. For-you only — never reaches the room. */}
+      {isLocal && onToggleMicMonitor && (
+        <label className="flex w-full cursor-pointer items-center gap-2 text-xs text-sonic-200">
+          <input
+            type="checkbox"
+            checked={!!micMonitor}
+            onChange={onToggleMicMonitor}
+            className="accent-sonic-accent"
+          />
+          <Mic aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-sonic-400" />
+          {m.card_monitor_mic()}
+        </label>
       )}
 
       {/* Remote peer: how loud you hear them. Label has NO on/off (it's by the name). */}

@@ -36,12 +36,12 @@ try {
 }
 
 const PORT = parseInt(process.env.PORT || "3100", 10);
-const AUDIO_LIBRARY_DIR = process.env.AUDIO_LIBRARY_DIR || "/var/lib/sonicroom/media";
+const AUDIO_LIBRARY_DIR = process.env.AUDIO_LIBRARY_DIR || "/var/lib/jdh-speak/media";
 
 // Display name of this instance, shown as the app title (lobby heading + browser
 // tab). Operators rebrand a deployment by setting INSTANCE_NAME in .env; it's
 // injected into the served index.html at runtime (see below), so a pre-built
-// client is rebranded without a rebuild. Defaults to "SonicRoom".
+// client is rebranded without a rebuild. Defaults to "JDH Speak".
 const INSTANCE_NAME = process.env.INSTANCE_NAME?.trim() || "JDH Speak";
 
 async function main() {
@@ -107,7 +107,7 @@ async function main() {
       res.json({ path: resolved.rel, entries });
     } catch (err) {
       // An absent/unconfigured library dir is the common case (the default
-      // /var/lib/sonicroom/media may not exist) — report it as empty rather
+      // /var/lib/jdh-speak/media may not exist) — report it as empty rather
       // than an error so the picker just shows "no server files".
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
         res.json({ path: resolved.rel, entries: [] });
@@ -231,7 +231,7 @@ async function main() {
       return;
     }
     res.setHeader("Content-Type", "audio/ogg");
-    res.setHeader("Content-Disposition", `attachment; filename="sonicroom-${req.params.id}.ogg"`);
+    res.setHeader("Content-Disposition", `attachment; filename="jdh-speak-${req.params.id}.ogg"`);
 
     proc.stderr?.on("data", (d: Buffer) => console.error(`[mix] ${d.toString().trim()}`));
     proc.stdout.pipe(res);
@@ -263,7 +263,7 @@ async function main() {
     res.setHeader("Content-Type", "application/zip");
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="sonicroom-${req.params.id}-tracks.zip"`,
+      `attachment; filename="jdh-speak-${req.params.id}-tracks.zip"`,
     );
 
     const zip = createZipStream(
@@ -305,7 +305,7 @@ async function main() {
     const configJson = JSON.stringify({ instanceName: INSTANCE_NAME }).replace(/</g, "\\u003c");
     html = html.replace(
       "<head>",
-      `<head><script>window.__SONICROOM_CONFIG__=${configJson};</script>`,
+      `<head><script>window.__JDH_SPEAK_CONFIG__=${configJson};</script>`,
     );
     const safeTitle = INSTANCE_NAME.replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
@@ -324,7 +324,7 @@ async function main() {
   });
 
   httpServer.listen(PORT, () => {
-    console.log(`SonicRoom server listening on port ${PORT}`);
+    console.log(`JDH Speak server listening on port ${PORT}`);
   });
 
   // Clean up recordings and live streams (ffmpeg processes, temp files) on

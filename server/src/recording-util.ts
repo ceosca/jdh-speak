@@ -69,7 +69,7 @@ export function buildSdp(p: SdpParams): string {
   const lines = [
     "v=0",
     `o=- 0 0 IN IP4 ${ip}`,
-    "s=sonicroom-recording",
+    "s=jdh-speak-recording",
     `c=IN IP4 ${ip}`,
     "t=0 0",
     `m=audio ${p.port} RTP/AVP ${p.payloadType}`,
@@ -82,7 +82,7 @@ export function buildSdp(p: SdpParams): string {
     lines.push(`a=fmtp:${p.payloadType} ${fmtp}`);
   }
   if (p.ssrc !== undefined) {
-    lines.push(`a=ssrc:${p.ssrc} cname:sonicroom`);
+    lines.push(`a=ssrc:${p.ssrc} cname:jdh-speak`);
   }
   lines.push("a=recvonly");
   return lines.join("\n") + "\n";

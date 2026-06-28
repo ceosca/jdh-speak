@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Rebrand SonicRoom to "JDH Speak" and strip it down — always-HD stereo voice, a lobby with only room + name, no "Powered by" credit, and full removal of the public-rooms / knock-to-join / vote-to-kick moderation system.
+**Goal:** Rebrand the app to "JDH Speak" and strip it down — always-HD stereo voice, a lobby with only room + name, no "Powered by" credit, and full removal of the public-rooms / knock-to-join / vote-to-kick moderation system.
 
 **Architecture:** Mostly deletion across an existing pnpm monorepo. Server (Express + socket.io + mediasoup, run via `tsx`) and client (React 19 + Vite + zustand) are simplified in parallel; the wire protocol only ever _loses_ fields/events, so each side compiles and runs independently. zod strips unknown keys, so a lingering field from one side never errors the other during the transition.
 
@@ -173,7 +173,7 @@ Run `corepack pnpm --filter client exec tsc --noEmit` and `corepack pnpm lint`. 
 
 ```
 git add client/
-git commit -m "feat: remove Powered by SonicRoom credit"
+git commit -m "feat: remove Powered by JDH Speak credit"
 ```
 
 ---
@@ -195,7 +195,7 @@ Rewrite `client/src/components/Lobby.tsx` to keep only: the language-less header
 
 - State + helpers: `disableP2p`/`isP2pDisabled`, `makePublic`/`isPublicEnabled`, `joinWithoutMic`/`isMicDisabled`, all `publicRooms`/`activeRoomIdx`/`announcement`/`announceSeq` state, `PUBLIC_ROOMS_POLL_MS`, the public-rooms `useEffect` fetch/poll, `selectPublicRoom`, `onRoomListKeyDown`, `roomOptionRefs`, `listFmt`, `activeRoomId`, and the SR live-region `<div>`.
 - JSX: the three checkbox blocks, the public-rooms `<ul role="listbox">` block, `<MicPreview />`, `<LanguageSelect />`.
-- `handleJoin`: keep room/name validation + `sessionStorage.setItem("sonicroom:displayName", trimmedName)`; navigate to `/room/${sanitizedRoom}` with **no** query params.
+- `handleJoin`: keep room/name validation + `sessionStorage.setItem("jdh-speak:displayName", trimmedName)`; navigate to `/room/${sanitizedRoom}` with **no** query params.
 - Imports: drop `Globe`, `DoorOpen`, `MicPreview`, `LanguageSelect`, `getLocale`. Keep `Headphones`, `ArrowRight`, `getInstanceName`, `m`, router hooks, and `sanitize`. Keep the `?room=` prefill + focus behaviour.
 
 - [ ] **Step 2: Verify**

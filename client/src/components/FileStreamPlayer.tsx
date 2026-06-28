@@ -1,4 +1,4 @@
-import { useEffect, useRef, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import {
   Play,
   Pause,
@@ -41,16 +41,11 @@ interface FileStreamPlayerProps {
   onSetRate: (rate: number) => void;
 }
 
-// Volume options: label → 0–1 value.
-const VOLUME_OPTIONS: { label: string; value: number }[] = [
-  { label: "100 %", value: 1 },
-  { label: "75 %", value: 0.75 },
-  { label: "50 %", value: 0.5 },
-  { label: "25 %", value: 0.25 },
-  { label: "10 %", value: 0.1 },
-];
-
 const RATE_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+
+// Volume step: 1 % of the 0–1 gain range, per the "lower it one by one" design.
+const VOLUME_STEP = 0.01;
+const clampVolume = (v: number) => Math.min(1, Math.max(0, Math.round(v * 100) / 100));
 
 // Format a duration in seconds to "m:ss".
 function formatTime(sec: number): string {
@@ -90,6 +85,16 @@ export function FileStreamPlayer({
   const playerTime = useRoomStore((s) => s.playerTime);
   const playerDuration = useRoomStore((s) => s.playerDuration);
   const hasPlaylist = playlist.length > 1;
+  const volumePct = Math.round(fileVolume * 100);
+
+  // Roving cursor for the playlist listbox: a single tab stop whose
+  // aria-activedescendant moves with Up/Down, so reaching the volume below no
+  // longer means tabbing through every track. Follows the playing track until
+  // the user navigates.
+  const [listFocus, setListFocus] = useState(playlistIndex);
+  useEffect(() => {
+    setListFocus(playlistIndex);
+  }, [playlistIndex]);
 
   // Cycle repeat: off → all → one → off.
   const cycleRepeat = () => {
@@ -137,6 +142,17 @@ export function FileStreamPlayer({
       return;
     }
 
+    // Up / Down → volume +/- 1 % (for all listeners). The playlist listbox stops
+    // propagation of these keys, so this only fires when focus is on the player
+    // container or its buttons — not while navigating the track list.
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      e.preventDefault();
+      e.stopPropagation();
+      const delta = e.key === "ArrowUp" ? VOLUME_STEP : -VOLUME_STEP;
+      onVolumeChange(clampVolume(fileVolume + delta));
+      return;
+    }
+
     // Arrow keys with modifiers → seek.
     if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
       const dir = e.key === "ArrowLeft" ? -1 : 1;
@@ -176,11 +192,32 @@ export function FileStreamPlayer({
     }
   };
 
-  // Find the closest option value for the current store value (snaps to
-  // nearest entry so a persisted mid-range value still renders a valid option).
-  const selectedValue = VOLUME_OPTIONS.reduce((best, opt) =>
-    Math.abs(opt.value - fileVolume) < Math.abs(best.value - fileVolume) ? opt : best,
-  ).value;
+  // Keyboard handling for the playlist listbox (a single tab stop). Up/Down move
+  // the roving cursor; Enter/Space play the focused track. stopPropagation keeps
+  // these keys from also triggering the container's volume/seek shortcuts.
+  const onListKeyDown = (e: KeyboardEvent<HTMLUListElement>) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      e.stopPropagation();
+      setListFocus((i) => Math.min(playlist.length - 1, i + 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      e.stopPropagation();
+      setListFocus((i) => Math.max(0, i - 1));
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      e.stopPropagation();
+      setListFocus(0);
+    } else if (e.key === "End") {
+      e.preventDefault();
+      e.stopPropagation();
+      setListFocus(playlist.length - 1);
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      e.stopPropagation();
+      onPlayTrack(listFocus);
+    }
+  };
 
   const progressValueText = m.player_progress_valuetext({ current: formatTime(playerTime), total: formatTime(playerDuration) });
 
@@ -308,30 +345,32 @@ export function FileStreamPlayer({
         )}
       </div>
 
-      {/* Playlist track list (only for multi-track playlists). */}
+      {/* Playlist track list (only for multi-track playlists). A single tab stop:
+          the listbox holds focus and aria-activedescendant points at the roving
+          cursor; Up/Down move it, Enter/Space play. */}
       {hasPlaylist && (
         <ul
           role="listbox"
+          tabIndex={0}
           aria-label={m.player_playlist()}
-          className="mt-1.5 max-h-28 overflow-y-auto rounded-lg border border-sonic-600 bg-sonic-900/40 p-1"
+          aria-activedescendant={`player-track-${listFocus}`}
+          onKeyDown={onListKeyDown}
+          className="mt-1.5 max-h-28 overflow-y-auto rounded-lg border border-sonic-600 bg-sonic-900/40 p-1 focus:outline-none focus:ring-2 focus:ring-sonic-accent"
         >
           {playlist.map((track, i) => (
             <li
               key={track.objectUrl}
+              id={`player-track-${i}`}
               role="option"
               aria-selected={i === playlistIndex}
-              tabIndex={0}
               className={`flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-xs ${
                 i === playlistIndex
                   ? "bg-sonic-700 text-sonic-100"
                   : "text-sonic-300 hover:bg-sonic-700/60"
-              }`}
-              onClick={() => onPlayTrack(i)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  onPlayTrack(i);
-                }
+              } ${i === listFocus ? "ring-1 ring-inset ring-sonic-accent" : ""}`}
+              onClick={() => {
+                setListFocus(i);
+                onPlayTrack(i);
               }}
             >
               <FileMusic className="h-3 w-3 shrink-0" aria-hidden="true" />
@@ -364,18 +403,20 @@ export function FileStreamPlayer({
         <label htmlFor="file-player-volume" className="ml-auto shrink-0 text-xs text-sonic-300">
           {m.player_volume_label()}
         </label>
-        <select
+        <input
           id="file-player-volume"
-          value={selectedValue}
-          onChange={(e) => onVolumeChange(parseFloat(e.target.value))}
-          className="rounded bg-sonic-700 px-2 py-1 text-xs text-sonic-100 focus:outline-none focus:ring-1 focus:ring-sonic-accent"
-        >
-          {VOLUME_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
+          type="range"
+          min={0}
+          max={100}
+          step={1}
+          value={volumePct}
+          aria-valuetext={`${volumePct} %`}
+          onChange={(e) => onVolumeChange(clampVolume(parseFloat(e.target.value) / 100))}
+          className="w-24 accent-sonic-accent"
+        />
+        <span className="w-9 shrink-0 text-right text-xs tabular-nums text-sonic-300" aria-hidden="true">
+          {volumePct} %
+        </span>
       </div>
     </div>
   );

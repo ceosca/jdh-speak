@@ -86,16 +86,10 @@ const sharedAudioContext = new AudioContext({
   latencyHint: "interactive",
 });
 
-// Auto-ducking: how loud the music stays while someone is talking, and the
-// setTargetAtTime time-constants (seconds) for the gain ramps. Smaller = snappier.
-// Attack (duck down when a voice starts) is fast; release (bring the music back
-// when the voice stops) is a touch slower to avoid pumping between words.
-const DUCK_FACTOR = 0.22;
-const DUCK_ATTACK = 0.05;
-const DUCK_RELEASE = 0.09;
+// setTargetAtTime time-constant (seconds) for per-peer gain ramps. Smaller = snappier.
 const GAIN_RAMP = 0.03;
 
-// Rapid mute/duck toggling would otherwise announce + chime on every single
+// Rapid mute toggling would otherwise announce + chime on every single
 // flip — mute 10× and everyone hears/reads it 10×. Coalesce a burst: surface the
 // FIRST change immediately (leading edge, so a deliberate single toggle still
 // gives instant feedback), suppress the middle, then surface the final settled
@@ -135,43 +129,6 @@ document.addEventListener("visibilitychange", () => {
 
 // Audio file extensions accepted by the folder-playlist picker.
 const AUDIO_EXTENSIONS = new Set(["mp3", "m4a", "aac", "ogg", "opus", "wav", "flac", "m4b"]);
-
-// Resume-position persistence: persisted localStorage key, max entries cap.
-const PLAYER_POSITIONS_KEY = "sonicroom:playerPositions";
-const PLAYER_POSITIONS_MAX = 50;
-
-function loadPlayerPositions(): Map<string, number> {
-  try {
-    const raw = localStorage.getItem(PLAYER_POSITIONS_KEY);
-    if (!raw) return new Map();
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return new Map();
-    return new Map(
-      (parsed as [string, number][]).filter(
-        (e) => Array.isArray(e) && typeof e[0] === "string" && typeof e[1] === "number",
-      ),
-    );
-  } catch {
-    return new Map();
-  }
-}
-
-function savePlayerPositions(map: Map<string, number>): void {
-  try {
-    // If over the cap, keep only the most recently added entries (end of insertion order).
-    let entries = [...map.entries()];
-    if (entries.length > PLAYER_POSITIONS_MAX) {
-      entries = entries.slice(entries.length - PLAYER_POSITIONS_MAX);
-      // Also trim the in-memory Map to the same most-recent-N entries so it can't
-      // grow unboundedly during a long session.
-      map.clear();
-      for (const [k, v] of entries) map.set(k, v);
-    }
-    localStorage.setItem(PLAYER_POSITIONS_KEY, JSON.stringify(entries));
-  } catch {
-    // Persistence is best-effort.
-  }
-}
 
 // Cap a P2P sender's outgoing bitrate directly on the encoder via setParameters
 // (Chrome ignores SDP bitrate caps for the P2P audio sender). 128+ = original
@@ -245,8 +202,6 @@ export function useMediasoup() {
   // still works; we just never acquire a mic and stay muted. Persists across
   // reconnects so a rejoin doesn't re-prompt.
   const noMicRef = useRef(false);
-  // True while the server reports someone is talking (drives music ducking).
-  const isVoiceActiveRef = useRef(false);
   // Current room voice bitrate in kbps (128 = original). Re-applied to new
   // senders on (re)produce / new P2P connection so they match the room.
   const roomBitrateRef = useRef(128);
@@ -324,9 +279,6 @@ export function useMediasoup() {
   // The first received chat message carries a one-time hint that Alt+1..0
   // reads recent messages aloud even with the chat panel closed.
   const chatHintGivenRef = useRef(false);
-  // Per-file resume positions: file name → last playback position (seconds).
-  // Loaded from localStorage on init; persisted (bounded to PLAYER_POSITIONS_MAX) on save.
-  const playerPositionsRef = useRef<Map<string, number>>(loadPlayerPositions());
   const store = useRoomStore;
 
   // Queue `fn` behind any in-flight mode transition. The chain itself never
@@ -361,51 +313,16 @@ export function useMediasoup() {
     [],
   );
 
-  // The gain a peer's audio should currently play at, composing the listener's
-  // per-peer volume, deafen, and music auto-ducking (music drops while a voice
-  // is active). Voice peers are unaffected by ducking.
+  // The gain a peer's audio should currently play at: the listener's per-peer
+  // volume, zeroed while deafened.
   const effectiveGain = useCallback(
     (peerId: string): number => {
       const state = store.getState();
       const peer = state.peers.get(peerId);
       if (!peer || state.isDeafened) return 0;
-      // Ducking is gated by the room-wide toggle: with it off, music-type
-      // streams (caster/share/file) never dip under voice.
-      // Only receiver-duck the external music caster (duckAtReceiver true).
-      // Share/file peers are ducked at the source instead, so they are not
-      // receiver-ducked here (duckAtReceiver false) to avoid double-ducking.
-      if (
-        peer.isMusic &&
-        peer.duckAtReceiver &&
-        isVoiceActiveRef.current &&
-        state.duckingEnabled
-      )
-        return peer.volume * DUCK_FACTOR;
       return peer.volume;
     },
     [store],
-  );
-
-  // Ramp every music peer's gain to its current effective value (respecting
-  // deafen, per-peer volume, the live duck state, and the room ducking toggle).
-  const rampMusicGains = useCallback(
-    (ramp: number = GAIN_RAMP) => {
-      const now = sharedAudioContext.currentTime;
-      for (const [peerId, pa] of peerAudiosRef.current) {
-        if (!store.getState().peers.get(peerId)?.isMusic) continue;
-        pa.gainNode.gain.setTargetAtTime(effectiveGain(peerId), now, ramp);
-      }
-    },
-    [store, effectiveGain],
-  );
-
-  // Server told us whether anyone is talking — ramp every music peer's gain.
-  const applyDuck = useCallback(
-    (active: boolean) => {
-      isVoiceActiveRef.current = active;
-      rampMusicGains(active ? DUCK_ATTACK : DUCK_RELEASE);
-    },
-    [rampMusicGains],
   );
 
   // Per-key state for the toggle coalescer (see TOGGLE_DEDUP_MS): a debounce
@@ -508,9 +425,13 @@ export function useMediasoup() {
       g.micSource?.disconnect();
       g.micSource = sharedAudioContext.createMediaStreamSource(stream);
       g.micSource.connect(g.micGain);
+      // Re-establish the local mic monitor if it's on — the source node was just
+      // rebuilt, so its destination edge is gone. Raw source → destination is the
+      // lowest-latency self-monitoring path (no gain/limiter in between).
+      if (store.getState().micMonitor) g.micSource.connect(sharedAudioContext.destination);
       g.micStream = stream;
     },
-    [ensureOutGraph],
+    [ensureOutGraph, store],
   );
 
   // --- Device selection (set in the lobby or via the in-call settings) ---
@@ -520,6 +441,7 @@ export function useMediasoup() {
   const secondaryEnabled = useRoomStore((s) => s.secondaryEnabled);
   const secondaryDeviceId = useRoomStore((s) => s.secondaryDeviceId);
   const secondaryMonitor = useRoomStore((s) => s.secondaryMonitor);
+  const micMonitor = useRoomStore((s) => s.micMonitor);
 
   // All incoming audio plays through the shared context, so the speaker pick
   // is one setSinkId there — it covers every peer, current and future.
@@ -679,6 +601,22 @@ export function useMediasoup() {
       cancelled = true;
     };
   }, [secondaryEnabled, secondaryDeviceId, secondaryMonitor, applySecondaryDevice, store]);
+
+  // Toggle the local primary-mic monitor live: connect/disconnect the raw mic
+  // source → destination edge so you hear yourself through your speakers. It's
+  // for-you only (never reaches the room) and uses the most direct path —
+  // bypassing micGain/limiter — for the lowest latency the browser allows.
+  useEffect(() => {
+    const g = outGraphRef.current;
+    if (!g?.micSource) return;
+    if (micMonitor) {
+      // Disconnect first (no-op if not connected) so we keep exactly one edge.
+      try { g.micSource.disconnect(sharedAudioContext.destination); } catch { /* not connected */ }
+      g.micSource.connect(sharedAudioContext.destination);
+    } else {
+      try { g.micSource.disconnect(sharedAudioContext.destination); } catch { /* already disconnected */ }
+    }
+  }, [micMonitor]);
 
   // --- P2P: create a peer connection ---
   const ensureLocalStream = useCallback(async () => {
@@ -857,11 +795,9 @@ export function useMediasoup() {
       // source. Stereo is preserved end-to-end by createAudioPipeline.
       if (source === "music") {
         store.getState().setPeerMusic(peerId, true);
-        store.getState().setPeerDuckAtReceiver(peerId, true);
       }
 
-      // Start at the correct gain: respects deafen, and ducks immediately if a
-      // voice is already active when this (music) producer joins.
+      // Start at the correct gain (respects per-peer volume and deafen).
       pipeline.gainNode.gain.value = effectiveGain(peerId);
     },
     [emit, store, effectiveGain],
@@ -1072,8 +1008,6 @@ export function useMediasoup() {
           }>;
           mode: RoomMode;
           recording: { recordingId: string } | null;
-          voiceActive?: boolean;
-          duckingEnabled?: boolean;
           audioBitrate?: number;
           messages: ChatMessage[];
         };
@@ -1089,12 +1023,6 @@ export function useMediasoup() {
         store.getState().setMode(joinRes.mode);
         modeRef.current = joinRes.mode;
 
-        // Seed the current duck state BEFORE consuming, so a music peer that's
-        // being talked over starts ducked instead of blasting at full volume
-        // until the next talk-start/stop transition. Likewise seed the room-wide
-        // ducking toggle so effectiveGain is correct as producers are consumed.
-        isVoiceActiveRef.current = !!joinRes.voiceActive;
-        store.getState().setDuckingEnabled(joinRes.duckingEnabled ?? true);
         // Match the room's current voice bitrate (late joiner / reconnect).
         roomBitrateRef.current = joinRes.audioBitrate ?? 128;
 
@@ -1429,21 +1357,6 @@ export function useMediasoup() {
         },
       );
 
-      // Auto-ducking: server says whether anyone is talking right now.
-      socket.on("duck", ({ active }: { active: boolean }) => {
-        applyDuck(active);
-      });
-
-      // Room-wide ducking toggle changed (by anyone). Reflect it, re-ramp every
-      // music stream to its new level (un-duck when turned off, re-duck when
-      // turned back on if a voice is active), and log it. De-duped so an echo of
-      // our own change — or one matching the value we already have — is a no-op.
-      socket.on("ducking-changed", ({ enabled }: { enabled: boolean }) => {
-        if (store.getState().duckingEnabled === enabled) return;
-        store.getState().setDuckingEnabled(enabled);
-        rampMusicGains();
-      });
-
       // A remote peer toggled their mic: reflect it, play a soft cue, and speak
       // it on the polite ARIA region. Unlike other room events this is NOT
       // logged to chat (announce, not announceEvent) — it'd be too noisy.
@@ -1496,8 +1409,6 @@ export function useMediasoup() {
       ensureOutGraph,
       teardownP2p,
       teardownSfu,
-      applyDuck,
-      rampMusicGains,
       surfaceToggle,
       runTransition,
       flushPendingCandidates,
@@ -1558,19 +1469,13 @@ export function useMediasoup() {
 
   const toggleDeafen = useCallback(() => {
     store.getState().setDeafened(!store.getState().isDeafened);
-    // Recompute every peer's gain so un-deafen restores per-peer volume (and
-    // any active music duck) instead of resetting everyone to 1.
+    // Recompute every peer's gain so un-deafen restores per-peer volume
+    // instead of resetting everyone to 1.
     const now = sharedAudioContext.currentTime;
     for (const [peerId, peerAudio] of peerAudiosRef.current) {
       peerAudio.gainNode.gain.setTargetAtTime(effectiveGain(peerId), now, GAIN_RAMP);
     }
   }, [store, effectiveGain]);
-
-  // Flip the room-wide auto-ducking toggle. Fire-and-forget: the server echoes
-  // `ducking-changed` to everyone (us included), which is what applies it.
-  const toggleDucking = useCallback(async () => {
-    await emit("set-ducking", { enabled: !store.getState().duckingEnabled }).catch(() => {});
-  }, [emit, store]);
 
   const setPeerVolume = useCallback(
     (peerId: string, volume: number) => {
@@ -1691,6 +1596,11 @@ export function useMediasoup() {
         g.fileVolumeGain = sharedAudioContext.createGain();
         g.fileVolumeGain.gain.value = store.getState().fileVolume;
         g.fileVolumeGain.connect(g.outDest);
+        // Local monitor: the streamer hears the file through the SAME volume node
+        // that feeds the room, so lowering "volume for all" lowers it for the
+        // streamer too (and the crossfade is audible locally). One shared
+        // connection on the volume node — no per-slot source → destination wires.
+        g.fileVolumeGain.connect(sharedAudioContext.destination);
       }
 
       const makeSlot = (active: boolean): FileSlot => {
@@ -1713,8 +1623,8 @@ export function useMediasoup() {
 
   // Load a new track into a slot: revoke its previous object URL, swap .src,
   // re-bind ended/error with a fresh AbortController. The source node and
-  // xfadeGain are untouched (they are permanent). Returns the slot.
-  // Optional `onMetadata` fires on loadedmetadata (used to restore saved position).
+  // xfadeGain are untouched (they are permanent). Returns the slot. Tracks
+  // always start from the beginning (no resume).
   const loadIntoSlot = useCallback(
     (
       slot: FileSlot,
@@ -1722,7 +1632,6 @@ export function useMediasoup() {
       objectUrl: string | undefined,
       onEnded: () => void,
       onError: () => void,
-      onMetadata?: () => void,
     ): FileSlot => {
       // Revoke previous AbortController so stale ended/error don't fire.
       slot.abortCtrl?.abort();
@@ -1738,9 +1647,6 @@ export function useMediasoup() {
       slot.abortCtrl = ac;
       slot.audioEl.addEventListener("ended", onEnded, { signal: ac.signal });
       slot.audioEl.addEventListener("error", onError, { signal: ac.signal });
-      if (onMetadata) {
-        slot.audioEl.addEventListener("loadedmetadata", onMetadata, { signal: ac.signal, once: true });
-      }
       return slot;
     },
     [],
@@ -1749,16 +1655,7 @@ export function useMediasoup() {
   const stopFileStream = useCallback(
     async () => {
       if (store.getState().fileStreamName == null) return;
-      // Save the active slot's current position before teardown so it can be resumed.
       const g = outGraphRef.current;
-      if (g?.fileSlots) {
-        const activeEl = g.fileSlots[g.activeSlot]?.audioEl;
-        const activeName = store.getState().fileStreamName;
-        if (activeEl && activeName && isFinite(activeEl.currentTime) && activeEl.currentTime > 0) {
-          playerPositionsRef.current.set(activeName, activeEl.currentTime);
-          savePlayerPositions(playerPositionsRef.current);
-        }
-      }
       // Abort ended/error listeners on both slots before teardown so they
       // cannot re-trigger stopFileStream recursively.
       if (g?.fileSlots) {
@@ -1807,6 +1704,85 @@ export function useMediasoup() {
     [store],
   );
 
+  // Cross-fade the active file slot OUT and a new track (loaded into the idle
+  // slot) IN. Plays the idle slot, ramps idle 0→1 and active 1→0, flips
+  // activeSlot, then pauses the old element after the fade. The new track
+  // becomes the active stream (`name`); its saved position is restored by name
+  // on metadata load. Only gain values change — the fileVolumeGain → outDest /
+  // monitor chain is untouched, so there is no producer/SFU flicker. Shared by
+  // playTrack (playlist navigation) and startFileSource (a fresh pick while
+  // something is already playing) so both fade instead of cutting.
+  const crossfadeTo = useCallback(
+    async (
+      g: NonNullable<typeof outGraphRef.current>,
+      src: string,
+      name: string,
+      objectUrl: string | undefined,
+      onEnded: () => void,
+    ) => {
+      const slots = ensureFileSlots(g);
+      const activeIdx = g.activeSlot;
+      const idleIdx: 0 | 1 = activeIdx === 0 ? 1 : 0;
+      const idleSlot = slots[idleIdx]!;
+      const activeSlotNode = slots[activeIdx]!;
+
+      // Invalidate any pending fade-pause timer for the IDLE slot before we load
+      // and play a new track in it. On a rapid skip the previous crossfade may
+      // have scheduled a 5τ "pause the old element" timer targeting this very
+      // slot; without bumping its generation that stale timer would fire and
+      // pause the NEW track a few seconds in (the "plays then goes silent" bug).
+      fadeGenRef.current[idleIdx] = (fadeGenRef.current[idleIdx]! + 1) & 0xffff;
+      if (fadeTimerRef.current[idleIdx] !== null) {
+        clearTimeout(fadeTimerRef.current[idleIdx]!);
+        fadeTimerRef.current[idleIdx] = null;
+      }
+
+      // Load the idle slot (abort old ended/error, swap .src). Source node and
+      // xfadeGain are permanent. objectUrl is undefined for playlist-owned URLs
+      // (bulk-revoked on stop) so revisiting an earlier track still has a live URL.
+      // The track starts from the beginning (no resume).
+      loadIntoSlot(idleSlot, src, objectUrl, onEnded, () => void stopFileStream());
+
+      // Start the idle slot at gain 0; the ramp brings it up.
+      idleSlot.xfadeGain.gain.setValueAtTime(0, sharedAudioContext.currentTime);
+      try {
+        await idleSlot.audioEl.play();
+      } catch {
+        /* autoplay refused; the user can press play */
+      }
+
+      // Ramp: idle slot 0→1, active slot 1→0 over ~3 s (XFADE_TAU time-constant).
+      const now = sharedAudioContext.currentTime;
+      idleSlot.xfadeGain.gain.setTargetAtTime(1, now, XFADE_TAU);
+      activeSlotNode.xfadeGain.gain.setTargetAtTime(0, now, XFADE_TAU);
+
+      // Flip activeSlot immediately so new ended events bind to the right slot.
+      g.activeSlot = idleIdx;
+
+      // Pause the old-active element after the fade completes (5×τ ≈ 99.3%). A
+      // generation counter makes a rapid re-fade on the same slot cancel this
+      // stale pause (otherwise it would pause the NEW track loaded into the slot
+      // while this timer was pending).
+      const oldActive = activeSlotNode;
+      const oldActiveIdx = activeIdx;
+      fadeGenRef.current[oldActiveIdx] = (fadeGenRef.current[oldActiveIdx]! + 1) & 0xffff;
+      const capturedGen = fadeGenRef.current[oldActiveIdx]!;
+      if (fadeTimerRef.current[oldActiveIdx] !== null) {
+        clearTimeout(fadeTimerRef.current[oldActiveIdx]!);
+        fadeTimerRef.current[oldActiveIdx] = null;
+      }
+      fadeTimerRef.current[oldActiveIdx] = window.setTimeout(() => {
+        fadeTimerRef.current[oldActiveIdx] = null;
+        if (fadeGenRef.current[oldActiveIdx] !== capturedGen) return;
+        oldActive.audioEl.pause();
+      }, XFADE_TAU * 5 * 1000);
+
+      store.getState().setFileStream(name);
+      store.getState().setFileStreamPlaying(true);
+    },
+    [store, ensureFileSlots, loadIntoSlot, stopFileStream],
+  );
+
   const startFileSource = useCallback(
     async (src: string, name: string, objectUrl?: string) => {
       const g = ensureOutGraph();
@@ -1815,41 +1791,31 @@ export function useMediasoup() {
       const firstStart = store.getState().fileStreamName == null;
 
       // Build (or reuse) the two persistent slots and the shared chain
-      // (slots → xfadeGain → fileVolumeGain → outDest).
+      // (slots → xfadeGain → fileVolumeGain → outDest + local monitor).
       const slots = ensureFileSlots(g);
+
+      // Something is already playing → cross-fade the new track in (fade the
+      // current one out) instead of cutting it. Single track, so it ends → stop.
+      if (!firstStart) {
+        await crossfadeTo(g, src, name, objectUrl, () => void stopFileStream());
+        return;
+      }
+
+      // First start: nothing is playing — load straight into the active slot.
       const slotIdx = g.activeSlot;
       const slot = slots[slotIdx];
 
-      // Build an onMetadata handler to restore saved position for this track name.
-      const fileSourceName = name;
-      const fileSourceOnMetadata = () => {
-        const saved = playerPositionsRef.current.get(fileSourceName);
-        if (saved && saved > 0 && isFinite(slot.audioEl.duration) && saved < slot.audioEl.duration) {
-          slot.audioEl.currentTime = saved;
-        }
-      };
-
-      // Load the new track into the active slot. Stops the element, revokes the
-      // previous object URL for this slot, re-binds ended/error with a fresh
-      // AbortController. The source node and xfadeGain are untouched.
       loadIntoSlot(
         slot,
         src,
         objectUrl,
         () => void stopFileStream(),
         () => void stopFileStream(),
-        fileSourceOnMetadata,
       );
 
       // Active slot xfadeGain = 1; idle slot remains at 0.
       slot.xfadeGain.gain.value = 1;
       slots[slotIdx === 0 ? 1 : 0].xfadeGain.gain.value = 0;
-
-      // Monitor locally at full volume (not ducked), so the streamer hears
-      // what they're playing. Reconnect after each load (disconnect first to
-      // avoid double-connections if called on an already-playing element).
-      try { slot.source.disconnect(sharedAudioContext.destination); } catch { /* not connected */ }
-      slot.source.connect(sharedAudioContext.destination);
 
       store.getState().setFileStream(name);
       try {
@@ -1861,13 +1827,11 @@ export function useMediasoup() {
         store.getState().setFileStreamPlaying(false);
       }
 
-      if (firstStart) {
-        // File now mixes into the voice track (outDest) — no SFU pin, no separate
-        // producer. Play the cue.
-        playCue(sharedAudioContext, "share-start");
-      }
+      // File mixes into the voice track (outDest) — no SFU pin, no separate
+      // producer. Play the cue.
+      playCue(sharedAudioContext, "share-start");
     },
-    [store, ensureOutGraph, ensureFileSlots, loadIntoSlot, stopFileStream],
+    [store, ensureOutGraph, ensureFileSlots, loadIntoSlot, stopFileStream, crossfadeTo],
   );
 
   const startFileStream = useCallback(
@@ -1917,10 +1881,9 @@ export function useMediasoup() {
     return arr;
   };
 
-  // Cross-fade to a track by playlist index. Loads the track into the IDLE
-  // slot, plays it, ramps xfadeGains, flips activeSlot, then pauses the
-  // formerly-active element after the fade. Only gain values change; the
-  // fileVolumeGain → outDest chain is untouched.
+  // Cross-fade to a track by playlist index. Delegates the slot/ramp mechanics
+  // to crossfadeTo; here we just resolve the index, set it, and build the
+  // playlist-aware auto-advance ended handler.
   const playTrack = useCallback(
     async (index: number) => {
       const state = store.getState();
@@ -1932,14 +1895,6 @@ export function useMediasoup() {
 
       const g = ensureOutGraph();
       resumeSharedContext();
-
-      // Ensure slots are built (first track has already built them via
-      // startFileSource, so ensureFileSlots is idempotent here).
-      const slots = ensureFileSlots(g);
-      const activeIdx = g.activeSlot;
-      const idleIdx: 0 | 1 = activeIdx === 0 ? 1 : 0;
-      const idleSlot = slots[idleIdx]!;
-      const activeSlotNode = slots[activeIdx]!;
 
       // The ended handler for this track. Uses playTrackRef so the closure
       // always calls the latest version of playTrack without a forward-reference
@@ -1990,87 +1945,12 @@ export function useMediasoup() {
         }
       };
 
-      // Save the departing (currently active) track's position before switching.
-      {
-        const departingEl = activeSlotNode.audioEl;
-        const departingName = store.getState().fileStreamName;
-        if (departingName && isFinite(departingEl.currentTime) && departingEl.currentTime > 0) {
-          playerPositionsRef.current.set(departingName, departingEl.currentTime);
-          savePlayerPositions(playerPositionsRef.current);
-        }
-      }
-
-      // Build the onMetadata handler for resume: after metadata loads, restore saved position.
-      const trackName = track.name;
-      const onMetadata = () => {
-        const saved = playerPositionsRef.current.get(trackName);
-        if (saved && saved > 0 && isFinite(idleSlot.audioEl.duration) && saved < idleSlot.audioEl.duration) {
-          idleSlot.audioEl.currentTime = saved;
-        }
-      };
-
-      // Load idle slot (abort old ended/error, revoke previous object URL for
-      // that slot, swap .src). Source node and xfadeGain are untouched.
-      // Pass undefined for objectUrl — playlist-owned URLs are bulk-revoked in
-      // stopFileStream; letting loadIntoSlot revoke them here would break playerPrev
+      // Playlist-owned URLs are bulk-revoked in stopFileStream, so pass undefined
+      // for objectUrl — letting the slot revoke them here would break playerPrev
       // (the URL would already be gone when revisiting an earlier track).
-      loadIntoSlot(
-        idleSlot,
-        track.objectUrl,
-        undefined,
-        onEnded,
-        () => void stopFileStream(),
-        onMetadata,
-      );
-
-      // Local monitor: disconnect old idle monitor, connect new idle slot monitor.
-      try { idleSlot.source.disconnect(sharedAudioContext.destination); } catch { /* not connected */ }
-      idleSlot.source.connect(sharedAudioContext.destination);
-
-      // Start playing the idle slot (at gain 0 — the ramp will bring it up).
-      idleSlot.xfadeGain.gain.setValueAtTime(0, sharedAudioContext.currentTime);
-      try {
-        await idleSlot.audioEl.play();
-      } catch {
-        // Autoplay refused; the user can press play.
-      }
-
-      // Ramp: idle slot 0→1, active slot 1→0 over ~3 s (XFADE_TAU time-constant).
-      const now = sharedAudioContext.currentTime;
-      idleSlot.xfadeGain.gain.setTargetAtTime(1, now, XFADE_TAU);
-      activeSlotNode.xfadeGain.gain.setTargetAtTime(0, now, XFADE_TAU);
-
-      // Flip activeSlot immediately so new ended events are associated with the
-      // right slot. The old active element will be paused after the fade.
-      g.activeSlot = idleIdx;
-
-      // Pause the now-idle (old-active) element after the fade has completed.
-      // We wait 5×τ ≈ 99.3% completion so the tail is inaudible.
-      // Use a generation counter so a rapid skip (a new playTrack call on the
-      // same slot before this timer fires) makes this timer a no-op — without
-      // this, the timer would pause the NEW track that has been loaded into the
-      // slot while this timer was pending.
-      const oldActive = activeSlotNode;
-      const oldActiveIdx = activeIdx;
-      fadeGenRef.current[oldActiveIdx] = (fadeGenRef.current[oldActiveIdx]! + 1) & 0xffff;
-      const capturedGen = fadeGenRef.current[oldActiveIdx]!;
-      if (fadeTimerRef.current[oldActiveIdx] !== null) {
-        clearTimeout(fadeTimerRef.current[oldActiveIdx]!);
-        fadeTimerRef.current[oldActiveIdx] = null;
-      }
-      fadeTimerRef.current[oldActiveIdx] = window.setTimeout(() => {
-        fadeTimerRef.current[oldActiveIdx] = null;
-        // Only pause if no newer fade targeted this slot since we scheduled.
-        if (fadeGenRef.current[oldActiveIdx] !== capturedGen) return;
-        oldActive.audioEl.pause();
-        // Disconnect the old monitor path so we don't stack connections.
-        try { oldActive.source.disconnect(sharedAudioContext.destination); } catch { /* ok */ }
-      }, XFADE_TAU * 5 * 1000);
-
-      store.getState().setFileStream(track.name);
-      store.getState().setFileStreamPlaying(true);
+      await crossfadeTo(g, track.objectUrl, track.name, undefined, onEnded);
     },
-    [store, ensureOutGraph, ensureFileSlots, loadIntoSlot, stopFileStream],
+    [store, ensureOutGraph, crossfadeTo, stopFileStream],
   );
   // Keep the ref in sync so ended handlers always call the latest playTrack.
   playTrackRef.current = playTrack;
@@ -2149,103 +2029,24 @@ export function useMediasoup() {
         objectUrl: URL.createObjectURL(f),
       }));
 
+      const firstStart = store.getState().fileStreamName == null;
       store.getState().setPlaylist(playlist);
-      store.getState().setPlaylistIndex(0);
 
-      // Precompute shuffle order if shuffle is on.
-      if (store.getState().playerShuffle) {
-        shuffleOrderRef.current = shuffleIndices(playlist.length);
-        const firstIdx = shuffleOrderRef.current[0]!;
-        // Start with a regular startFileSource for the first track (handles
-        // first-start SFU setup + producer). The object URL is already in the
-        // playlist; pass undefined as objectUrl so the slot never revokes a
-        // playlist-owned URL (stopFileStream bulk-revokes them all on stop).
-        const firstTrack = playlist[firstIdx]!;
-        await startFileSource(firstTrack.objectUrl, firstTrack.name, undefined);
-        store.getState().setPlaylistIndex(firstIdx);
-        // Reattach the ended handler from playTrack logic (startFileSource sets
-        // a simple stopFileStream handler — override it now).
-        const g = outGraphRef.current;
-        if (g?.fileSlots) {
-          const slot = g.fileSlots[g.activeSlot]!;
-          // Re-bind with the playlist-aware ended handler by reusing loadIntoSlot.
-          // We do NOT pass an objectUrl here — the slot already holds it and we
-          // don't want it revoked and recreated (objectUrl is already in playlist).
-          // Re-register the resume-seek onMetadata closure so the first track's
-          // saved position survives this second loadIntoSlot call (which aborts
-          // the AbortController that startFileSource's loadIntoSlot registered).
-          const firstTrackNameShuffle = firstTrack.name;
-          const onMetadataShuffle = () => {
-            const saved = playerPositionsRef.current.get(firstTrackNameShuffle);
-            if (saved && saved > 0 && isFinite(slot.audioEl.duration) && saved < slot.audioEl.duration) {
-              slot.audioEl.currentTime = saved;
-            }
-          };
-          loadIntoSlot(
-            slot,
-            firstTrack.objectUrl,
-            undefined, // don't revoke — the playlist owns these URLs
-            () => {
-              const s = store.getState();
-              const pt = playTrackRef.current;
-              if (!pt) return;
-              if (s.playerRepeat === "one") { void pt(s.playlistIndex); return; }
-              const order = shuffleOrderRef.current;
-              const pos = order.indexOf(s.playlistIndex);
-              if (pos >= order.length - 1) {
-                if (s.playerRepeat === "all") { shuffleOrderRef.current = shuffleIndices(s.playlist.length); void pt(shuffleOrderRef.current[0]!); }
-                else void stopFileStream();
-              } else { void pt(order[pos + 1]!); }
-            },
-            () => void stopFileStream(),
-            onMetadataShuffle,
-          );
-          // Re-play (loadIntoSlot paused the element).
-          void slot.audioEl.play().catch(() => {});
-        }
-      } else {
-        shuffleOrderRef.current = Array.from({ length: playlist.length }, (_, i) => i);
-        const firstTrack = playlist[0]!;
-        // Pass undefined as objectUrl — playlist owns these URLs; stopFileStream
-        // bulk-revokes them. Letting loadIntoSlot revoke here breaks playerPrev.
-        await startFileSource(firstTrack.objectUrl, firstTrack.name, undefined);
-        // Reattach playlist-aware ended handler.
-        const g = outGraphRef.current;
-        if (g?.fileSlots) {
-          const slot = g.fileSlots[g.activeSlot]!;
-          // Re-register the resume-seek onMetadata closure so the first track's
-          // saved position survives this second loadIntoSlot call (which aborts
-          // the AbortController that startFileSource's loadIntoSlot registered).
-          const firstTrackName = firstTrack.name;
-          const onMetadataFirst = () => {
-            const saved = playerPositionsRef.current.get(firstTrackName);
-            if (saved && saved > 0 && isFinite(slot.audioEl.duration) && saved < slot.audioEl.duration) {
-              slot.audioEl.currentTime = saved;
-            }
-          };
-          loadIntoSlot(
-            slot,
-            firstTrack.objectUrl,
-            undefined,
-            () => {
-              const s = store.getState();
-              const pt = playTrackRef.current;
-              if (!pt) return;
-              if (s.playerRepeat === "one") { void pt(s.playlistIndex); return; }
-              const cur = s.playlistIndex;
-              if (cur >= s.playlist.length - 1) {
-                if (s.playerRepeat === "all") void pt(0);
-                else void stopFileStream();
-              } else { void pt(cur + 1); }
-            },
-            () => void stopFileStream(),
-            onMetadataFirst,
-          );
-          void slot.audioEl.play().catch(() => {});
-        }
-      }
+      // Build the navigation order (shuffled or sequential), then start the
+      // first track via playTrack — it cross-fades in and binds the
+      // playlist-aware auto-advance/ended handler, so there's no separate
+      // first-start path or fragile re-bind dance.
+      shuffleOrderRef.current = store.getState().playerShuffle
+        ? shuffleIndices(playlist.length)
+        : Array.from({ length: playlist.length }, (_, i) => i);
+      const firstIdx = shuffleOrderRef.current[0]!;
+
+      await playTrack(firstIdx);
+
+      // File mixes into the voice track (outDest) — no SFU pin. Cue on first start.
+      if (firstStart) playCue(sharedAudioContext, "share-start");
     },
-    [store, startFileSource, loadIntoSlot, stopFileStream],
+    [store, playTrack],
   );
 
   const toggleFilePlayback = useCallback(() => {
@@ -2256,12 +2057,6 @@ export function useMediasoup() {
       void el.play().catch(() => {});
       store.getState().setFileStreamPlaying(true);
     } else {
-      // Save position on pause so the track can be resumed from here next session.
-      const pausedName = store.getState().fileStreamName;
-      if (pausedName && isFinite(el.currentTime) && el.currentTime > 0) {
-        playerPositionsRef.current.set(pausedName, el.currentTime);
-        savePlayerPositions(playerPositionsRef.current);
-      }
       el.pause();
       store.getState().setFileStreamPlaying(false);
     }
@@ -2522,7 +2317,6 @@ export function useMediasoup() {
     unmute,
     toggleMute,
     toggleDeafen,
-    toggleDucking,
     toggleAudioShare,
     startFileStream,
     startFolderStream,

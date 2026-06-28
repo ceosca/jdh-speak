@@ -69,7 +69,7 @@ describe("buildSdp", () => {
     assert.ok(sdp.includes("m=audio 50000 RTP/AVP 100"));
     assert.ok(sdp.includes("a=rtpmap:100 opus/48000/2"));
     assert.ok(sdp.includes("a=fmtp:100 minptime=10;useinbandfec=1"));
-    assert.ok(sdp.includes("a=ssrc:12345 cname:sonicroom"));
+    assert.ok(sdp.includes("a=ssrc:12345 cname:jdh-speak"));
     assert.ok(sdp.includes("a=recvonly"));
     assert.ok(sdp.includes("c=IN IP4 127.0.0.1"));
     assert.ok(sdp.endsWith("\n"));
