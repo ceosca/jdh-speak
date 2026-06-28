@@ -312,26 +312,17 @@ export function useMediasoup() {
     limiter: DynamicsCompressorNode;
     outDest: MediaStreamAudioDestinationNode;
     displaySource: MediaStreamAudioSourceNode | null;
-    // A streamed local file gets its OWN destination, produced as a separate
-    // stereo "file" track, independent of voice. Two persistent slots feed the
-    // shared fileVolumeGain → fileDuckGain → fileDest chain. The active slot's
-    // xfadeGain is 1; the idle slot's is 0.
+    // Two persistent file slots feed the shared fileVolumeGain → outDest chain.
+    // The file mixes directly into the voice track (no separate producer).
+    // The active slot's xfadeGain is 1; the idle slot's is 0.
     // (createMediaElementSource may only be called once per element — the slots
     // are created lazily and reused; only .src is swapped per load.)
     fileSlots: [FileSlot, FileSlot] | null;
     activeSlot: 0 | 1;
-    fileDest: MediaStreamAudioDestinationNode | null;
-    // Duck gain node inserted before fileDest on the SENT path so the
-    // transmitted file producer is already attenuated during voice — the
-    // server's recording/streaming taps capture the ducked audio directly.
-    // Local monitor paths (source.connect(sharedAudioContext.destination))
-    // bypass this node and are NOT ducked. Null until the file path is started.
-    fileDuckGain: GainNode | null;
     // Source-side volume gain for the file stream on the SENT path. Inserted
-    // before fileDuckGain so lowering it quiets the file for ALL listeners.
-    // The local monitor (source → destination) is bypassed and stays at full
-    // volume. Null until the file path is first started; persists across file
-    // replaces (like fileDuckGain/fileDest).
+    // before outDest so lowering it quiets the file for ALL listeners.
+    // The local monitor (source → sharedAudioContext.destination) bypasses this
+    // and stays at full volume. Null until the file path is first started.
     fileVolumeGain: GainNode | null;
     micStream: MediaStream | null;
     // Secondary input device: captured stereo + no voice-processing, mixed
@@ -345,10 +336,6 @@ export function useMediasoup() {
   // Other peers' incoming share streams: producerId -> owner peerId, so we can
   // tear down a share "music" tile when its owner stops sharing or leaves.
   const shareOwnersRef = useRef<Map<string, string>>(new Map());
-  // Local file streaming (independent of the audio share above): the stereo
-  // "file" producer (SFU). The two persistent FileSlots live inside outGraphRef
-  // (fileSlots/activeSlot); only the producer ref lives here.
-  const fileProducerRef = useRef<Producer | null>(null);
   // Other peers' incoming file streams: producerId -> owner peerId, mirroring
   // shareOwnersRef so a peer can stream a file AND share system audio at once
   // without the two tearing each other's tiles down.
@@ -448,24 +435,16 @@ export function useMediasoup() {
     [store, effectiveGain],
   );
 
-  // Current emit-side duck target: the emitter drops its OWN share/file output
-  // to DUCK_FACTOR while a voice is active (and room ducking is on), 1 otherwise.
-  const emitDuckTarget = useCallback((): number => {
-    const s = store.getState();
-    return isVoiceActiveRef.current && s.duckingEnabled ? DUCK_FACTOR : 1;
-  }, [store]);
-
-  // Ramp the outgoing file duck gain to `target` with time-constant `ramp`.
-  // Called from applyDuck (duck event) and the ducking-changed handler (toggle).
+  // Ramp the outgoing share duck gain. File audio now mixes into outDest
+  // alongside the mic, so it is not separately ducked at the source.
+  // The function is kept (called from applyDuck / ducking-changed) but is
+  // now a no-op for the file path — only the receiver-side music gains are
+  // ramped by rampMusicGains for peers whose duckAtReceiver is true.
   const rampEmitDuck = useCallback(
-    (active: boolean) => {
-      const g = outGraphRef.current;
-      const target = active && store.getState().duckingEnabled ? DUCK_FACTOR : 1;
-      const ramp = active ? DUCK_ATTACK : DUCK_RELEASE;
-      const now = sharedAudioContext.currentTime;
-      g?.fileDuckGain?.gain.setTargetAtTime(target, now, ramp);
+    (_active: boolean) => {
+      // No per-source duck gain nodes remain on the emit path after Task 3.
     },
-    [store],
+    [],
   );
 
   // Server told us whether anyone is talking — ramp every music peer's gain
@@ -565,8 +544,6 @@ export function useMediasoup() {
       displaySource: null,
       fileSlots: null,
       activeSlot: 0,
-      fileDest: null,
-      fileDuckGain: null,
       fileVolumeGain: null,
       micStream: null,
       secondarySource: null,
@@ -887,10 +864,6 @@ export function useMediasoup() {
   const teardownSfu = useCallback(() => {
     producerRef.current?.close();
     producerRef.current = null;
-    // The file producer is rebuilt by setupSfuInner if a file stream is still
-    // active; closing with stopTracks:false keeps fileDest's track alive.
-    fileProducerRef.current?.close();
-    fileProducerRef.current = null;
     sendTransportRef.current?.close();
     sendTransportRef.current = null;
     recvTransportRef.current?.close();
@@ -993,38 +966,6 @@ export function useMediasoup() {
     },
     [emit, store, effectiveGain],
   );
-
-  // Produce the streamed local file as a SEPARATE stereo, hi-fi "file" track
-  // (the router's 256 kbps ceiling lets it negotiate full quality).
-  // SFU-only; idempotent.
-  const produceFile = useCallback(async () => {
-    const sendTransport = sendTransportRef.current;
-    const device = deviceRef.current;
-    const g = outGraphRef.current;
-    if (!sendTransport || !device || !g?.fileDest) return;
-    if (fileProducerRef.current && !fileProducerRef.current.closed) return;
-    const track = g.fileDest.stream.getAudioTracks()[0];
-    if (!track) return;
-    fileProducerRef.current = await sendTransport.produce({
-      track,
-      codecOptions: {
-        opusStereo: true,
-        opusDtx: false,
-        opusFec: true,
-        opusMaxPlaybackRate: 48000,
-        opusMaxAverageBitrate: 256000,
-      },
-      codec: device.recvRtpCapabilities.codecs?.find(
-        (c) => c.mimeType.toLowerCase() === "audio/opus",
-      ),
-      appData: { source: "file" },
-      // fileDest is an app-owned, long-lived Web Audio track reused across the
-      // session and rebuilt-on-reconnect produces; mediasoup-client must NOT
-      // stop it when this producer closes (stopTracks:true would kill it, so
-      // a later re-produce sends a dead track and no RTP flows).
-      stopTracks: false,
-    });
-  }, []);
 
   // Tear down an incoming peer's share "music stream" (they stopped, or left).
   const removeShareStream = useCallback(
@@ -1160,9 +1101,8 @@ export function useMediasoup() {
       });
       producerRef.current = producer;
 
-      // Share audio now mixes directly into outDest (no separate producer).
-      // Likewise rebuild the file producer if a local file stream is active.
-      if (store.getState().fileStreamName) await produceFile();
+      // Share audio and file audio both mix directly into outDest (no separate
+      // producer for either — no rebuild needed on SFU setup).
 
       // Consume any producers announced while the transports were still being
       // built (their new-producer events arrived too early and were queued).
@@ -1178,9 +1118,7 @@ export function useMediasoup() {
       connectMicToGraph,
       ensureLocalStream,
       ensureOutGraph,
-      produceFile,
       consumeProducer,
-      store,
     ],
   );
 
@@ -1271,8 +1209,6 @@ export function useMediasoup() {
           roomName,
           displayName,
           disableP2p: opts?.disableP2p,
-          // Re-pin SFU on a reconnect mid-file-stream so the file producer rebuilds.
-          fileStreaming: store.getState().fileStreamName != null,
         };
 
         const joinRes = await emit<JoinResponse>("join", joinPayload);
@@ -1952,23 +1888,18 @@ export function useMediasoup() {
 
   // Build the two persistent file slots lazily (called once per session, on
   // first file start). Each slot: createMediaElementSource once, xfadeGain once,
-  // connected source → xfadeGain → fileVolumeGain. Active slot xfadeGain = 1,
-  // idle = 0.
+  // connected source → xfadeGain → fileVolumeGain → outDest. Active slot
+  // xfadeGain = 1, idle = 0. The file mixes into the voice track directly;
+  // no separate producer or duck gain on the sent path.
   const ensureFileSlots = useCallback(
     (g: NonNullable<typeof outGraphRef.current>) => {
       if (g.fileSlots) return g.fileSlots;
 
-      // Ensure the shared downstream chain is ready before wiring slots into it.
-      if (!g.fileDest) g.fileDest = sharedAudioContext.createMediaStreamDestination();
-      if (!g.fileDuckGain) {
-        g.fileDuckGain = sharedAudioContext.createGain();
-        g.fileDuckGain.gain.value = emitDuckTarget();
-        g.fileDuckGain.connect(g.fileDest);
-      }
+      // Ensure fileVolumeGain is ready before wiring slots into it.
       if (!g.fileVolumeGain) {
         g.fileVolumeGain = sharedAudioContext.createGain();
         g.fileVolumeGain.gain.value = store.getState().fileVolume;
-        g.fileVolumeGain.connect(g.fileDuckGain);
+        g.fileVolumeGain.connect(g.outDest);
       }
 
       const makeSlot = (active: boolean): FileSlot => {
@@ -1986,7 +1917,7 @@ export function useMediasoup() {
       g.fileSlots = [makeSlot(true), makeSlot(false)];
       return g.fileSlots;
     },
-    [emitDuckTarget, store],
+    [store],
   );
 
   // Load a new track into a slot: revoke its previous object URL, swap .src,
@@ -2054,17 +1985,9 @@ export function useMediasoup() {
         g.fileSlots = null;
         g.activeSlot = 0;
       }
-      if (fileProducerRef.current) {
-        if (!fileProducerRef.current.closed) fileProducerRef.current.close();
-        fileProducerRef.current = null;
-      }
       if (g) {
         g.fileVolumeGain?.disconnect();
-        g.fileDuckGain?.disconnect();
-        g.fileDest?.disconnect();
         g.fileVolumeGain = null;
-        g.fileDuckGain = null;
-        g.fileDest = null;
       }
       store.getState().setFileStream(null);
       store.getState().setFileStreamPlaying(false);
@@ -2086,13 +2009,12 @@ export function useMediasoup() {
           fadeTimerRef.current[i as 0 | 1] = null;
         }
       }
-      // Tell the server: drop us from the file-streamer set (may release the SFU
-      // pin) and close the server-side producer so peers' tiles disappear.
-      await emit("stop-file-stream").catch(() => {});
+      // File now mixes into the voice track — no server-side pin or producer to
+      // close. Just announce and play the cue.
       store.getState().announceEvent(announcement ?? announce_file_stream_stopped_you());
       playCue(sharedAudioContext, "share-stop");
     },
-    [store, emit],
+    [store],
   );
 
   const startFileSource = useCallback(
@@ -2102,7 +2024,8 @@ export function useMediasoup() {
 
       const firstStart = store.getState().fileStreamName == null;
 
-      // Build (or reuse) the two persistent slots and the shared downstream chain.
+      // Build (or reuse) the two persistent slots and the shared chain
+      // (slots → xfadeGain → fileVolumeGain → outDest).
       const slots = ensureFileSlots(g);
       const slotIdx = g.activeSlot;
       const slot = slots[slotIdx];
@@ -2149,16 +2072,12 @@ export function useMediasoup() {
       }
 
       if (firstStart) {
-        // A stereo producer must be routed by the server, so pin the room to SFU.
-        // If already on the SFU, produce now; otherwise the switch-to-sfu rebuilds
-        // the SFU and setupSfu produces the file (it sees fileStreamName).
-        const wasSfu = modeRef.current === "sfu";
-        await emit("start-file-stream").catch(() => {});
-        if (wasSfu) await produceFile();
+        // File now mixes into the voice track (outDest) — no SFU pin, no separate
+        // producer. Just announce that streaming has started.
         store.getState().announceEvent(announce_file_stream_started_you());
         playCue(sharedAudioContext, "share-start");
       } else {
-        // Replacing the file mid-stream — producer/SFU pin are unchanged.
+        // Replacing the file mid-stream.
         store.getState().announce(file_player_streaming({ name }));
       }
       // Announce which track is now playing (logged to chat for NVDA).
@@ -2167,7 +2086,7 @@ export function useMediasoup() {
       // announce here; playTrack announces again for crossfade transitions.
       store.getState().announceEvent(player_now_playing({ name }));
     },
-    [store, ensureOutGraph, ensureFileSlots, loadIntoSlot, emit, produceFile, stopFileStream],
+    [store, ensureOutGraph, ensureFileSlots, loadIntoSlot, stopFileStream],
   );
 
   const startFileStream = useCallback(
@@ -2219,8 +2138,8 @@ export function useMediasoup() {
 
   // Cross-fade to a track by playlist index. Loads the track into the IDLE
   // slot, plays it, ramps xfadeGains, flips activeSlot, then pauses the
-  // formerly-active element after the fade. Does NOT recreate the producer or
-  // fileDest — only gain values change.
+  // formerly-active element after the fade. Only gain values change; the
+  // fileVolumeGain → outDest chain is untouched.
   const playTrack = useCallback(
     async (index: number) => {
       const state = store.getState();
@@ -2766,8 +2685,8 @@ export function useMediasoup() {
       g.limiter.disconnect();
       g.displaySource?.disconnect();
       // Tear down both file slots: abort listeners, stop elements, revoke URLs,
-      // disconnect source nodes. xfadeGain/fileVolumeGain/fileDuckGain/fileDest
-      // are all disconnected below.
+      // disconnect source nodes. xfadeGain is disconnected per-slot below;
+      // fileVolumeGain is disconnected after the slot loop.
       if (g.fileSlots) {
         // Use indexed access + local destructuring so the linter doesn't trace
         // mutations back to outGraphRef through a for-of loop variable.
@@ -2790,15 +2709,12 @@ export function useMediasoup() {
         }
       }
       g.fileVolumeGain?.disconnect();
-      g.fileDuckGain?.disconnect();
-      g.fileDest?.disconnect();
       // Secondary device: disconnect nodes and stop the MediaStream tracks.
       g.secondarySource?.disconnect();
       g.secondaryGain?.disconnect();
       g.secondaryStream?.getTracks().forEach((t) => t.stop());
       outGraphRef.current = null;
     }
-    fileProducerRef.current = null;
     shareOwnersRef.current.clear();
     fileOwnersRef.current.clear();
     // Cancel any pending coalesced mute/duck announcements.
