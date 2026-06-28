@@ -44,6 +44,7 @@ import {
   file_stream_name,
   file_player_streaming,
   share_stream_name,
+  player_now_playing,
 } from "../paraglide/messages.js";
 import { useRoomStore, type RoomMode } from "../stores/room";
 import type { PlayerRepeat } from "../stores/room";
@@ -163,6 +164,39 @@ document.addEventListener("visibilitychange", () => {
 
 // Audio file extensions accepted by the folder-playlist picker.
 const AUDIO_EXTENSIONS = new Set(["mp3", "m4a", "aac", "ogg", "opus", "wav", "flac", "m4b"]);
+
+// Resume-position persistence: persisted localStorage key, max entries cap.
+const PLAYER_POSITIONS_KEY = "sonicroom:playerPositions";
+const PLAYER_POSITIONS_MAX = 50;
+
+function loadPlayerPositions(): Map<string, number> {
+  try {
+    const raw = localStorage.getItem(PLAYER_POSITIONS_KEY);
+    if (!raw) return new Map();
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return new Map();
+    return new Map(
+      (parsed as [string, number][]).filter(
+        (e) => Array.isArray(e) && typeof e[0] === "string" && typeof e[1] === "number",
+      ),
+    );
+  } catch {
+    return new Map();
+  }
+}
+
+function savePlayerPositions(map: Map<string, number>): void {
+  try {
+    // If over the cap, keep only the most recently added entries (end of insertion order).
+    let entries = [...map.entries()];
+    if (entries.length > PLAYER_POSITIONS_MAX) {
+      entries = entries.slice(entries.length - PLAYER_POSITIONS_MAX);
+    }
+    localStorage.setItem(PLAYER_POSITIONS_KEY, JSON.stringify(entries));
+  } catch {
+    // Persistence is best-effort.
+  }
+}
 
 // Cap a P2P sender's outgoing bitrate directly on the encoder via setParameters
 // (Chrome ignores SDP bitrate caps for the P2P audio sender). 128+ = original
@@ -341,6 +375,9 @@ export function useMediasoup() {
   // The first received chat message carries a one-time hint that Alt+1..0
   // reads recent messages aloud even with the chat panel closed.
   const chatHintGivenRef = useRef(false);
+  // Per-file resume positions: file name → last playback position (seconds).
+  // Loaded from localStorage on init; persisted (bounded to PLAYER_POSITIONS_MAX) on save.
+  const playerPositionsRef = useRef<Map<string, number>>(loadPlayerPositions());
   const store = useRoomStore;
 
   // Queue `fn` behind any in-flight mode transition. The chain itself never
@@ -2027,6 +2064,7 @@ export function useMediasoup() {
   // Load a new track into a slot: revoke its previous object URL, swap .src,
   // re-bind ended/error with a fresh AbortController. The source node and
   // xfadeGain are untouched (they are permanent). Returns the slot.
+  // Optional `onMetadata` fires on loadedmetadata (used to restore saved position).
   const loadIntoSlot = useCallback(
     (
       slot: FileSlot,
@@ -2034,6 +2072,7 @@ export function useMediasoup() {
       objectUrl: string | undefined,
       onEnded: () => void,
       onError: () => void,
+      onMetadata?: () => void,
     ): FileSlot => {
       // Revoke previous AbortController so stale ended/error don't fire.
       slot.abortCtrl?.abort();
@@ -2049,6 +2088,9 @@ export function useMediasoup() {
       slot.abortCtrl = ac;
       slot.audioEl.addEventListener("ended", onEnded, { signal: ac.signal });
       slot.audioEl.addEventListener("error", onError, { signal: ac.signal });
+      if (onMetadata) {
+        slot.audioEl.addEventListener("loadedmetadata", onMetadata, { signal: ac.signal, once: true });
+      }
       return slot;
     },
     [],
@@ -2057,9 +2099,18 @@ export function useMediasoup() {
   const stopFileStream = useCallback(
     async (announcement?: string) => {
       if (store.getState().fileStreamName == null) return;
+      // Save the active slot's current position before teardown so it can be resumed.
+      const g = outGraphRef.current;
+      if (g?.fileSlots) {
+        const activeEl = g.fileSlots[g.activeSlot]?.audioEl;
+        const activeName = store.getState().fileStreamName;
+        if (activeEl && activeName && isFinite(activeEl.currentTime) && activeEl.currentTime > 0) {
+          playerPositionsRef.current.set(activeName, activeEl.currentTime);
+          savePlayerPositions(playerPositionsRef.current);
+        }
+      }
       // Abort ended/error listeners on both slots before teardown so they
       // cannot re-trigger stopFileStream recursively.
-      const g = outGraphRef.current;
       if (g?.fileSlots) {
         // Use indexed access + local destructuring so the linter doesn't trace
         // mutations back to outGraphRef through a for-of loop variable.
@@ -2128,6 +2179,15 @@ export function useMediasoup() {
       const slotIdx = g.activeSlot;
       const slot = slots[slotIdx];
 
+      // Build an onMetadata handler to restore saved position for this track name.
+      const fileSourceName = name;
+      const fileSourceOnMetadata = () => {
+        const saved = playerPositionsRef.current.get(fileSourceName);
+        if (saved && saved > 0 && isFinite(slot.audioEl.duration) && saved < slot.audioEl.duration) {
+          slot.audioEl.currentTime = saved;
+        }
+      };
+
       // Load the new track into the active slot. Stops the element, revokes the
       // previous object URL for this slot, re-binds ended/error with a fresh
       // AbortController. The source node and xfadeGain are untouched.
@@ -2137,6 +2197,7 @@ export function useMediasoup() {
         objectUrl,
         () => void stopFileStream(announce_file_stream_ended()),
         () => void stopFileStream(announce_file_stream_error()),
+        fileSourceOnMetadata,
       );
 
       // Active slot xfadeGain = 1; idle slot remains at 0.
@@ -2172,6 +2233,11 @@ export function useMediasoup() {
         // Replacing the file mid-stream — producer/SFU pin are unchanged.
         store.getState().announce(file_player_streaming({ name }));
       }
+      // Announce which track is now playing (logged to chat for NVDA).
+      // For folder playlists the first track goes through startFileSource, and
+      // subsequent tracks through playTrack (which announces there). So we always
+      // announce here; playTrack announces again for crossfade transitions.
+      store.getState().announceEvent(player_now_playing({ name }));
     },
     [store, ensureOutGraph, ensureFileSlots, loadIntoSlot, emit, produceFile, stopFileStream],
   );
@@ -2296,6 +2362,25 @@ export function useMediasoup() {
         }
       };
 
+      // Save the departing (currently active) track's position before switching.
+      {
+        const departingEl = activeSlotNode.audioEl;
+        const departingName = store.getState().fileStreamName;
+        if (departingName && isFinite(departingEl.currentTime) && departingEl.currentTime > 0) {
+          playerPositionsRef.current.set(departingName, departingEl.currentTime);
+          savePlayerPositions(playerPositionsRef.current);
+        }
+      }
+
+      // Build the onMetadata handler for resume: after metadata loads, restore saved position.
+      const trackName = track.name;
+      const onMetadata = () => {
+        const saved = playerPositionsRef.current.get(trackName);
+        if (saved && saved > 0 && isFinite(idleSlot.audioEl.duration) && saved < idleSlot.audioEl.duration) {
+          idleSlot.audioEl.currentTime = saved;
+        }
+      };
+
       // Load idle slot (abort old ended/error, revoke previous object URL for
       // that slot, swap .src). Source node and xfadeGain are untouched.
       // Pass undefined for objectUrl — playlist-owned URLs are bulk-revoked in
@@ -2307,6 +2392,7 @@ export function useMediasoup() {
         undefined,
         onEnded,
         () => void stopFileStream(announce_file_stream_error()),
+        onMetadata,
       );
 
       // Local monitor: disconnect old idle monitor, connect new idle slot monitor.
@@ -2355,6 +2441,8 @@ export function useMediasoup() {
 
       store.getState().setFileStream(track.name);
       store.getState().setFileStreamPlaying(true);
+      // Announce the newly active track to screen readers (logged to chat).
+      store.getState().announceEvent(player_now_playing({ name: track.name }));
     },
     [store, ensureOutGraph, ensureFileSlots, loadIntoSlot, stopFileStream],
   );
@@ -2521,6 +2609,12 @@ export function useMediasoup() {
       store.getState().setFileStreamPlaying(true);
       store.getState().announce(announce_file_stream_resumed());
     } else {
+      // Save position on pause so the track can be resumed from here next session.
+      const pausedName = store.getState().fileStreamName;
+      if (pausedName && isFinite(el.currentTime) && el.currentTime > 0) {
+        playerPositionsRef.current.set(pausedName, el.currentTime);
+        savePlayerPositions(playerPositionsRef.current);
+      }
       el.pause();
       store.getState().setFileStreamPlaying(false);
       store.getState().announce(announce_file_stream_paused());

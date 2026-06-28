@@ -248,5 +248,6 @@
   "player_repeat_one": "Repetir una",
   "player_shuffle": "Aleatorio",
   "player_playlist": "Lista de reproducción",
-  "player_track_n": "Pista {n}"
+  "player_track_n": "Pista {n}",
+  "player_now_playing": "Ahora suena: {name}"
 }
