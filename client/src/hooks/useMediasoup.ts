@@ -268,6 +268,11 @@ export function useMediasoup() {
     shareDuckGain: GainNode | null;
     fileDuckGain: GainNode | null;
     micStream: MediaStream | null;
+    // Secondary input device: captured stereo + no voice-processing, mixed
+    // directly into outDest alongside the mic chain.
+    secondarySource: MediaStreamAudioSourceNode | null;
+    secondaryGain: GainNode | null;
+    secondaryStream: MediaStream | null;
   } | null>(null);
   // Audio share (system / tab audio produced as its own stereo "share" track)
   const displayStreamRef = useRef<MediaStream | null>(null);
@@ -488,6 +493,9 @@ export function useMediasoup() {
       shareDuckGain: null,
       fileDuckGain: null,
       micStream: null,
+      secondarySource: null,
+      secondaryGain: null,
+      secondaryStream: null,
     };
     return outGraphRef.current;
   }, [store]);
@@ -510,6 +518,9 @@ export function useMediasoup() {
   const micDeviceId = useRoomStore((s) => s.micDeviceId);
   const speakerDeviceId = useRoomStore((s) => s.speakerDeviceId);
   const voiceProcessingEnabled = useRoomStore((s) => s.voiceProcessingEnabled);
+  const secondaryEnabled = useRoomStore((s) => s.secondaryEnabled);
+  const secondaryDeviceId = useRoomStore((s) => s.secondaryDeviceId);
+  const secondaryMonitor = useRoomStore((s) => s.secondaryMonitor);
 
   // All incoming audio plays through the shared context, so the speaker pick
   // is one setSinkId there — it covers every peer, current and future.
@@ -564,6 +575,86 @@ export function useMediasoup() {
       cancelled = true;
     };
   }, [micDeviceId, voiceProcessingEnabled, connectMicToGraph, store]);
+
+  // Acquire/release the secondary input device and wire it into outDest.
+  // Re-runs whenever secondaryEnabled, secondaryDeviceId, or secondaryMonitor
+  // changes. Uses a cancellation flag to avoid stale getUserMedia races.
+  const applySecondaryDevice = useCallback(async () => {
+    const g = ensureOutGraph();
+    const state = store.getState();
+    const enabled = state.secondaryEnabled;
+    const deviceId = state.secondaryDeviceId;
+    const monitor = state.secondaryMonitor;
+
+    // Tear down any existing secondary path before rebuilding.
+    if (g.secondarySource) {
+      g.secondarySource.disconnect();
+      g.secondarySource = null;
+    }
+    if (g.secondaryGain) {
+      g.secondaryGain.disconnect();
+      g.secondaryGain = null;
+    }
+    if (g.secondaryStream) {
+      g.secondaryStream.getTracks().forEach((t) => t.stop());
+      g.secondaryStream = null;
+    }
+
+    if (!enabled || !deviceId) return;
+
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          deviceId: { exact: deviceId },
+          channelCount: 2,
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
+      });
+    } catch (err) {
+      console.error("[secondary] getUserMedia failed:", err);
+      return;
+    }
+
+    // Re-check after the async boundary — effect may have been superseded.
+    // We return the cancellation check to the caller via a captured flag.
+    // (The caller sets it; we read it via the closure created in the effect.)
+    return { stream, monitor };
+  }, [ensureOutGraph, store]);
+
+  // Live effect: acquire/release the secondary device whenever its settings change.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const result = await applySecondaryDevice();
+      if (cancelled || !result) return;
+
+      const { stream, monitor } = result;
+      const g = outGraphRef.current;
+      if (!g) {
+        // Graph was torn down (leave) between the async call and here.
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+
+      const ctx = sharedAudioContext;
+      const secondarySource = ctx.createMediaStreamSource(stream);
+      const secondaryGain = ctx.createGain();
+      secondaryGain.gain.value = 1;
+      secondarySource.connect(secondaryGain);
+      secondaryGain.connect(g.outDest);
+      if (monitor) secondarySource.connect(ctx.destination);
+
+      g.secondarySource = secondarySource;
+      g.secondaryGain = secondaryGain;
+      g.secondaryStream = stream;
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [secondaryEnabled, secondaryDeviceId, secondaryMonitor, applySecondaryDevice]);
 
   // --- P2P: create a peer connection ---
   const ensureLocalStream = useCallback(async () => {
@@ -2104,6 +2195,10 @@ export function useMediasoup() {
       g.fileSource?.disconnect();
       g.fileDuckGain?.disconnect();
       g.fileDest?.disconnect();
+      // Secondary device: disconnect nodes and stop the MediaStream tracks.
+      g.secondarySource?.disconnect();
+      g.secondaryGain?.disconnect();
+      g.secondaryStream?.getTracks().forEach((t) => t.stop());
       outGraphRef.current = null;
     }
     musicProducerRef.current = null;
