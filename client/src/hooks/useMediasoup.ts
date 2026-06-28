@@ -312,24 +312,20 @@ export function useMediasoup() {
     limiter: DynamicsCompressorNode;
     outDest: MediaStreamAudioDestinationNode;
     displaySource: MediaStreamAudioSourceNode | null;
-    // Shared system/tab audio gets its OWN destination so it is produced as a
-    // separate high-bitrate stereo "share" track.
-    shareDest: MediaStreamAudioDestinationNode | null;
-    // A streamed local file gets its OWN destination too, so it's produced as a
-    // separate stereo "file" track, independent of voice AND of any share.
-    // Two persistent slots feed the shared fileVolumeGain → fileDuckGain →
-    // fileDest chain. The active slot's xfadeGain is 1; the idle slot's is 0.
+    // A streamed local file gets its OWN destination, produced as a separate
+    // stereo "file" track, independent of voice. Two persistent slots feed the
+    // shared fileVolumeGain → fileDuckGain → fileDest chain. The active slot's
+    // xfadeGain is 1; the idle slot's is 0.
     // (createMediaElementSource may only be called once per element — the slots
     // are created lazily and reused; only .src is swapped per load.)
     fileSlots: [FileSlot, FileSlot] | null;
     activeSlot: 0 | 1;
     fileDest: MediaStreamAudioDestinationNode | null;
-    // Duck gain nodes inserted before shareDest/fileDest on the SENT path so
-    // the transmitted producer is already attenuated during voice — the server's
-    // recording/streaming taps capture the ducked audio directly. Local monitor
-    // paths (source.connect(sharedAudioContext.destination)) bypass these nodes
-    // and are NOT ducked. Null until the respective share/file path is started.
-    shareDuckGain: GainNode | null;
+    // Duck gain node inserted before fileDest on the SENT path so the
+    // transmitted file producer is already attenuated during voice — the
+    // server's recording/streaming taps capture the ducked audio directly.
+    // Local monitor paths (source.connect(sharedAudioContext.destination))
+    // bypass this node and are NOT ducked. Null until the file path is started.
     fileDuckGain: GainNode | null;
     // Source-side volume gain for the file stream on the SENT path. Inserted
     // before fileDuckGain so lowering it quiets the file for ALL listeners.
@@ -344,10 +340,8 @@ export function useMediasoup() {
     secondaryGain: GainNode | null;
     secondaryStream: MediaStream | null;
   } | null>(null);
-  // Audio share (system / tab audio produced as its own stereo "share" track)
+  // Audio share (system / tab audio mixed into the voice track via outDest)
   const displayStreamRef = useRef<MediaStream | null>(null);
-  // The local stereo "share" producer (SFU), separate from the voice producer.
-  const musicProducerRef = useRef<Producer | null>(null);
   // Other peers' incoming share streams: producerId -> owner peerId, so we can
   // tear down a share "music" tile when its owner stops sharing or leaves.
   const shareOwnersRef = useRef<Map<string, string>>(new Map());
@@ -461,7 +455,7 @@ export function useMediasoup() {
     return isVoiceActiveRef.current && s.duckingEnabled ? DUCK_FACTOR : 1;
   }, [store]);
 
-  // Ramp the outgoing share/file duck gains to `target` with time-constant `ramp`.
+  // Ramp the outgoing file duck gain to `target` with time-constant `ramp`.
   // Called from applyDuck (duck event) and the ducking-changed handler (toggle).
   const rampEmitDuck = useCallback(
     (active: boolean) => {
@@ -469,7 +463,6 @@ export function useMediasoup() {
       const target = active && store.getState().duckingEnabled ? DUCK_FACTOR : 1;
       const ramp = active ? DUCK_ATTACK : DUCK_RELEASE;
       const now = sharedAudioContext.currentTime;
-      g?.shareDuckGain?.gain.setTargetAtTime(target, now, ramp);
       g?.fileDuckGain?.gain.setTargetAtTime(target, now, ramp);
     },
     [store],
@@ -570,11 +563,9 @@ export function useMediasoup() {
       limiter,
       outDest,
       displaySource: null,
-      shareDest: null,
       fileSlots: null,
       activeSlot: 0,
       fileDest: null,
-      shareDuckGain: null,
       fileDuckGain: null,
       fileVolumeGain: null,
       micStream: null,
@@ -896,8 +887,6 @@ export function useMediasoup() {
   const teardownSfu = useCallback(() => {
     producerRef.current?.close();
     producerRef.current = null;
-    musicProducerRef.current?.close();
-    musicProducerRef.current = null;
     // The file producer is rebuilt by setupSfuInner if a file stream is still
     // active; closing with stopTracks:false keeps fileDest's track alive.
     fileProducerRef.current?.close();
@@ -1005,42 +994,9 @@ export function useMediasoup() {
     [emit, store, effectiveGain],
   );
 
-  // Produce the shared system/tab audio as a SEPARATE stereo, hi-fi "share"
-  // track (the router's 256 kbps ceiling lets it negotiate full quality).
-  // SFU-only — an active share forces the room onto the SFU server-side.
-  // Idempotent.
-  const produceShare = useCallback(async () => {
-    const sendTransport = sendTransportRef.current;
-    const device = deviceRef.current;
-    const g = outGraphRef.current;
-    if (!sendTransport || !device || !g?.shareDest) return;
-    if (musicProducerRef.current && !musicProducerRef.current.closed) return;
-    const track = g.shareDest.stream.getAudioTracks()[0];
-    if (!track) return;
-    musicProducerRef.current = await sendTransport.produce({
-      track,
-      codecOptions: {
-        opusStereo: true,
-        opusDtx: false,
-        opusFec: true,
-        opusMaxPlaybackRate: 48000,
-        opusMaxAverageBitrate: 256000,
-      },
-      codec: device.recvRtpCapabilities.codecs?.find(
-        (c) => c.mimeType.toLowerCase() === "audio/opus",
-      ),
-      appData: { source: "share" },
-      // shareDest is an app-owned, long-lived Web Audio track reused across the
-      // session; mediasoup-client must NOT stop it when this producer closes
-      // (default stopTracks:true would kill it, so a later re-produce sends a
-      // dead track and no RTP flows).
-      stopTracks: false,
-    });
-  }, []);
-
   // Produce the streamed local file as a SEPARATE stereo, hi-fi "file" track
-  // (mirrors produceShare — the 256 kbps ceiling lets it negotiate full
-  // quality). Independent of the share producer. SFU-only; idempotent.
+  // (the router's 256 kbps ceiling lets it negotiate full quality).
+  // SFU-only; idempotent.
   const produceFile = useCallback(async () => {
     const sendTransport = sendTransportRef.current;
     const device = deviceRef.current;
@@ -1064,7 +1020,8 @@ export function useMediasoup() {
       appData: { source: "file" },
       // fileDest is an app-owned, long-lived Web Audio track reused across the
       // session and rebuilt-on-reconnect produces; mediasoup-client must NOT
-      // stop it when this producer closes (see produceShare).
+      // stop it when this producer closes (stopTracks:true would kill it, so
+      // a later re-produce sends a dead track and no RTP flows).
       stopTracks: false,
     });
   }, []);
@@ -1203,9 +1160,7 @@ export function useMediasoup() {
       });
       producerRef.current = producer;
 
-      // If we were already sharing audio (a mode switch into SFU, or a
-      // reconnect mid-share), rebuild the separate stereo share producer too.
-      if (store.getState().isSharingAudio) await produceShare();
+      // Share audio now mixes directly into outDest (no separate producer).
       // Likewise rebuild the file producer if a local file stream is active.
       if (store.getState().fileStreamName) await produceFile();
 
@@ -1223,7 +1178,6 @@ export function useMediasoup() {
       connectMicToGraph,
       ensureLocalStream,
       ensureOutGraph,
-      produceShare,
       produceFile,
       consumeProducer,
       store,
@@ -1317,9 +1271,7 @@ export function useMediasoup() {
           roomName,
           displayName,
           disableP2p: opts?.disableP2p,
-          // On a reconnect mid-share, re-pin SFU so the share rebuilds.
-          sharing: store.getState().isSharingAudio,
-          // Likewise re-pin SFU on a reconnect mid-file-stream.
+          // Re-pin SFU on a reconnect mid-file-stream so the file producer rebuilds.
           fileStreaming: store.getState().fileStreamName != null,
         };
 
@@ -1906,18 +1858,14 @@ export function useMediasoup() {
     [store, effectiveGain],
   );
 
-  // --- Audio share: cast system/tab audio as a SEPARATE stereo producer ---
-  // The shared audio gets its own destination (shareDest) and its own stereo
-  // "share" producer, so the voice track is never touched.
+  // --- Audio share: cast system/tab audio mixed into outDest (voice track) ---
+  // The shared audio connects directly into outDest so it travels on the
+  // existing voice track — no separate producer, no SFU pin.
   const detachSharedAudio = useCallback(() => {
     const g = outGraphRef.current;
     g?.displaySource?.disconnect();
-    g?.shareDuckGain?.disconnect();
-    g?.shareDest?.disconnect();
     if (g) {
       g.displaySource = null;
-      g.shareDuckGain = null;
-      g.shareDest = null;
     }
     displayStreamRef.current?.getTracks().forEach((t) => t.stop());
     displayStreamRef.current = null;
@@ -1925,20 +1873,13 @@ export function useMediasoup() {
 
   const stopAudioShare = useCallback(async () => {
     if (!store.getState().isSharingAudio) return;
-    // Close our stereo share producer, then detach the shared-audio nodes.
-    if (musicProducerRef.current) {
-      if (!musicProducerRef.current.closed) musicProducerRef.current.close();
-      musicProducerRef.current = null;
-    }
+    // Detach the shared-audio nodes (disconnects displaySource, stops display tracks).
     detachSharedAudio();
     store.getState().setSharingAudio(false);
-    // Tell the server: drop us from the sharer set (may release the SFU pin)
-    // and close the server-side producer so peers' tiles disappear.
-    await emit("stop-share").catch(() => {});
-    // Local feedback; peers get theirs via the share-stopped broadcast.
+    // Local feedback.
     store.getState().announceEvent(announce_share_stopped_you());
     playCue(sharedAudioContext, "share-stop");
-  }, [store, detachSharedAudio, emit]);
+  }, [store, detachSharedAudio]);
 
   const startAudioShare = useCallback(async () => {
     if (store.getState().isSharingAudio) return;
@@ -1977,22 +1918,13 @@ export function useMediasoup() {
     // Discard the video track — we don't need to send any video
     displayStream.getVideoTracks().forEach((t) => t.stop());
 
-    // Route the shared audio into its OWN destination (not the voice graph), so
-    // it becomes a separate high-bitrate stereo producer. Insert a duck gain
-    // node between the source and destination so the SENT path is attenuated
-    // during voice (recording/streaming taps see the ducked signal). The local
-    // monitor (source → sharedAudioContext.destination) is NOT routed through
-    // the duck gain so the streamer always hears the music at full volume.
+    // Mix the shared audio directly into outDest (the voice track) so it
+    // travels on the existing P2P/SFU track — no separate producer, no SFU pin,
+    // no duck gain (manual volume / caster handle ducking elsewhere).
     const g = ensureOutGraph();
-    const shareDest = sharedAudioContext.createMediaStreamDestination();
     const displaySource = sharedAudioContext.createMediaStreamSource(new MediaStream(audioTracks));
-    const shareDuckGain = sharedAudioContext.createGain();
-    shareDuckGain.gain.value = emitDuckTarget();
-    displaySource.connect(shareDuckGain);
-    shareDuckGain.connect(shareDest);
+    displaySource.connect(g.outDest);
     g.displaySource = displaySource;
-    g.shareDest = shareDest;
-    g.shareDuckGain = shareDuckGain;
     displayStreamRef.current = displayStream;
 
     // Fire when the user hits the browser's "Stop sharing" UI
@@ -2002,18 +1934,10 @@ export function useMediasoup() {
 
     store.getState().setSharingAudio(true);
 
-    // A stereo producer must be routed by the server, so pin the room to SFU.
-    // If we're already on the SFU, produce now; otherwise the resulting
-    // switch-to-sfu rebuilds the SFU and setupSfu produces the share (it sees
-    // isSharingAudio). Either way produceShare is idempotent.
-    const wasSfu = modeRef.current === "sfu";
-    await emit("start-share").catch(() => {});
-    if (wasSfu) await produceShare();
-
-    // Local feedback; peers get theirs via the share-started broadcast.
+    // Local feedback.
     store.getState().announceEvent(announce_share_started_you());
     playCue(sharedAudioContext, "share-start");
-  }, [store, ensureOutGraph, emitDuckTarget, stopAudioShare, produceShare, emit]);
+  }, [store, ensureOutGraph, stopAudioShare]);
 
   const toggleAudioShare = useCallback(async () => {
     if (store.getState().isSharingAudio) await stopAudioShare();
@@ -2841,8 +2765,6 @@ export function useMediasoup() {
       g.micGain.disconnect();
       g.limiter.disconnect();
       g.displaySource?.disconnect();
-      g.shareDuckGain?.disconnect();
-      g.shareDest?.disconnect();
       // Tear down both file slots: abort listeners, stop elements, revoke URLs,
       // disconnect source nodes. xfadeGain/fileVolumeGain/fileDuckGain/fileDest
       // are all disconnected below.
@@ -2876,7 +2798,6 @@ export function useMediasoup() {
       g.secondaryStream?.getTracks().forEach((t) => t.stop());
       outGraphRef.current = null;
     }
-    musicProducerRef.current = null;
     fileProducerRef.current = null;
     shareOwnersRef.current.clear();
     fileOwnersRef.current.clear();
