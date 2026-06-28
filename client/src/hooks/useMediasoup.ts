@@ -399,27 +399,13 @@ export function useMediasoup() {
     [store, effectiveGain],
   );
 
-  // Ramp the outgoing share duck gain. File audio now mixes into outDest
-  // alongside the mic, so it is not separately ducked at the source.
-  // The function is kept (called from applyDuck / ducking-changed) but is
-  // now a no-op for the file path — only the receiver-side music gains are
-  // ramped by rampMusicGains for peers whose duckAtReceiver is true.
-  const rampEmitDuck = useCallback(
-    (_active: boolean) => {
-      // No per-source duck gain nodes remain on the emit path after Task 3.
-    },
-    [],
-  );
-
-  // Server told us whether anyone is talking — ramp every music peer's gain
-  // AND the emitter's own share/file duck gains.
+  // Server told us whether anyone is talking — ramp every music peer's gain.
   const applyDuck = useCallback(
     (active: boolean) => {
       isVoiceActiveRef.current = active;
       rampMusicGains(active ? DUCK_ATTACK : DUCK_RELEASE);
-      rampEmitDuck(active);
     },
-    [rampMusicGains, rampEmitDuck],
+    [rampMusicGains],
   );
 
   // Per-key state for the toggle coalescer (see TOGGLE_DEDUP_MS): a debounce
@@ -1452,13 +1438,10 @@ export function useMediasoup() {
       // music stream to its new level (un-duck when turned off, re-duck when
       // turned back on if a voice is active), and log it. De-duped so an echo of
       // our own change — or one matching the value we already have — is a no-op.
-      socket.on("ducking-changed", ({ enabled }: { enabled: boolean; by?: string }) => {
+      socket.on("ducking-changed", ({ enabled }: { enabled: boolean }) => {
         if (store.getState().duckingEnabled === enabled) return;
         store.getState().setDuckingEnabled(enabled);
         rampMusicGains();
-        // Re-ramp our own outgoing share/file duck gains: turning ducking off
-        // must un-duck the emitted audio even if no voice transition fires.
-        rampEmitDuck(isVoiceActiveRef.current && enabled);
       });
 
       // A remote peer toggled their mic: reflect it, play a soft cue, and speak
@@ -1515,7 +1498,6 @@ export function useMediasoup() {
       teardownSfu,
       applyDuck,
       rampMusicGains,
-      rampEmitDuck,
       surfaceToggle,
       runTransition,
       flushPendingCandidates,
@@ -1524,8 +1506,7 @@ export function useMediasoup() {
   );
 
   const mute = useCallback(async () => {
-    // Silence the mic track (feeds the voice graph only); any shared system
-    // audio is a separate track/producer, so it keeps flowing.
+    // Silence the mic track in the outgoing graph.
     const track = localStreamRef.current?.getAudioTracks()[0];
     if (track) track.enabled = false;
 
