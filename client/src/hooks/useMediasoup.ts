@@ -330,6 +330,14 @@ export function useMediasoup() {
   // Stable ref so that ended handlers can call playTrack without a stale closure.
   // Updated synchronously every render after playTrack is defined.
   const playTrackRef = useRef<((index: number) => Promise<void>) | null>(null);
+  // Per-slot generation counter for stale fade-pause cancellation. Each entry
+  // is incremented before scheduling a fade-pause on that slot. A scheduled
+  // timeout checks that the captured generation still matches before pausing,
+  // so a rapid skip (which increments the counter) makes the old timer a no-op.
+  // Indexed by slot index (0 or 1). Also holds the pending timer IDs so they
+  // can be cancelled on teardown.
+  const fadeGenRef = useRef<[number, number]>([0, 0]);
+  const fadeTimerRef = useRef<[number | null, number | null]>([null, null]);
   // The first received chat message carries a one-time hint that Alt+1..0
   // reads recent messages aloud even with the chat panel closed.
   const chatHintGivenRef = useRef(false);
@@ -2090,6 +2098,14 @@ export function useMediasoup() {
       store.getState().setPlaylist([]);
       store.getState().setPlaylistIndex(0);
       shuffleOrderRef.current = [];
+      // Cancel any pending stale fade-pause timers so they don't fire after
+      // teardown and try to pause a future track.
+      for (let i = 0; i < 2; i++) {
+        if (fadeTimerRef.current[i as 0 | 1] !== null) {
+          clearTimeout(fadeTimerRef.current[i as 0 | 1]!);
+          fadeTimerRef.current[i as 0 | 1] = null;
+        }
+      }
       // Tell the server: drop us from the file-streamer set (may release the SFU
       // pin) and close the server-side producer so peers' tiles disappear.
       await emit("stop-file-stream").catch(() => {});
@@ -2281,10 +2297,13 @@ export function useMediasoup() {
 
       // Load idle slot (abort old ended/error, revoke previous object URL for
       // that slot, swap .src). Source node and xfadeGain are untouched.
+      // Pass undefined for objectUrl — playlist-owned URLs are bulk-revoked in
+      // stopFileStream; letting loadIntoSlot revoke them here would break playerPrev
+      // (the URL would already be gone when revisiting an earlier track).
       loadIntoSlot(
         idleSlot,
         track.objectUrl,
-        track.objectUrl,
+        undefined,
         onEnded,
         () => void stopFileStream(announce_file_stream_error()),
       );
@@ -2312,8 +2331,22 @@ export function useMediasoup() {
 
       // Pause the now-idle (old-active) element after the fade has completed.
       // We wait 5×τ ≈ 99.3% completion so the tail is inaudible.
+      // Use a generation counter so a rapid skip (a new playTrack call on the
+      // same slot before this timer fires) makes this timer a no-op — without
+      // this, the timer would pause the NEW track that has been loaded into the
+      // slot while this timer was pending.
       const oldActive = activeSlotNode;
-      window.setTimeout(() => {
+      const oldActiveIdx = activeIdx;
+      fadeGenRef.current[oldActiveIdx] = (fadeGenRef.current[oldActiveIdx]! + 1) & 0xffff;
+      const capturedGen = fadeGenRef.current[oldActiveIdx]!;
+      if (fadeTimerRef.current[oldActiveIdx] !== null) {
+        clearTimeout(fadeTimerRef.current[oldActiveIdx]!);
+        fadeTimerRef.current[oldActiveIdx] = null;
+      }
+      fadeTimerRef.current[oldActiveIdx] = window.setTimeout(() => {
+        fadeTimerRef.current[oldActiveIdx] = null;
+        // Only pause if no newer fade targeted this slot since we scheduled.
+        if (fadeGenRef.current[oldActiveIdx] !== capturedGen) return;
         oldActive.audioEl.pause();
         // Disconnect the old monitor path so we don't stack connections.
         try { oldActive.source.disconnect(sharedAudioContext.destination); } catch { /* ok */ }
@@ -2410,9 +2443,10 @@ export function useMediasoup() {
         const firstIdx = shuffleOrderRef.current[0]!;
         // Start with a regular startFileSource for the first track (handles
         // first-start SFU setup + producer). The object URL is already in the
-        // playlist; pass it through loadIntoSlot via startFileSource.
+        // playlist; pass undefined as objectUrl so the slot never revokes a
+        // playlist-owned URL (stopFileStream bulk-revokes them all on stop).
         const firstTrack = playlist[firstIdx]!;
-        await startFileSource(firstTrack.objectUrl, firstTrack.name, firstTrack.objectUrl);
+        await startFileSource(firstTrack.objectUrl, firstTrack.name, undefined);
         store.getState().setPlaylistIndex(firstIdx);
         // Reattach the ended handler from playTrack logic (startFileSource sets
         // a simple stopFileStream handler — override it now).
@@ -2446,7 +2480,9 @@ export function useMediasoup() {
       } else {
         shuffleOrderRef.current = Array.from({ length: playlist.length }, (_, i) => i);
         const firstTrack = playlist[0]!;
-        await startFileSource(firstTrack.objectUrl, firstTrack.name, firstTrack.objectUrl);
+        // Pass undefined as objectUrl — playlist owns these URLs; stopFileStream
+        // bulk-revokes them. Letting loadIntoSlot revoke here breaks playerPrev.
+        await startFileSource(firstTrack.objectUrl, firstTrack.name, undefined);
         // Reattach playlist-aware ended handler.
         const g = outGraphRef.current;
         if (g?.fileSlots) {
@@ -2627,6 +2663,13 @@ export function useMediasoup() {
           xfadeGain.disconnect();
         }
         g.fileSlots = null;
+      }
+      // Cancel any pending stale fade-pause timers.
+      for (let i = 0; i < 2; i++) {
+        if (fadeTimerRef.current[i as 0 | 1] !== null) {
+          clearTimeout(fadeTimerRef.current[i as 0 | 1]!);
+          fadeTimerRef.current[i as 0 | 1] = null;
+        }
       }
       g.fileVolumeGain?.disconnect();
       g.fileDuckGain?.disconnect();
