@@ -61,8 +61,13 @@ la pista de voz tanto en P2P como en SFU, y nunca obligan al SFU.
 - Las **grabaciones** capturan voz+compartido+emitido **mezclados en la pista de voz**
   del emisor (ya no como pistas separadas "share"/"file"). El caster sigue como pista
   aparte.
-- El atenuado automático sigue funcionando (los nodos `shareDuckGain`/`fileDuckGain` se
-  mantienen sobre la rama mezclada; atenúan bajo voz vía el evento `duck`).
+- **Atenuado automático:** al ir compartir/emitir DENTRO de la voz, el auto-ducking ya
+  **no aplica** a ellos: el detector de voz del servidor observa los productores de voz
+  y no puede separar la música mezclada (y en P2P no hay observador). El **caster
+  Ecobox** sí mantiene su atenuado (sigue siendo productor separado). Para compartir/
+  emitir, el control es el **volumen manual "para todos"** del reproductor. (Se pueden
+  retirar los nodos `shareDuckGain`/`fileDuckGain` de la rama mezclada, o dejarlos
+  inertes a ganancia 1 — el plan lo define.)
 
 ## Parte B — Anuncios mínimos
 
