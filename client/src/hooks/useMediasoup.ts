@@ -1984,6 +1984,28 @@ export function useMediasoup() {
     void playTrack(prevIdx);
   }, [store, playTrack]);
 
+  // Toggle shuffle AND rebuild the play order so the change takes effect now.
+  // (Before, the order was only built at playlist load, so flipping shuffle
+  // mid-playback left a stale sequential order — "next" kept going in sequence.)
+  // Turning on: a random order with the current track first, so playback
+  // continues and "next" jumps to a random track. Turning off: sequential.
+  const togglePlayerShuffle = useCallback(() => {
+    const s = store.getState();
+    const on = !s.playerShuffle;
+    s.setPlayerShuffle(on);
+    const len = s.playlist.length;
+    if (len === 0) {
+      shuffleOrderRef.current = [];
+      return;
+    }
+    if (on) {
+      const rest = shuffleIndices(len).filter((i) => i !== s.playlistIndex);
+      shuffleOrderRef.current = [s.playlistIndex, ...rest];
+    } else {
+      shuffleOrderRef.current = Array.from({ length: len }, (_, i) => i);
+    }
+  }, [store]);
+
   // Start a playlist from an array of Files. Filters to audio files, builds
   // object URLs, persists the playlist in the store, and starts track 0.
   // A single-file array produces a 1-item playlist.
@@ -2329,6 +2351,7 @@ export function useMediasoup() {
     playTrack,
     playerNext,
     playerPrev,
+    togglePlayerShuffle,
     toggleFilePlayback,
     playerTogglePlay,
     playerSeekBy,

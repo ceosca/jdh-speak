@@ -220,8 +220,6 @@
 
   "player_progress": "Progreso de reproducción",
   "player_progress_valuetext": "{current} de {total}",
-  "player_back10": "Retroceder 10 segundos",
-  "player_fwd10": "Avanzar 10 segundos",
   "player_prev": "Pista anterior",
   "player_next": "Pista siguiente",
   "player_repeat": "Repetir",

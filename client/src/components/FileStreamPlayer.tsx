@@ -9,8 +9,6 @@ import {
   Repeat,
   Repeat1,
   Shuffle,
-  Rewind,
-  FastForward,
   FolderOpen,
   Folder,
 } from "lucide-react";
@@ -295,13 +293,6 @@ export function FileStreamPlayer({
                 </button>
               )}
               <button
-                onClick={() => onSeekBy(-10)}
-                className="flex h-8 w-8 items-center justify-center rounded-full text-sonic-300 hover:bg-sonic-700 hover:text-sonic-100"
-                aria-label={m.player_back10()}
-              >
-                <Rewind className="h-4 w-4" />
-              </button>
-              <button
                 ref={playRef}
                 onClick={onTogglePlay}
                 className="flex h-10 w-10 items-center justify-center rounded-full bg-sonic-accent text-white transition-all hover:bg-sonic-accent/90"
@@ -310,13 +301,6 @@ export function FileStreamPlayer({
                 aria-pressed={playing}
               >
                 {playing ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
-              </button>
-              <button
-                onClick={() => onSeekBy(10)}
-                className="flex h-8 w-8 items-center justify-center rounded-full text-sonic-300 hover:bg-sonic-700 hover:text-sonic-100"
-                aria-label={m.player_fwd10()}
-              >
-                <FastForward className="h-4 w-4" />
               </button>
               {hasPlaylist && (
                 <button

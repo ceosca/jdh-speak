@@ -70,6 +70,7 @@ export function Room() {
     playTrack,
     playerNext,
     playerPrev,
+    togglePlayerShuffle,
     playerTogglePlay,
     playerSeekBy,
     playerSeekTo,
@@ -525,9 +526,7 @@ export function Room() {
           onNext={playerNext}
           onPrev={playerPrev}
           onSetRepeat={(r) => useRoomStore.getState().setPlayerRepeat(r)}
-          onToggleShuffle={() =>
-            useRoomStore.getState().setPlayerShuffle(!useRoomStore.getState().playerShuffle)
-          }
+          onToggleShuffle={togglePlayerShuffle}
           onOpenFiles={openFiles}
           onOpenFolder={() => void openFolder()}
         />
