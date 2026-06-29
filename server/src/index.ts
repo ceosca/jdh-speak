@@ -1,7 +1,6 @@
 import express from "express";
 import { createServer } from "node:http";
 import { createReadStream, readFileSync } from "node:fs";
-import { readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createWorker } from "mediasoup";
@@ -13,12 +12,9 @@ import { RecordingManager } from "./recording.js";
 import { createZipStream } from "./zip-stream.js";
 import {
   assertPublicAudioUrl,
-  classifyLibraryEntries,
   fetchPublicAudio,
   isAudioContentType,
-  isAudioFileName,
   looksLikeStreamContentType,
-  resolveLibraryPath,
   streamFallbackAudio,
   TranscodeBusyError,
 } from "./audio-sources.js";
@@ -36,7 +32,6 @@ try {
 }
 
 const PORT = parseInt(process.env.PORT || "3100", 10);
-const AUDIO_LIBRARY_DIR = process.env.AUDIO_LIBRARY_DIR || "/var/lib/jdh-speak/media";
 
 // Display name of this instance, shown as the app title (lobby heading + browser
 // tab). Operators rebrand a deployment by setting INSTANCE_NAME in .env; it's
@@ -85,51 +80,6 @@ async function main() {
       return;
     }
     res.status(201).json({ ok: true, message: result.message });
-  });
-
-  // Audio sources for the in-call music/file streamer. The library is a
-  // browsable tree of folders + audio files under AUDIO_LIBRARY_DIR; URL
-  // playback goes through the same-origin proxy below so Web Audio can consume
-  // sources whose origin does not provide CORS headers. `?path=` is a relative
-  // subfolder, validated by resolveLibraryPath (no traversal out of the root).
-  app.get("/api/audio-library", async (req, res) => {
-    const rel = typeof req.query.path === "string" ? req.query.path : "";
-    const resolved = resolveLibraryPath(AUDIO_LIBRARY_DIR, rel);
-    if (!resolved) {
-      res.status(400).json({ error: "Invalid library path" });
-      return;
-    }
-    try {
-      const dirents = await readdir(resolved.abs, { withFileTypes: true });
-      const entries = classifyLibraryEntries(
-        dirents.map((d) => ({ name: d.name, isDirectory: d.isDirectory(), isFile: d.isFile() })),
-      );
-      res.json({ path: resolved.rel, entries });
-    } catch (err) {
-      // An absent/unconfigured library dir is the common case (the default
-      // /var/lib/jdh-speak/media may not exist) — report it as empty rather
-      // than an error so the picker just shows "no server files".
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-        res.json({ path: resolved.rel, entries: [] });
-        return;
-      }
-      console.error(`[audio-library] list failed: ${String(err)}`);
-      res.status(500).json({ error: "Could not list server audio files" });
-    }
-  });
-
-  // Serve one library file. `?path=` is the relative path (may include
-  // subfolders), validated the same way and required to name an audio file.
-  app.get("/api/audio-library/file", (req, res) => {
-    const rel = typeof req.query.path === "string" ? req.query.path : "";
-    const resolved = resolveLibraryPath(AUDIO_LIBRARY_DIR, rel);
-    if (!resolved || resolved.rel === "" || !isAudioFileName(path.basename(resolved.rel))) {
-      res.status(404).json({ error: "Audio file not found" });
-      return;
-    }
-    res.sendFile(resolved.rel, { root: AUDIO_LIBRARY_DIR, dotfiles: "deny" }, (err) => {
-      if (err && !res.headersSent) res.status(404).json({ error: "Audio file not found" });
-    });
   });
 
   app.get("/api/audio-proxy", async (req, res) => {

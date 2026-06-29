@@ -7,6 +7,7 @@ import {
   Download,
   FileArchive,
   FileMusic,
+  Link,
   Waves,
   Settings,
   MessageSquare,
@@ -34,9 +35,12 @@ function recordingStamp(ts: number | null): string {
 interface AudioControlsProps {
   onToggleMute: () => void;
   onToggleAudioShare: () => void;
-  // "Emitir audio": opens the source chooser when idle, stops the stream when one
-  // is active (the floating player also offers play/pause + stop).
-  onToggleFileStream: () => void;
+  // Opens (or closes) the virtual player — the home of local files/folders.
+  onOpenPlayer: () => void;
+  // Whether the player window is currently showing (for the button's pressed state).
+  playerOpen: boolean;
+  // Opens the "Abrir URL" dialog (mp3 / m3u8 / radio …).
+  onOpenUrl: () => void;
   onToggleChat: () => void;
   chatOpen: boolean;
 }
@@ -49,14 +53,15 @@ interface AudioControlsProps {
 export function AudioControls({
   onToggleMute,
   onToggleAudioShare,
-  onToggleFileStream,
+  onOpenPlayer,
+  playerOpen,
+  onOpenUrl,
   onToggleChat,
   chatOpen,
 }: AudioControlsProps) {
   const isMuted = useRoomStore((s) => s.isMuted);
   const hasMic = useRoomStore((s) => s.hasMic);
   const isSharingAudio = useRoomStore((s) => s.isSharingAudio);
-  const isStreamingFile = useRoomStore((s) => s.fileStreamName != null);
   const recordingId = useRoomStore((s) => s.recordingId);
   const recordingStartedAt = useRoomStore((s) => s.recordingStartedAt);
   const voiceProcessingEnabled = useRoomStore((s) => s.voiceProcessingEnabled);
@@ -138,15 +143,25 @@ export function AudioControls({
           )}
         </button>
 
-        {/* Emit audio (file/URL/server) */}
+        {/* Open the virtual player (local files / folders live there) */}
         <button
-          onClick={onToggleFileStream}
-          className={`${btn} ${isStreamingFile ? active : idle}`}
-          aria-label={isStreamingFile ? m.controls_stop_file() : m.controls_stream_file()}
-          aria-pressed={isStreamingFile}
-          title={isStreamingFile ? m.controls_stop_file_title() : m.controls_stream_file_title()}
+          onClick={onOpenPlayer}
+          className={`${btn} ${playerOpen ? active : idle}`}
+          aria-label={m.controls_open_player()}
+          aria-pressed={playerOpen}
+          title={m.controls_open_player_title()}
         >
           <FileMusic className="h-5 w-5" />
+        </button>
+
+        {/* Open a URL (mp3 / m3u8 / radio …) */}
+        <button
+          onClick={onOpenUrl}
+          className={`${btn} ${idle}`}
+          aria-label={m.controls_open_url()}
+          title={m.controls_open_url_title()}
+        >
+          <Link className="h-5 w-5" />
         </button>
 
         {/* Noise-suppression toggle (echo cancel / noise / auto-gain). */}

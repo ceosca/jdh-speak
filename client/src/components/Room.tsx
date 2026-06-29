@@ -8,7 +8,7 @@ import { getInstanceName } from "../lib/branding";
 import { ParticipantCard } from "./ParticipantCard";
 import { AudioControls } from "./AudioControls";
 import { FileStreamPlayer } from "./FileStreamPlayer";
-import { AudioSourceDialog } from "./AudioSourceDialog";
+import { UrlDialog } from "./UrlDialog";
 import { Chat } from "./Chat";
 import { pickFolderAudioFiles } from "../lib/audioFolder";
 import { m } from "../paraglide/messages.js";
@@ -66,7 +66,6 @@ export function Room() {
     startPlaylist,
     startFolderStream,
     startUrlStream,
-    startServerFileStream,
     stopFileStream,
     playTrack,
     playerNext,
@@ -87,7 +86,8 @@ export function Room() {
   const [joinState, setJoinState] = useState<JoinState>("idle");
   const [errorMsg, setErrorMsg] = useState("");
   const [chatOpen, setChatOpen] = useState(false);
-  const [audioSourceOpen, setAudioSourceOpen] = useState(false);
+  const [playerOpen, setPlayerOpen] = useState(false);
+  const [urlOpen, setUrlOpen] = useState(false);
   // Name prompt: shown once on first ever visit (no stored name), and reopened
   // by the "Change name" button under your own card.
   const [namePromptOpen, setNamePromptOpen] = useState(false);
@@ -104,7 +104,6 @@ export function Room() {
   // cross-fades to the new selection (startPlaylist → playTrack).
   const filesInputRef = useRef<HTMLInputElement>(null);
   const openFiles = useCallback(() => {
-    setAudioSourceOpen(false);
     filesInputRef.current?.click();
   }, []);
   const onFilesChosen = useCallback(
@@ -122,7 +121,6 @@ export function Room() {
   // Also non-stopping: it cross-fades to the new folder.
   const folderInputRef = useRef<HTMLInputElement>(null);
   const openFolder = useCallback(async () => {
-    setAudioSourceOpen(false);
     let files: File[] | null;
     try {
       files = await pickFolderAudioFiles();
@@ -145,10 +143,18 @@ export function Room() {
     },
     [startFolderStream],
   );
-  const toggleFileStream = useCallback(() => {
-    if (useRoomStore.getState().fileStreamName != null) void stopFileStream();
-    else setAudioSourceOpen(true);
+  // Close the virtual player: stop any stream and hide the window.
+  const closePlayer = useCallback(() => {
+    void stopFileStream();
+    setPlayerOpen(false);
   }, [stopFileStream]);
+  // Toggle the player from the controls: if it's showing (open or streaming),
+  // close it; otherwise open it (idle, ready for Open files / Open folder).
+  const openPlayer = useCallback(() => {
+    if (playerOpen || useRoomStore.getState().fileStreamName != null) closePlayer();
+    else setPlayerOpen(true);
+  }, [playerOpen, closePlayer]);
+  const openUrl = useCallback(() => setUrlOpen(true), []);
 
   const localPeerId = useRoomStore((s) => s.localPeerId);
   const displayName = useRoomStore((s) => s.displayName);
@@ -311,7 +317,7 @@ export function Room() {
         toggleAudioShare();
       } else if (e.key === "f" || e.key === "F") {
         e.preventDefault();
-        setAudioSourceOpen(true);
+        setPlayerOpen(true);
       }
     };
 
@@ -483,7 +489,9 @@ export function Room() {
           <AudioControls
             onToggleMute={toggleMute}
             onToggleAudioShare={toggleAudioShare}
-            onToggleFileStream={toggleFileStream}
+            onOpenPlayer={openPlayer}
+            playerOpen={playerOpen || fileStreamName != null}
+            onOpenUrl={openUrl}
             onToggleChat={() => setChatOpen((o) => !o)}
             chatOpen={chatOpen}
           />
@@ -502,15 +510,7 @@ export function Room() {
         <span key={`ca-${chatAnnounceSeq}`}>{chatAssertiveMsg}</span>
       </div>
 
-      {audioSourceOpen && (
-        <AudioSourceDialog
-          onClose={() => setAudioSourceOpen(false)}
-          onChooseComputerFile={openFiles}
-          onChooseComputerFolder={() => void openFolder()}
-          onStartUrl={startUrlStream}
-          onStartServerFile={startServerFileStream}
-        />
-      )}
+      {urlOpen && <UrlDialog onClose={() => setUrlOpen(false)} onStartUrl={startUrlStream} />}
 
       <input
         ref={filesInputRef}
@@ -534,12 +534,12 @@ export function Room() {
         tabIndex={-1}
       />
 
-      {fileStreamName && (
+      {(playerOpen || fileStreamName) && (
         <FileStreamPlayer
           name={fileStreamName}
           playing={fileStreamPlaying}
           onTogglePlay={playerTogglePlay}
-          onStop={() => stopFileStream()}
+          onClose={closePlayer}
           onVolumeChange={setPlayerVolume}
           onSeekBy={playerSeekBy}
           onSeekTo={playerSeekTo}

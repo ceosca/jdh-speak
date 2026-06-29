@@ -1848,15 +1848,6 @@ export function useMediasoup() {
     [startFileSource],
   );
 
-  const startServerFileStream = useCallback(
-    // `relPath` may include subfolders (e.g. "Movies/Dune.mp3"); display the
-    // basename while streaming.
-    async (relPath: string) => {
-      const name = relPath.split("/").pop() || relPath;
-      await startFileSource(`/api/audio-library/file?path=${encodeURIComponent(relPath)}`, name);
-    },
-    [startFileSource],
-  );
 
   // --- Folder playlist: crossfade-based track navigation ---
 
@@ -2347,7 +2338,6 @@ export function useMediasoup() {
     startPlaylist,
     startFolderStream,
     startUrlStream,
-    startServerFileStream,
     stopFileStream,
     playTrack,
     playerNext,
