@@ -10,6 +10,7 @@ import { AudioControls } from "./AudioControls";
 import { FileStreamPlayer } from "./FileStreamPlayer";
 import { AudioSourceDialog } from "./AudioSourceDialog";
 import { Chat } from "./Chat";
+import { pickFolderAudioFiles } from "../lib/audioFolder";
 import { m } from "../paraglide/messages.js";
 
 type JoinState = "idle" | "joining" | "joined" | "error";
@@ -62,7 +63,7 @@ export function Room() {
     join,
     toggleMute,
     toggleAudioShare,
-    startFileStream,
+    startPlaylist,
     startFolderStream,
     startUrlStream,
     startServerFileStream,
@@ -97,27 +98,45 @@ export function Room() {
 
   const closeChat = useCallback(() => setChatOpen(false), []);
 
-  // Hidden local-file picker used by the audio-source chooser.
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const pickFile = useCallback(() => {
+  // "Abrir archivos": hidden multi-file picker (no upload-confirmation dialog,
+  // that only happens for directories). One or many files → a playlist, ordered
+  // by name. Opening this while playing does NOT stop the current track — it
+  // cross-fades to the new selection (startPlaylist → playTrack).
+  const filesInputRef = useRef<HTMLInputElement>(null);
+  const openFiles = useCallback(() => {
     setAudioSourceOpen(false);
-    fileInputRef.current?.click();
+    filesInputRef.current?.click();
   }, []);
-  const onFileChosen = useCallback(
+  const onFilesChosen = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
+      const files = Array.from(e.target.files ?? []).sort((a, b) => a.name.localeCompare(b.name));
       e.target.value = "";
-      if (file) void startFileStream(file);
+      if (files.length > 0) void startPlaylist(files);
     },
-    [startFileStream],
+    [startPlaylist],
   );
 
-  // Hidden folder picker for playlist mode.
+  // "Abrir carpeta": prefer the File System Access API (showDirectoryPicker) —
+  // it recurses into subfolders and skips Chrome's "Upload N files?" prompt.
+  // Falls back to the <input webkitdirectory> picker when the API is missing.
+  // Also non-stopping: it cross-fades to the new folder.
   const folderInputRef = useRef<HTMLInputElement>(null);
-  const pickFolder = useCallback(() => {
+  const openFolder = useCallback(async () => {
     setAudioSourceOpen(false);
-    folderInputRef.current?.click();
-  }, []);
+    let files: File[] | null;
+    try {
+      files = await pickFolderAudioFiles();
+    } catch (err) {
+      console.error("[folder] picker failed:", err);
+      return;
+    }
+    if (files === null) {
+      // API unavailable → fall back to the directory input.
+      folderInputRef.current?.click();
+      return;
+    }
+    if (files.length > 0) void startPlaylist(files); // [] = cancelled → do nothing
+  }, [startPlaylist]);
   const onFolderChosen = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = Array.from(e.target.files ?? []);
@@ -486,18 +505,19 @@ export function Room() {
       {audioSourceOpen && (
         <AudioSourceDialog
           onClose={() => setAudioSourceOpen(false)}
-          onChooseComputerFile={pickFile}
-          onChooseComputerFolder={pickFolder}
+          onChooseComputerFile={openFiles}
+          onChooseComputerFolder={() => void openFolder()}
           onStartUrl={startUrlStream}
           onStartServerFile={startServerFileStream}
         />
       )}
 
       <input
-        ref={fileInputRef}
+        ref={filesInputRef}
         type="file"
         accept="audio/*"
-        onChange={onFileChosen}
+        multiple
+        onChange={onFilesChosen}
         className="hidden"
         aria-hidden="true"
         tabIndex={-1}
@@ -536,6 +556,8 @@ export function Room() {
           }
           playerRate={playerRate}
           onSetRate={setPlayerRate}
+          onOpenFiles={openFiles}
+          onOpenFolder={() => void openFolder()}
         />
       )}
 

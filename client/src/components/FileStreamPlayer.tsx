@@ -11,6 +11,8 @@ import {
   Shuffle,
   Rewind,
   FastForward,
+  FolderOpen,
+  Folder,
 } from "lucide-react";
 import { m } from "../paraglide/messages.js";
 import { useRoomStore, type PlayerRepeat } from "../stores/room";
@@ -39,6 +41,9 @@ interface FileStreamPlayerProps {
   // Playback rate (0.5 / 0.75 / 1 / 1.25 / 1.5 / 2).
   playerRate: number;
   onSetRate: (rate: number) => void;
+  // Open a new source on the fly (does not stop the current track — cross-fades).
+  onOpenFiles: () => void;
+  onOpenFolder: () => void;
 }
 
 const RATE_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -79,6 +84,8 @@ export function FileStreamPlayer({
   onToggleShuffle,
   playerRate,
   onSetRate,
+  onOpenFiles,
+  onOpenFolder,
 }: FileStreamPlayerProps) {
   const playRef = useRef<HTMLButtonElement>(null);
   const fileVolume = useRoomStore((s) => s.fileVolume);
@@ -243,6 +250,24 @@ export function FileStreamPlayer({
           title={m.controls_stop_file_title()}
         >
           <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      {/* Open new source on the fly — does NOT stop the current track (cross-fades). */}
+      <div className="mb-2 flex gap-2">
+        <button
+          onClick={onOpenFiles}
+          className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-sonic-700 px-2 py-1.5 text-xs font-medium text-sonic-100 transition-colors hover:bg-sonic-600"
+        >
+          <FolderOpen aria-hidden="true" className="h-3.5 w-3.5" />
+          {m.player_open_files()}
+        </button>
+        <button
+          onClick={onOpenFolder}
+          className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-sonic-700 px-2 py-1.5 text-xs font-medium text-sonic-100 transition-colors hover:bg-sonic-600"
+        >
+          <Folder aria-hidden="true" className="h-3.5 w-3.5" />
+          {m.player_open_folder()}
         </button>
       </div>
 

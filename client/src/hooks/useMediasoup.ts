@@ -1836,19 +1836,6 @@ export function useMediasoup() {
     [store, ensureOutGraph, ensureFileSlots, loadIntoSlot, stopFileStream, crossfadeTo],
   );
 
-  const startFileStream = useCallback(
-    async (file: File) => {
-      const objectUrl = URL.createObjectURL(file);
-      try {
-        await startFileSource(objectUrl, file.name, objectUrl);
-      } catch (err) {
-        URL.revokeObjectURL(objectUrl);
-        throw err;
-      }
-    },
-    [startFileSource],
-  );
-
   const startUrlStream = useCallback(
     async (rawUrl: string) => {
       const url = new URL(rawUrl);
@@ -2010,34 +1997,32 @@ export function useMediasoup() {
   // Start a playlist from an array of Files. Filters to audio files, builds
   // object URLs, persists the playlist in the store, and starts track 0.
   // A single-file array produces a 1-item playlist.
-  const startFolderStream = useCallback(
-    async (files: File[]) => {
-      const audioFiles = files.filter(
+  // Start (or switch to) a playlist from an ALREADY-ORDERED list of audio files.
+  // Builds object URLs, sets the playlist, picks the play order (shuffle/
+  // sequential), and starts the first track via playTrack — which cross-fades in
+  // if something is already playing, so switching folders/files mid-playback
+  // never cuts the current track.
+  const startPlaylist = useCallback(
+    async (orderedFiles: File[]) => {
+      const audioFiles = orderedFiles.filter(
         (f) =>
           f.type.startsWith("audio/") ||
           AUDIO_EXTENSIONS.has(f.name.split(".").pop()?.toLowerCase() ?? ""),
       );
       if (audioFiles.length === 0) return;
 
-      // Sort by full relative path so folder-picker order is deterministic.
-      audioFiles.sort((a, b) => {
-        const pa = (a as File & { webkitRelativePath?: string }).webkitRelativePath ?? a.name;
-        const pb = (b as File & { webkitRelativePath?: string }).webkitRelativePath ?? b.name;
-        return pa.localeCompare(pb);
-      });
+      const firstStart = store.getState().fileStreamName == null;
+      const oldPlaylist = store.getState().playlist;
 
       const playlist = audioFiles.map((f) => ({
         name: f.name,
         objectUrl: URL.createObjectURL(f),
       }));
-
-      const firstStart = store.getState().fileStreamName == null;
       store.getState().setPlaylist(playlist);
 
       // Build the navigation order (shuffled or sequential), then start the
       // first track via playTrack — it cross-fades in and binds the
-      // playlist-aware auto-advance/ended handler, so there's no separate
-      // first-start path or fragile re-bind dance.
+      // playlist-aware auto-advance/ended handler.
       shuffleOrderRef.current = store.getState().playerShuffle
         ? shuffleIndices(playlist.length)
         : Array.from({ length: playlist.length }, (_, i) => i);
@@ -2047,8 +2032,41 @@ export function useMediasoup() {
 
       // File mixes into the voice track (outDest) — no SFU pin. Cue on first start.
       if (firstStart) playCue(sharedAudioContext, "share-start");
+
+      // Switched playlists while playing: revoke the OLD playlist's object URLs,
+      // but only after the crossfade tail so the still-fading outgoing track is
+      // not cut. (The new playlist's URLs are bulk-revoked by stopFileStream.)
+      if (!firstStart && oldPlaylist.length > 0) {
+        const stale = oldPlaylist.map((t) => t.objectUrl);
+        window.setTimeout(
+          () => {
+            for (const u of stale) {
+              try {
+                URL.revokeObjectURL(u);
+              } catch {
+                /* already revoked */
+              }
+            }
+          },
+          XFADE_TAU * 5 * 1000 + 500,
+        );
+      }
     },
     [store, playTrack],
+  );
+
+  // Folder picker fallback (<input webkitdirectory>): order the files by relative
+  // path (folder order, subfolders included) then start the playlist.
+  const startFolderStream = useCallback(
+    async (files: File[]) => {
+      const ordered = [...files].sort((a, b) => {
+        const pa = (a as File & { webkitRelativePath?: string }).webkitRelativePath ?? a.name;
+        const pb = (b as File & { webkitRelativePath?: string }).webkitRelativePath ?? b.name;
+        return pa.localeCompare(pb);
+      });
+      await startPlaylist(ordered);
+    },
+    [startPlaylist],
   );
 
   const toggleFilePlayback = useCallback(() => {
@@ -2326,7 +2344,7 @@ export function useMediasoup() {
     toggleMute,
     toggleDeafen,
     toggleAudioShare,
-    startFileStream,
+    startPlaylist,
     startFolderStream,
     startUrlStream,
     startServerFileStream,
