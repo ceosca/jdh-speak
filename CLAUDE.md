@@ -23,6 +23,14 @@ these changes should know:
 Also removed as dead code this round: the entire **auto-ducking** subsystem
 (server stopped driving it) and **push-to-talk** store state (no UI used it).
 
+## Change log — read & maintain `CHANGELOG.md`
+
+There's a running **`CHANGELOG.md`** at the repo root that records every change
+that lands (what / how / why), newest first. **Read it** to catch up on recent
+work if you've lost context. **Convention: on every `git push`, append an entry**
+for what shipped, so Cristian (and any future Claude) can follow the project
+without re-reading all the code.
+
 ## What this is
 
 JDH Speak — low-latency browser audio conferencing (voice) with hi-fi stereo music casting. pnpm monorepo:
