@@ -10,6 +10,24 @@
 
 ## 2026-06-29
 
+### `89e5d09` — Reproductor como footer de página completo; sin velocidad; orden de abajo hacia arriba; Ctrl+Fin
+
+- **Qué:** el reproductor virtual pasa a ser una **barra de ancho completo al pie
+  de la página** (después de la barra de controles, en flujo), no una ventana
+  flotante — así queda último en el orden de lectura y fácil de alcanzar en NVDA.
+  Orden de abajo hacia arriba: **Abrir archivos** (lo más abajo) → **Abrir
+  carpeta** → **volumen** → el resto del transporte arriba. **Ctrl+Fin** lleva el
+  foco a "Abrir archivos". Se **elimina la velocidad** por completo.
+- **Cómo:** `FileStreamPlayer` cambia el contenedor flotante por una barra
+  full-width y apila los botones de abrir (carpeta arriba, archivos abajo, con
+  `id="player-open-files"`); maneja Ctrl+Fin en su `onKeyDown`. En `Room` el
+  reproductor se renderiza tras el `</footer>` de controles, con un handler
+  global de Ctrl+Fin y Ctrl+Alt+P que enfoca el reproductor si está visible. Se
+  quita la velocidad del store (`playerRate`/`setPlayerRate`), del hook
+  (`playbackRate`) y de la UI; se poda `player_speed`.
+- **Por qué:** pedido del dueño — footer real abajo de todo, controles en el
+  orden que usa, y sin la velocidad.
+
 ### `d9a1c88` — Separar "Abrir URL" del reproductor virtual; eliminar la biblioteca del servidor
 
 - **Qué:** reorganización de las fuentes de audio, una función por control y sin
