@@ -10,6 +10,25 @@
 
 ## 2026-06-29
 
+### `a87f76f` — Stream de URL: solo volumen; y monitor opcional del audio compartido
+
+- **Qué (1):** al abrir un **stream de URL** (m3u8/mp3 radio), el reproductor
+  muestra **solo el control de volumen** (más el título y cerrar). Se ocultan
+  progreso, transporte, lista y los botones de abrir **hasta que el stream se
+  cierra**. (Para archivos/carpeta locales sigue el reproductor completo.)
+- **Qué (2):** el **audio de compartir pestaña/pantalla** puede reproducirse
+  también por **tu dispositivo de salida elegido** (sigue el altavoz de la app),
+  para oírlo donde escuchás. Es un **toggle opcional** en Ajustes ("Oír el audio
+  compartido en tu dispositivo"), **apagado por defecto** — puede generar **eco**
+  si la pestaña ya suena en ese mismo dispositivo.
+- **Cómo:** flag de sesión `playerIsUrl` (se setea en `startUrlStream`, se limpia
+  en `startPlaylist`/`stopFileStream`); el `FileStreamPlayer` recibe `isUrlStream`
+  y renderiza mínimo. Para compartir: store `shareMonitor` (persistido) +
+  conexión `displaySource → destination` (en `startAudioShare` y un efecto en
+  vivo); casilla en `DeviceSettings`.
+- **Por qué:** un stream en vivo no tiene posición/lista que controlar, solo
+  volumen; y poder oír lo compartido por el dispositivo propio.
+
 ### `8a6e432` — Arreglo del aleatorio (al togglear) y quita de los botones ±10 s
 
 - **Qué:** el **aleatorio** ahora reordena de verdad. Antes, el orden de
