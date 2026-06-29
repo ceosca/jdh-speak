@@ -10,6 +10,20 @@
 
 ## 2026-06-29
 
+### `8a6e432` — Arreglo del aleatorio (al togglear) y quita de los botones ±10 s
+
+- **Qué:** el **aleatorio** ahora reordena de verdad. Antes, el orden de
+  reproducción se armaba **solo al cargar la lista**, así que activar aleatorio
+  en marcha dejaba un orden secuencial viejo → "siguiente" y el auto-avance iban
+  en secuencia. También se **eliminan los botones de Retroceder/Avanzar 10 s**.
+- **Cómo:** nuevo `togglePlayerShuffle` en el hook que **rebaraja el orden al
+  togglear** (aleatorio con la pista actual primero al activar; secuencial al
+  desactivar); `Room` lo usa en vez de solo setear el flag. Se quitan los dos
+  botones ±10 s de `FileStreamPlayer` (las flechas Alt/Mayús/Ctrl siguen
+  buscando, comparten `onSeekBy`); se podan `player_back10`/`player_fwd10`.
+- **Por qué:** el aleatorio no era aleatorio. **Repetir** se verificó: funciona
+  (repetir-una repite la pista; repetir-todas da la vuelta) — se mantiene.
+
 ### `89e5d09` — Reproductor como footer de página completo; sin velocidad; orden de abajo hacia arriba; Ctrl+Fin
 
 - **Qué:** el reproductor virtual pasa a ser una **barra de ancho completo al pie
