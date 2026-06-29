@@ -107,6 +107,8 @@
   "settings_secondary_label": "Activar placa de transmisión secundaria",
   "settings_secondary_device_label": "Dispositivo secundario",
   "settings_secondary_monitor_label": "Escuchar tu placa secundaria",
+  "settings_share_monitor_label": "Oír el audio compartido en tu dispositivo",
+  "settings_share_monitor_hint": "Al compartir pestaña/pantalla, reproduce ese audio también por tu dispositivo de salida elegido. Puede generar eco si la pestaña ya suena en ese mismo dispositivo.",
   "settings_secondary_hint": "Mezcla un segundo dispositivo de grabación (otro micro o un loopback) en tu audio. Al silenciar, solo se silencia tu micro principal.",
 
   "settings_streaming_heading": "Retransmisión en directo",

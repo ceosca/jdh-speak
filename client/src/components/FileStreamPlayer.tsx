@@ -40,6 +40,9 @@ interface FileStreamPlayerProps {
   // Open a local source (files or a folder). Cross-fades if something plays.
   onOpenFiles: () => void;
   onOpenFolder: () => void;
+  // True when the current source is a URL stream (m3u8/mp3 radio): show ONLY the
+  // volume control (and the close button) — hide the rest until it's closed.
+  isUrlStream: boolean;
 }
 
 // Volume step: 1 % of the 0–1 gain range, per the "lower it one by one" design.
@@ -79,9 +82,11 @@ export function FileStreamPlayer({
   onToggleShuffle,
   onOpenFiles,
   onOpenFolder,
+  isUrlStream,
 }: FileStreamPlayerProps) {
   const playRef = useRef<HTMLButtonElement>(null);
   const openFilesRef = useRef<HTMLButtonElement>(null);
+  const volumeRef = useRef<HTMLInputElement>(null);
   const fileVolume = useRoomStore((s) => s.fileVolume);
   const playerTime = useRoomStore((s) => s.playerTime);
   const playerDuration = useRoomStore((s) => s.playerDuration);
@@ -112,9 +117,10 @@ export function FileStreamPlayer({
         ? m.player_repeat_all()
         : m.player_repeat_one();
 
-  // On open: land on play if a track is loaded, else on the first open button.
+  // On open: a URL stream → the volume; a loaded track → play; idle → open files.
   useEffect(() => {
-    if (hasTrack) playRef.current?.focus();
+    if (isUrlStream) volumeRef.current?.focus();
+    else if (hasTrack) playRef.current?.focus();
     else openFilesRef.current?.focus();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- mount only
 
@@ -259,8 +265,9 @@ export function FileStreamPlayer({
           </button>
         </div>
 
-        {/* Track-dependent controls — only once something is loaded. */}
-        {hasTrack && (
+        {/* Transport, playlist, etc. — only for a loaded LOCAL track (a URL
+            stream shows just the volume below). */}
+        {hasTrack && !isUrlStream && (
           <>
             {/* Progress bar */}
             <div className="mb-1">
@@ -384,55 +391,63 @@ export function FileStreamPlayer({
               </ul>
             )}
 
-            {/* Volume — sits just above the Open folder / Open files buttons. */}
-            <div className="mt-2 flex items-center gap-2">
-              <label htmlFor="file-player-volume" className="shrink-0 text-xs text-sonic-300">
-                {m.player_volume_label()}
-              </label>
-              <input
-                id="file-player-volume"
-                type="range"
-                min={0}
-                max={100}
-                step={1}
-                value={volumePct}
-                aria-valuetext={`${volumePct} %`}
-                onChange={(e) => onVolumeChange(clampVolume(parseFloat(e.target.value) / 100))}
-                className="min-w-0 flex-1 accent-sonic-accent"
-              />
-              <span
-                className="w-9 shrink-0 text-right text-xs tabular-nums text-sonic-300"
-                aria-hidden="true"
-              >
-                {volumePct} %
-              </span>
-            </div>
           </>
+        )}
+
+        {/* Volume — always shown while a track plays (the only control for a URL
+            stream); sits just above the Open folder / Open files buttons. */}
+        {hasTrack && (
+          <div className="mt-2 flex items-center gap-2">
+            <label htmlFor="file-player-volume" className="shrink-0 text-xs text-sonic-300">
+              {m.player_volume_label()}
+            </label>
+            <input
+              ref={volumeRef}
+              id="file-player-volume"
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={volumePct}
+              aria-valuetext={`${volumePct} %`}
+              onChange={(e) => onVolumeChange(clampVolume(parseFloat(e.target.value) / 100))}
+              className="min-w-0 flex-1 accent-sonic-accent"
+            />
+            <span
+              className="w-9 shrink-0 text-right text-xs tabular-nums text-sonic-300"
+              aria-hidden="true"
+            >
+              {volumePct} %
+            </span>
+          </div>
         )}
 
         {/* Idle hint when nothing is loaded yet. */}
         {!hasTrack && <p className="mb-2 text-xs text-sonic-400">{m.player_empty_hint()}</p>}
 
         {/* Open a local source, stacked at the very bottom (Open files last, so
-            Ctrl+End lands on it). Does NOT stop the current track — cross-fades. */}
-        <div className="mt-2 flex flex-col gap-2 border-t border-sonic-700 pt-2">
-          <button
-            onClick={onOpenFolder}
-            className="flex items-center justify-center gap-1.5 rounded-lg bg-sonic-700 px-2 py-2 text-xs font-medium text-sonic-100 transition-colors hover:bg-sonic-600"
-          >
-            <Folder aria-hidden="true" className="h-3.5 w-3.5" />
-            {m.player_open_folder()}
-          </button>
-          <button
-            id="player-open-files"
-            ref={openFilesRef}
-            onClick={onOpenFiles}
-            className="flex items-center justify-center gap-1.5 rounded-lg bg-sonic-700 px-2 py-2 text-xs font-medium text-sonic-100 transition-colors hover:bg-sonic-600"
-          >
-            <FolderOpen aria-hidden="true" className="h-3.5 w-3.5" />
-            {m.player_open_files()}
-          </button>
-        </div>
+            Ctrl+End lands on it). Does NOT stop the current track — cross-fades.
+            Hidden during a URL stream (only the volume shows until it closes). */}
+        {!isUrlStream && (
+          <div className="mt-2 flex flex-col gap-2 border-t border-sonic-700 pt-2">
+            <button
+              onClick={onOpenFolder}
+              className="flex items-center justify-center gap-1.5 rounded-lg bg-sonic-700 px-2 py-2 text-xs font-medium text-sonic-100 transition-colors hover:bg-sonic-600"
+            >
+              <Folder aria-hidden="true" className="h-3.5 w-3.5" />
+              {m.player_open_folder()}
+            </button>
+            <button
+              id="player-open-files"
+              ref={openFilesRef}
+              onClick={onOpenFiles}
+              className="flex items-center justify-center gap-1.5 rounded-lg bg-sonic-700 px-2 py-2 text-xs font-medium text-sonic-100 transition-colors hover:bg-sonic-600"
+            >
+              <FolderOpen aria-hidden="true" className="h-3.5 w-3.5" />
+              {m.player_open_files()}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

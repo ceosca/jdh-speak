@@ -21,6 +21,9 @@ export function DeviceSettings() {
   const setSecondaryDeviceId = useRoomStore((s) => s.setSecondaryDeviceId);
   const setSecondaryMonitor = useRoomStore((s) => s.setSecondaryMonitor);
 
+  const shareMonitor = useRoomStore((s) => s.shareMonitor);
+  const setShareMonitor = useRoomStore((s) => s.setShareMonitor);
+
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
   const [speakers, setSpeakers] = useState<MediaDeviceInfo[]>([]);
   const micSelectId = useId();
@@ -30,6 +33,8 @@ export function DeviceSettings() {
   const secondaryHintId = useId();
   const secondarySelectId = useId();
   const secondaryMonitorId = useId();
+  const shareMonitorId = useId();
+  const shareMonitorHintId = useId();
 
   const refresh = useCallback(async () => {
     try {
@@ -160,6 +165,25 @@ export function DeviceSettings() {
           </div>
         </>
       )}
+
+      <div>
+        <div className="flex items-start gap-2">
+          <input
+            type="checkbox"
+            id={shareMonitorId}
+            checked={shareMonitor}
+            onChange={(e) => setShareMonitor(e.target.checked)}
+            aria-describedby={shareMonitorHintId}
+            className="mt-0.5 shrink-0 accent-sonic-accent"
+          />
+          <label htmlFor={shareMonitorId} className="text-xs font-medium text-sonic-300 cursor-pointer">
+            {m.settings_share_monitor_label()}
+          </label>
+        </div>
+        <p id={shareMonitorHintId} className="mt-1 text-xs text-sonic-400">
+          {m.settings_share_monitor_hint()}
+        </p>
+      </div>
 
       {/* Browsers hide device names until mic permission is granted (e.g. in
           the lobby before the first test) — explain the bare lists. Tied to the

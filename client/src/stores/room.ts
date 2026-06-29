@@ -30,6 +30,7 @@ const SECONDARY_ENABLED_KEY = "jdh-speak:secondaryEnabled";
 const SECONDARY_DEVICE_KEY = "jdh-speak:secondaryDeviceId";
 const SECONDARY_MONITOR_KEY = "jdh-speak:secondaryMonitor";
 const MIC_MONITOR_KEY = "jdh-speak:micMonitor";
+const SHARE_MONITOR_KEY = "jdh-speak:shareMonitor";
 const FILE_VOLUME_KEY = "jdh-speak:fileVolume";
 const PLAYER_REPEAT_KEY = "jdh-speak:playerRepeat";
 const PLAYER_SHUFFLE_KEY = "jdh-speak:playerShuffle";
@@ -140,6 +141,9 @@ interface RoomState {
   // toolbar button. The actual <audio> element lives in the media hook.
   fileStreamName: string | null;
   fileStreamPlaying: boolean;
+  // True while the current source is a URL stream (m3u8/mp3 radio): the player
+  // shows only the volume (no transport/playlist/open buttons) until it closes.
+  playerIsUrl: boolean;
   // Source-side volume for the file stream (0–1, default 1). Applied on the
   // SENT path (and the local monitor) so lowering it quiets the file for all
   // listeners and for the streamer. Persisted to localStorage.
@@ -170,6 +174,10 @@ interface RoomState {
   // Monitor your own primary mic locally (hear yourself through your speakers).
   // Off by default; for-you only (like the secondary monitor). Persisted.
   micMonitor: boolean;
+  // Play shared tab/system audio out your selected playback device too (so you
+  // hear it where you listen). Off by default; persisted. May echo if the shared
+  // tab already plays on that same device.
+  shareMonitor: boolean;
   // Secondary transmission device: a second recording device (mic or loopback) mixed into the outgoing voice stream. monitor = hear it locally. Persisted.
   secondaryEnabled: boolean;
   secondaryDeviceId: string;
@@ -218,6 +226,8 @@ interface RoomState {
   setSharingAudio: (sharing: boolean) => void;
   setFileStream: (name: string | null) => void;
   setFileStreamPlaying: (playing: boolean) => void;
+  setPlayerIsUrl: (isUrl: boolean) => void;
+  setShareMonitor: (monitor: boolean) => void;
   setFileVolume: (volume: number) => void;
   setPlaylist: (playlist: { name: string; objectUrl: string }[]) => void;
   setPlaylistIndex: (index: number) => void;
@@ -262,6 +272,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   isSharingAudio: false,
   fileStreamName: null,
   fileStreamPlaying: false,
+  playerIsUrl: false,
   fileVolume: loadFileVolume(),
   playlist: [],
   playlistIndex: 0,
@@ -274,6 +285,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   speakerDeviceId: loadString(SPEAKER_DEVICE_KEY),
   voiceProcessingEnabled: loadVoiceProcessing(),
   micMonitor: loadString(MIC_MONITOR_KEY) === "true",
+  shareMonitor: loadString(SHARE_MONITOR_KEY) === "true",
   secondaryEnabled: loadString(SECONDARY_ENABLED_KEY) === "true",
   secondaryDeviceId: loadString(SECONDARY_DEVICE_KEY),
   secondaryMonitor: loadString(SECONDARY_MONITOR_KEY) === "true",
@@ -302,6 +314,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setSharingAudio: (isSharingAudio) => set({ isSharingAudio }),
   setFileStream: (fileStreamName) => set({ fileStreamName }),
   setFileStreamPlaying: (fileStreamPlaying) => set({ fileStreamPlaying }),
+  setPlayerIsUrl: (playerIsUrl) => set({ playerIsUrl }),
   setFileVolume: (fileVolume) => {
     try {
       localStorage.setItem(FILE_VOLUME_KEY, String(fileVolume));
@@ -345,6 +358,10 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setMicMonitor: (micMonitor) => {
     saveString(MIC_MONITOR_KEY, String(micMonitor));
     set({ micMonitor });
+  },
+  setShareMonitor: (shareMonitor) => {
+    saveString(SHARE_MONITOR_KEY, String(shareMonitor));
+    set({ shareMonitor });
   },
   setSecondaryEnabled: (secondaryEnabled) => {
     saveString(SECONDARY_ENABLED_KEY, String(secondaryEnabled));
@@ -511,6 +528,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       isSharingAudio: false,
       fileStreamName: null,
       fileStreamPlaying: false,
+      playerIsUrl: false,
       playlist: [],
       playlistIndex: 0,
       playerTime: 0,

@@ -444,6 +444,7 @@ export function useMediasoup() {
   const secondaryDeviceId = useRoomStore((s) => s.secondaryDeviceId);
   const secondaryMonitor = useRoomStore((s) => s.secondaryMonitor);
   const micMonitor = useRoomStore((s) => s.micMonitor);
+  const shareMonitor = useRoomStore((s) => s.shareMonitor);
 
   // All incoming audio plays through the shared context, so the speaker pick
   // is one setSinkId there — it covers every peer, current and future.
@@ -619,6 +620,17 @@ export function useMediasoup() {
     try { g.micGain.disconnect(sharedAudioContext.destination); } catch { /* not connected */ }
     if (micMonitor) g.micGain.connect(sharedAudioContext.destination);
   }, [micMonitor]);
+
+  // Toggle the shared-audio monitor live: also play the shared tab/system audio
+  // out the app's selected playback device (it follows the speaker pick via the
+  // context sinkId), in addition to sending it to peers. Off by default; may
+  // echo if the shared tab already plays on that same device.
+  useEffect(() => {
+    const g = outGraphRef.current;
+    if (!g?.displaySource) return;
+    try { g.displaySource.disconnect(sharedAudioContext.destination); } catch { /* not connected */ }
+    if (shareMonitor) g.displaySource.connect(sharedAudioContext.destination);
+  }, [shareMonitor]);
 
   // --- P2P: create a peer connection ---
   const ensureLocalStream = useCallback(async () => {
@@ -1559,6 +1571,9 @@ export function useMediasoup() {
     const g = ensureOutGraph();
     const displaySource = sharedAudioContext.createMediaStreamSource(new MediaStream(audioTracks));
     displaySource.connect(g.outDest);
+    // Optionally also play it out your selected playback device so you hear it
+    // where you listen (the live effect keeps this in sync when toggled).
+    if (store.getState().shareMonitor) displaySource.connect(sharedAudioContext.destination);
     g.displaySource = displaySource;
     displayStreamRef.current = displayStream;
 
@@ -1680,6 +1695,7 @@ export function useMediasoup() {
       }
       store.getState().setFileStream(null);
       store.getState().setFileStreamPlaying(false);
+      store.getState().setPlayerIsUrl(false);
       // Revoke all playlist object URLs to avoid memory leaks. The slot
       // teardown above already revoked the two per-slot objectUrls; here we
       // handle any remaining entries in the playlist that were not yet played.
@@ -1842,9 +1858,11 @@ export function useMediasoup() {
       const name = decodeURIComponent(
         url.pathname.split("/").filter(Boolean).pop() ?? url.hostname,
       );
+      // Mark URL-stream mode so the player shows only the volume control.
+      store.getState().setPlayerIsUrl(true);
       await startFileSource(`/api/audio-proxy?url=${encodeURIComponent(url.href)}`, name);
     },
-    [startFileSource],
+    [store, startFileSource],
   );
 
 
@@ -2023,6 +2041,8 @@ export function useMediasoup() {
       );
       if (audioFiles.length === 0) return;
 
+      // Local files/folder → not a URL stream (the player shows full controls).
+      store.getState().setPlayerIsUrl(false);
       const firstStart = store.getState().fileStreamName == null;
       const oldPlaylist = store.getState().playlist;
 

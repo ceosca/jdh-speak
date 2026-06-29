@@ -168,6 +168,7 @@ export function Room() {
   const isRecording = useRoomStore((s) => s.isRecording);
   const fileStreamName = useRoomStore((s) => s.fileStreamName);
   const fileStreamPlaying = useRoomStore((s) => s.fileStreamPlaying);
+  const playerIsUrl = useRoomStore((s) => s.playerIsUrl);
   const playlist = useRoomStore((s) => s.playlist);
   const playlistIndex = useRoomStore((s) => s.playlistIndex);
   const playerRepeat = useRoomStore((s) => s.playerRepeat);
@@ -529,6 +530,7 @@ export function Room() {
           onToggleShuffle={togglePlayerShuffle}
           onOpenFiles={openFiles}
           onOpenFolder={() => void openFolder()}
+          isUrlStream={playerIsUrl}
         />
       )}
 
