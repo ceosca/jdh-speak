@@ -591,7 +591,9 @@ export function useMediasoup() {
       const ctx = sharedAudioContext;
       const secondarySource = ctx.createMediaStreamSource(stream);
       const secondaryGain = ctx.createGain();
-      secondaryGain.gain.value = 1;
+      // Start at your current "mic level" so the secondary placa matches it from
+      // the first sample; setMicGain keeps the two in lockstep afterward.
+      secondaryGain.gain.value = store.getState().micGain;
       secondarySource.connect(secondaryGain);
       secondaryGain.connect(graph.outDest);
       // Monitor tapped at secondaryGain (post-gain) so it matches what's sent.
@@ -2215,7 +2217,13 @@ export function useMediasoup() {
     (gain: number) => {
       store.getState().setMicGain(gain);
       const g = outGraphRef.current;
-      if (g) g.micGain.gain.setTargetAtTime(gain, sharedAudioContext.currentTime, GAIN_RAMP);
+      if (g) {
+        g.micGain.gain.setTargetAtTime(gain, sharedAudioContext.currentTime, GAIN_RAMP);
+        // The secondary placa rides the same "your volume" level, so its monitor
+        // tracks the mic slider just like the primary — and listeners hear it at
+        // that level too (monitor == what people receive).
+        g.secondaryGain?.gain.setTargetAtTime(gain, sharedAudioContext.currentTime, GAIN_RAMP);
+      }
     },
     [store],
   );
