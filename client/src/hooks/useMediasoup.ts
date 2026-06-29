@@ -1608,7 +1608,6 @@ export function useMediasoup() {
       const makeSlot = (active: boolean): FileSlot => {
         const audioEl = new Audio();
         (audioEl as unknown as Record<string, boolean>).playsInline = true;
-        audioEl.playbackRate = store.getState().playerRate;
         const source = sharedAudioContext.createMediaElementSource(audioEl);
         const xfadeGain = sharedAudioContext.createGain();
         xfadeGain.gain.value = active ? 1 : 0;
@@ -2103,18 +2102,6 @@ export function useMediasoup() {
   // Toggle play/pause — alias exposed under the brief's name.
   const playerTogglePlay = toggleFilePlayback;
 
-  // Set the playback rate on both slots so it persists across crossfades.
-  const setPlayerRate = useCallback(
-    (r: number) => {
-      store.getState().setPlayerRate(r);
-      const g = outGraphRef.current;
-      if (!g?.fileSlots) return;
-      for (const slot of g.fileSlots) {
-        slot.audioEl.playbackRate = r;
-      }
-    },
-    [store],
-  );
 
   // Subscribe timeupdate / durationchange / loadedmetadata on the active slot's
   // element so the store stays current. Throttle writes to ~250 ms so React
@@ -2346,7 +2333,6 @@ export function useMediasoup() {
     playerTogglePlay,
     playerSeekBy,
     playerSeekTo,
-    setPlayerRate,
     setPlayerVolume,
     toggleRecording,
     startRecording,

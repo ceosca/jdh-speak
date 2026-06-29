@@ -33,7 +33,6 @@ const MIC_MONITOR_KEY = "jdh-speak:micMonitor";
 const FILE_VOLUME_KEY = "jdh-speak:fileVolume";
 const PLAYER_REPEAT_KEY = "jdh-speak:playerRepeat";
 const PLAYER_SHUFFLE_KEY = "jdh-speak:playerShuffle";
-const PLAYER_RATE_KEY = "jdh-speak:playerRate";
 
 export type PlayerRepeat = "off" | "one" | "all";
 
@@ -42,15 +41,6 @@ function loadPlayerRepeat(): PlayerRepeat {
   return v === "one" || v === "all" ? v : "off";
 }
 
-function loadPlayerRate(): number {
-  try {
-    const v = parseFloat(localStorage.getItem(PLAYER_RATE_KEY) ?? "");
-    if (Number.isFinite(v) && v > 0) return v;
-  } catch {
-    // Persistence unavailable.
-  }
-  return 1;
-}
 
 function loadFileVolume(): number {
   try {
@@ -162,8 +152,6 @@ interface RoomState {
   playlistIndex: number;
   playerRepeat: PlayerRepeat;
   playerShuffle: boolean;
-  // Playback rate (persisted). 1 = normal speed.
-  playerRate: number;
   // Current playback position and duration of the active file slot (seconds).
   // Updated by throttled timeupdate/durationchange listeners in useMediasoup.
   playerTime: number;
@@ -235,7 +223,6 @@ interface RoomState {
   setPlaylistIndex: (index: number) => void;
   setPlayerRepeat: (repeat: PlayerRepeat) => void;
   setPlayerShuffle: (shuffle: boolean) => void;
-  setPlayerRate: (rate: number) => void;
   setPlayerTime: (time: number) => void;
   setPlayerDuration: (duration: number) => void;
   setMicGain: (gain: number) => void;
@@ -280,7 +267,6 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   playlistIndex: 0,
   playerRepeat: loadPlayerRepeat(),
   playerShuffle: loadString(PLAYER_SHUFFLE_KEY) === "true",
-  playerRate: loadPlayerRate(),
   playerTime: 0,
   playerDuration: 0,
   micGain: loadMicGain(),
@@ -333,10 +319,6 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setPlayerShuffle: (playerShuffle) => {
     saveString(PLAYER_SHUFFLE_KEY, String(playerShuffle));
     set({ playerShuffle });
-  },
-  setPlayerRate: (playerRate) => {
-    saveString(PLAYER_RATE_KEY, String(playerRate));
-    set({ playerRate });
   },
   setPlayerTime: (playerTime) => set({ playerTime }),
   setPlayerDuration: (playerDuration) => set({ playerDuration }),

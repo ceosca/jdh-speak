@@ -73,7 +73,6 @@ export function Room() {
     playerTogglePlay,
     playerSeekBy,
     playerSeekTo,
-    setPlayerRate,
     setPlayerVolume,
     toggleRecording,
     rename,
@@ -172,7 +171,6 @@ export function Room() {
   const playlistIndex = useRoomStore((s) => s.playlistIndex);
   const playerRepeat = useRoomStore((s) => s.playerRepeat);
   const playerShuffle = useRoomStore((s) => s.playerShuffle);
-  const playerRate = useRoomStore((s) => s.playerRate);
   const announcement = useRoomStore((s) => s.announcement);
   const announceSeq = useRoomStore((s) => s.announceSeq);
   const chatPoliteMsg = useRoomStore((s) => s.chatPoliteMsg);
@@ -296,18 +294,28 @@ export function Room() {
         return;
       }
 
-      // Player focus: Ctrl+Alt+P moves keyboard focus to the player container.
+      // Player focus: Ctrl+Alt+P moves keyboard focus to the player container if
+      // it's showing (open or streaming); otherwise announces nothing's playing.
       if (e.altKey && e.ctrlKey && (e.code === "KeyP" || e.key === "p" || e.key === "P")) {
         e.preventDefault();
-        if (useRoomStore.getState().fileStreamName != null) {
-          document.getElementById("conference-player")?.focus();
-        } else {
-          useRoomStore.getState().announce(m.player_nothing_playing());
-        }
+        const player = document.getElementById("conference-player");
+        if (player) player.focus();
+        else useRoomStore.getState().announce(m.player_nothing_playing());
         return;
       }
 
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      // Ctrl+End → jump to the bottom-most player control ("Abrir archivos"),
+      // when the player is showing. Otherwise let the browser handle it.
+      if (e.key === "End" && e.ctrlKey && !e.altKey && !e.shiftKey) {
+        const openFilesBtn = document.getElementById("player-open-files");
+        if (openFilesBtn) {
+          e.preventDefault();
+          openFilesBtn.focus();
+        }
+        return;
+      }
 
       if (e.key === "m" || e.key === "M") {
         e.preventDefault();
@@ -498,6 +506,33 @@ export function Room() {
         </div>
       </footer>
 
+      {/* The virtual player — the page's bottom-most bar (footer), after the
+          controls, so it's last in reading order and Ctrl+End reaches it. */}
+      {(playerOpen || fileStreamName) && (
+        <FileStreamPlayer
+          name={fileStreamName}
+          playing={fileStreamPlaying}
+          onTogglePlay={playerTogglePlay}
+          onClose={closePlayer}
+          onVolumeChange={setPlayerVolume}
+          onSeekBy={playerSeekBy}
+          onSeekTo={playerSeekTo}
+          playlist={playlist}
+          playlistIndex={playlistIndex}
+          playerRepeat={playerRepeat}
+          playerShuffle={playerShuffle}
+          onPlayTrack={playTrack}
+          onNext={playerNext}
+          onPrev={playerPrev}
+          onSetRepeat={(r) => useRoomStore.getState().setPlayerRepeat(r)}
+          onToggleShuffle={() =>
+            useRoomStore.getState().setPlayerShuffle(!useRoomStore.getState().playerShuffle)
+          }
+          onOpenFiles={openFiles}
+          onOpenFolder={() => void openFolder()}
+        />
+      )}
+
       {/* Screen-reader event log (peer join/leave, recording, etc.), at the very
           bottom as before. */}
       <div aria-live="polite" role="status" className="sr-only" id="sr-announcements">
@@ -533,33 +568,6 @@ export function Room() {
         aria-hidden="true"
         tabIndex={-1}
       />
-
-      {(playerOpen || fileStreamName) && (
-        <FileStreamPlayer
-          name={fileStreamName}
-          playing={fileStreamPlaying}
-          onTogglePlay={playerTogglePlay}
-          onClose={closePlayer}
-          onVolumeChange={setPlayerVolume}
-          onSeekBy={playerSeekBy}
-          onSeekTo={playerSeekTo}
-          playlist={playlist}
-          playlistIndex={playlistIndex}
-          playerRepeat={playerRepeat}
-          playerShuffle={playerShuffle}
-          onPlayTrack={playTrack}
-          onNext={playerNext}
-          onPrev={playerPrev}
-          onSetRepeat={(r) => useRoomStore.getState().setPlayerRepeat(r)}
-          onToggleShuffle={() =>
-            useRoomStore.getState().setPlayerShuffle(!useRoomStore.getState().playerShuffle)
-          }
-          playerRate={playerRate}
-          onSetRate={setPlayerRate}
-          onOpenFiles={openFiles}
-          onOpenFolder={() => void openFolder()}
-        />
-      )}
 
       {namePrompt}
     </div>
