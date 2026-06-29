@@ -10,6 +10,37 @@
 
 ## 2026-06-29
 
+### `d9a1c88` — Separar "Abrir URL" del reproductor virtual; eliminar la biblioteca del servidor
+
+- **Qué:** reorganización de las fuentes de audio, una función por control y sin
+  opciones duplicadas:
+  - **Se elimina la biblioteca del servidor** por completo (navegador en el
+    cliente + endpoints, helpers y tests del server).
+  - **"Abrir URL"** pasa a ser su propio botón en la barra → un diálogo mínimo
+    (mp3 / m3u8 / radio…), separado del reproductor.
+  - **"Abrir reproductor virtual"** abre el reproductor a demanda. Puede abrirse
+    vacío: si no hay nada cargado muestra solo los botones **Abrir archivos /
+    Abrir carpeta** + una pista; al cargar algo aparecen transporte, lista y
+    velocidad/volumen.
+  - **Abrir archivos / Abrir carpeta viven SOLO en el reproductor**, agrupados
+    **al pie** (footer) para encontrarlos fácil en NVDA. Ya no hay un diálogo
+    aparte (se elimina el `AudioSourceDialog` combinado).
+  - Cerrar el reproductor (la X o el botón de la barra) detiene la emisión y lo
+    oculta.
+- **Cómo:** nuevo `UrlDialog.tsx`; `FileStreamPlayer` acepta `name` nulo (estado
+  vacío) y mueve los botones de abrir al pie; `AudioControls` cambia el único
+  botón "Emitir audio" por dos ("Abrir reproductor virtual" + "Abrir URL");
+  `Room` maneja `playerOpen`/`urlOpen`. En el server se quitan
+  `/api/audio-library{,/file}`, `resolveLibraryPath`, `classifyLibraryEntries`,
+  `isAudioFileName`, `AUDIO_LIBRARY_DIR` y `startServerFileStream`. Se podan las
+  claves i18n muertas.
+- **Por qué:** no repetir lo mismo en dos lugares y separar funciones (URL vs.
+  archivos locales); quitar la biblioteca que no se usa.
+- **Notas:** en Windows, los tests de lifecycle del transcode (timers falsos /
+  spawn simulado) figuran como fallidos — son **preexistentes** (antes salían
+  "cancelled" por el cascade del test de `resolveLibraryPath`); en Linux pasan.
+  tsc (cliente+server), lint y build: en verde.
+
 ### `824fc0a` — Reproductor: abrir archivos/carpeta sobre la marcha, sin diálogo de subida, con subcarpetas
 
 - **Qué:** botones **"Abrir archivos"** y **"Abrir carpeta"** siempre visibles en
