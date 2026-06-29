@@ -10,6 +10,30 @@
 
 ## 2026-06-29
 
+### `824fc0a` — Reproductor: abrir archivos/carpeta sobre la marcha, sin diálogo de subida, con subcarpetas
+
+- **Qué:** botones **"Abrir archivos"** y **"Abrir carpeta"** siempre visibles en
+  el reproductor, para cambiar de fuente mientras suena algo, sin pasar por el
+  diálogo. Abrir una fuente **no frena** la pista actual: hace crossfade a la
+  nueva. "Abrir carpeta" ya **no muestra** el "¿Subir N archivos?" y carga
+  **todas las subcarpetas** (todos los tracks, en orden de carpeta). "Abrir
+  archivos" acepta uno o varios archivos → lista (orden por nombre).
+- **Cómo:**
+  - Selector de carpeta vía **File System Access API** (`showDirectoryPicker`),
+    que evita el diálogo de subida y permite recorrer subcarpetas
+    recursivamente; si el navegador no la tiene (Firefox/Safari) cae al
+    `<input webkitdirectory>` de siempre. Nueva `client/src/lib/audioFolder.ts`.
+  - En el hook, `startFolderStream`/`startFileStream` se unifican en un solo
+    `startPlaylist(File[])` (ya ordenado); `startFolderStream` queda como wrapper
+    que ordena por ruta relativa para el fallback del input. Al cambiar de lista
+    se revocan los object URLs viejos **después** del crossfade (sin fuga ni
+    corte de la pista que se desvanece).
+  - Botones nuevos en `FileStreamPlayer.tsx`; handlers `openFiles`/`openFolder`
+    en `Room.tsx`, compartidos con el diálogo de fuentes.
+- **Por qué:** poder ir cambiando de música en vivo sin fricción ni cortes.
+- **Notas:** lo de "sin diálogo de subida" aplica en Chromium (la API). Aleatorio
+  y repetir ya estaban visibles (verificado, sin cambios).
+
 ### `d6ca2fe` — Tu nivel de micrófono controla también la placa secundaria
 
 - **Qué:** el slider **"Tu nivel de micrófono"** ahora mueve el volumen de la
