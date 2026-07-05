@@ -4,7 +4,7 @@ import { Device } from "mediasoup-client";
 import type { Transport, Producer, Consumer } from "mediasoup-client/types";
 import { forceOpusParams } from "../lib/sdp-munger";
 import { applySpeakerToContext } from "../lib/audio-devices";
-import { isIOS, getMicrophoneStream } from "../lib/microphone";
+import { isIOS, getMicrophoneStream, streamChannelCount } from "../lib/microphone";
 import { playCue } from "../lib/sounds";
 import { formatMessage, RateLimiter, META_SEP, type ChatMessage } from "../lib/chat";
 import {
@@ -251,6 +251,12 @@ export function useMediasoup() {
     // and stays at full volume. Null until the file path is first started.
     fileVolumeGain: GainNode | null;
     micStream: MediaStream | null;
+    // Multichannel input-pair selection (e.g. Zoom L12). When the mic stream has
+    // >2 channels, micSource → micSplitter → micMerger picks one stereo pair and
+    // feeds micGain; both are null for a normal 1/2-channel capture (micSource
+    // connects straight to micGain, as before).
+    micSplitter: ChannelSplitterNode | null;
+    micMerger: ChannelMergerNode | null;
     // Secondary input device: captured stereo + no voice-processing, mixed
     // directly into outDest alongside the mic chain.
     secondarySource: MediaStreamAudioSourceNode | null;
@@ -413,6 +419,8 @@ export function useMediasoup() {
       activeSlot: 0,
       fileVolumeGain: null,
       micStream: null,
+      micSplitter: null,
+      micMerger: null,
       secondarySource: null,
       secondaryGain: null,
       secondaryStream: null,
@@ -421,24 +429,55 @@ export function useMediasoup() {
   }, [store]);
 
   // (Re)route the raw mic into the outgoing graph. Idempotent for a given
-  // stream; re-runs when the mic is re-acquired (track died / device change).
+  // stream; re-runs when the mic is re-acquired (track died / device change) or
+  // when the selected input pair changes (`force`, same stream).
+  //
+  // For a multichannel capture (>2 channels, e.g. a Zoom L12 with voice
+  // processing off) we insert micSource → ChannelSplitter → ChannelMerger to
+  // pick ONE stereo input pair (1/2, 3/4, …) before micGain. A normal 1/2
+  // channel mic connects straight to micGain, exactly as before. The chosen
+  // channel count is published to the store so the UI can offer the pair picker.
   const connectMicToGraph = useCallback(
-    (stream: MediaStream) => {
+    (stream: MediaStream, force = false) => {
       const g = ensureOutGraph();
-      if (g.micStream === stream && g.micSource) return;
+      if (!force && g.micStream === stream && g.micSource) return;
+      // Tear down the previous mic path (source + any split nodes). The mic
+      // monitor edge lives on micGain (a permanent node), so it survives.
       g.micSource?.disconnect();
-      g.micSource = sharedAudioContext.createMediaStreamSource(stream);
-      g.micSource.connect(g.micGain);
-      // The mic monitor edge lives on micGain (a permanent node), not on
-      // micSource — so it survives this re-acquisition and needs no re-wiring here.
+      g.micSplitter?.disconnect();
+      g.micMerger?.disconnect();
+      g.micSplitter = null;
+      g.micMerger = null;
+
+      const source = sharedAudioContext.createMediaStreamSource(stream);
+      const count = streamChannelCount(stream);
+      store.getState().setMicChannelCount(count);
+
+      if (count > 2) {
+        const pairs = Math.floor(count / 2);
+        const pair = Math.min(Math.max(0, store.getState().micInputPair), pairs - 1);
+        const splitter = sharedAudioContext.createChannelSplitter(count);
+        const merger = sharedAudioContext.createChannelMerger(2);
+        source.connect(splitter);
+        splitter.connect(merger, pair * 2, 0);
+        splitter.connect(merger, pair * 2 + 1, 1);
+        merger.connect(g.micGain);
+        g.micSplitter = splitter;
+        g.micMerger = merger;
+      } else {
+        source.connect(g.micGain);
+      }
+
+      g.micSource = source;
       g.micStream = stream;
     },
-    [ensureOutGraph],
+    [ensureOutGraph, store],
   );
 
   // --- Device selection (set in the lobby or via the in-call settings) ---
   const micDeviceId = useRoomStore((s) => s.micDeviceId);
   const speakerDeviceId = useRoomStore((s) => s.speakerDeviceId);
+  const micInputPair = useRoomStore((s) => s.micInputPair);
   const voiceProcessingEnabled = useRoomStore((s) => s.voiceProcessingEnabled);
   const secondaryEnabled = useRoomStore((s) => s.secondaryEnabled);
   const secondaryDeviceId = useRoomStore((s) => s.secondaryDeviceId);
@@ -491,6 +530,16 @@ export function useMediasoup() {
       cancelled = true;
     };
   }, [micDeviceId, voiceProcessingEnabled, connectMicToGraph, store]);
+
+  // Input-pair change (multichannel interface): rewire the split from the
+  // EXISTING mic stream — no getUserMedia round-trip, so it's glitch-free.
+  // A no-op unless the current capture actually has >2 channels.
+  useEffect(() => {
+    const g = outGraphRef.current;
+    if (g?.micStream && (g.micSplitter || g.micMerger)) {
+      connectMicToGraph(g.micStream, true);
+    }
+  }, [micInputPair, connectMicToGraph]);
 
   // Track previously-applied secondary settings so a monitor-only change can
   // skip the getUserMedia round-trip (mirrors prevMicSettingsRef pattern).
@@ -2299,6 +2348,8 @@ export function useMediasoup() {
     const g = outGraphRef.current;
     if (g) {
       g.micSource?.disconnect();
+      g.micSplitter?.disconnect();
+      g.micMerger?.disconnect();
       g.micGain.disconnect();
       g.limiter.disconnect();
       g.displaySource?.disconnect();

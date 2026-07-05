@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Mic, MicOff } from "lucide-react";
 import { useRoomStore, MAX_MIC_GAIN } from "../stores/room";
 import { applySpeakerToContext } from "../lib/audio-devices";
-import { microphoneConstraints } from "../lib/microphone";
+import { microphoneConstraints, streamChannelCount } from "../lib/microphone";
 import { DeviceSettings } from "./DeviceSettings";
 import { m } from "../paraglide/messages.js";
 
@@ -58,6 +58,7 @@ export function MicPreview() {
   const micDeviceId = useRoomStore((s) => s.micDeviceId);
   const speakerDeviceId = useRoomStore((s) => s.speakerDeviceId);
   const voiceProcessingEnabled = useRoomStore((s) => s.voiceProcessingEnabled);
+  const micInputPair = useRoomStore((s) => s.micInputPair);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState("");
 
@@ -121,8 +122,25 @@ export function MicPreview() {
     const ctx = new AudioContext();
     if (speakerId) applySpeakerToContext(ctx, speakerId);
     const source = ctx.createMediaStreamSource(stream);
+    // Publish the captured channel count so DeviceSettings can offer the input
+    // pair picker (>2 = multichannel interface). With a multichannel capture,
+    // split out the selected stereo pair so the preview/monitor matches what
+    // peers will receive; a normal 1/2-channel mic feeds `gain` directly.
+    const count = streamChannelCount(stream);
+    useRoomStore.getState().setMicChannelCount(count);
     const gain = ctx.createGain();
     gain.gain.value = micGain;
+    let head: AudioNode = source;
+    if (count > 2) {
+      const pairs = Math.floor(count / 2);
+      const pair = Math.min(Math.max(0, useRoomStore.getState().micInputPair), pairs - 1);
+      const splitter = ctx.createChannelSplitter(count);
+      const merger = ctx.createChannelMerger(2);
+      source.connect(splitter);
+      splitter.connect(merger, pair * 2, 0);
+      splitter.connect(merger, pair * 2 + 1, 1);
+      head = merger;
+    }
     const limiter = ctx.createDynamicsCompressor();
     limiter.threshold.value = LIMITER.threshold;
     limiter.knee.value = LIMITER.knee;
@@ -136,7 +154,7 @@ export function MicPreview() {
     // Use headphones to avoid the open mic feeding back through the speakers.
     const monitor = ctx.createGain();
     monitor.gain.value = 1;
-    source.connect(gain);
+    head.connect(gain);
     gain.connect(limiter);
     limiter.connect(analyser);
     analyser.connect(monitor);
@@ -191,20 +209,21 @@ export function MicPreview() {
   // Restart an active preview on the newly picked mic. Guarded by a prev-ref
   // so unrelated dep identity changes (the gain slider re-creating `start`)
   // never restart the test mid-adjustment.
-  const prevMicSettingsRef = useRef({ micDeviceId, voiceProcessingEnabled });
+  const prevMicSettingsRef = useRef({ micDeviceId, voiceProcessingEnabled, micInputPair });
   useEffect(() => {
     const previous = prevMicSettingsRef.current;
     if (
       previous.micDeviceId === micDeviceId &&
-      previous.voiceProcessingEnabled === voiceProcessingEnabled
+      previous.voiceProcessingEnabled === voiceProcessingEnabled &&
+      previous.micInputPair === micInputPair
     )
       return;
-    prevMicSettingsRef.current = { micDeviceId, voiceProcessingEnabled };
+    prevMicSettingsRef.current = { micDeviceId, voiceProcessingEnabled, micInputPair };
     if (streamRef.current) {
       stop();
       void start();
     }
-  }, [micDeviceId, voiceProcessingEnabled, stop, start]);
+  }, [micDeviceId, voiceProcessingEnabled, micInputPair, stop, start]);
 
   // Live-apply a speaker change to an active preview's context.
   useEffect(() => {

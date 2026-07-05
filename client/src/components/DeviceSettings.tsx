@@ -14,6 +14,10 @@ export function DeviceSettings() {
   const setMicDeviceId = useRoomStore((s) => s.setMicDeviceId);
   const setSpeakerDeviceId = useRoomStore((s) => s.setSpeakerDeviceId);
 
+  const micInputPair = useRoomStore((s) => s.micInputPair);
+  const micChannelCount = useRoomStore((s) => s.micChannelCount);
+  const setMicInputPair = useRoomStore((s) => s.setMicInputPair);
+
   const secondaryEnabled = useRoomStore((s) => s.secondaryEnabled);
   const secondaryDeviceId = useRoomStore((s) => s.secondaryDeviceId);
   const secondaryMonitor = useRoomStore((s) => s.secondaryMonitor);
@@ -28,6 +32,8 @@ export function DeviceSettings() {
   const [speakers, setSpeakers] = useState<MediaDeviceInfo[]>([]);
   const micSelectId = useId();
   const micHintId = useId();
+  const micPairSelectId = useId();
+  const micPairHintId = useId();
   const speakerSelectId = useId();
   const secondaryCheckId = useId();
   const secondaryHintId = useId();
@@ -84,6 +90,37 @@ export function DeviceSettings() {
           ))}
         </select>
       </div>
+
+      {/* Multichannel interface (e.g. Zoom L12): pick which stereo input pair to
+          transmit. Only shown when the current capture delivered >2 channels,
+          which only happens with voice processing OFF — so a normal 1/2-channel
+          card never sees this, and it disappears when noise suppression is on. */}
+      {micChannelCount > 2 && (
+        <div>
+          <label
+            htmlFor={micPairSelectId}
+            className="mb-1 block text-xs font-medium text-sonic-300"
+          >
+            {m.settings_mic_input_pair_label()}
+          </label>
+          <select
+            id={micPairSelectId}
+            value={Math.min(micInputPair, Math.floor(micChannelCount / 2) - 1)}
+            onChange={(e) => setMicInputPair(parseInt(e.target.value, 10))}
+            aria-describedby={micPairHintId}
+            className={selectClass}
+          >
+            {Array.from({ length: Math.floor(micChannelCount / 2) }, (_, i) => (
+              <option key={i} value={i}>
+                {m.settings_mic_input_pair_option({ a: i * 2 + 1, b: i * 2 + 2 })}
+              </option>
+            ))}
+          </select>
+          <p id={micPairHintId} className="mt-1 text-xs text-sonic-400">
+            {m.settings_mic_input_pair_hint()}
+          </p>
+        </div>
+      )}
 
       {canSelectSpeaker() && (
         <div>

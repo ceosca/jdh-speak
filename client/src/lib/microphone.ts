@@ -8,7 +8,13 @@ export const isIOS =
 
 // Mic capture constraints. One per-user choice:
 //   - voiceProcessingEnabled: echo cancel / noise suppress / auto gain.
-// Voice is always captured as stereo 2 channels (128 kbps on the wire).
+// With voice processing ON we always capture stereo 2 channels — the browser's
+// processing chain downmixes to (at most) 2 anyway, so a multichannel interface
+// (e.g. a Zoom L12) behaves exactly like a plain 2-input card. With voice
+// processing OFF we ask for the device's full channel count (`ideal: 32`, the
+// browser clamps to what the device offers) so a multichannel interface exposes
+// all its inputs; the caller then splits out the chosen input pair (1/2, 3/4,…).
+// A normal 1/2-channel mic just returns 1/2 here, so nothing changes for it.
 // On iOS we drop the sample-rate hint so WebKit can use the device-native rate
 // (forcing a rate a route can't honour garbles capture); WebRTC/Opus negotiates
 // its own rate regardless. The device is pinned with `exact` so the browser
@@ -21,13 +27,22 @@ export function microphoneConstraints(
   voiceProcessingEnabled: boolean,
 ): MediaTrackConstraints {
   return {
-    channelCount: 2,
+    channelCount: voiceProcessingEnabled ? 2 : { ideal: 32 },
     ...(isIOS ? {} : { sampleRate: 48000 }),
     echoCancellation: voiceProcessingEnabled,
     noiseSuppression: voiceProcessingEnabled,
     autoGainControl: voiceProcessingEnabled,
     ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
   };
+}
+
+// How many input channels a captured stream actually delivered. Used to decide
+// whether to offer input-pair selection (>2 = multichannel interface). Falls
+// back to 2 when the browser doesn't report a channelCount setting.
+export function streamChannelCount(stream: MediaStream): number {
+  const track = stream.getAudioTracks()[0];
+  const count = track?.getSettings().channelCount;
+  return typeof count === "number" && count > 0 ? count : 2;
 }
 
 // Acquire the microphone for the selected device. We pin the device with `exact`

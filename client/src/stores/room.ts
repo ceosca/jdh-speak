@@ -25,6 +25,7 @@ function loadMicGain(): number {
 // micGain: persisted, and carried from the lobby preview into the call.
 const MIC_DEVICE_KEY = "jdh-speak:micDeviceId";
 const SPEAKER_DEVICE_KEY = "jdh-speak:speakerDeviceId";
+const MIC_INPUT_PAIR_KEY = "jdh-speak:micInputPair";
 const VOICE_PROCESSING_KEY = "jdh-speak:voiceProcessing";
 const SECONDARY_ENABLED_KEY = "jdh-speak:secondaryEnabled";
 const SECONDARY_DEVICE_KEY = "jdh-speak:secondaryDeviceId";
@@ -168,6 +169,14 @@ interface RoomState {
   // and the in-call media graph both follow these (see DeviceSettings).
   micDeviceId: string;
   speakerDeviceId: string;
+  // Multichannel input support (e.g. a Zoom L12): when the primary mic is
+  // captured with voice processing OFF and the device exposes >2 channels, the
+  // media graph splits out ONE stereo input pair. micInputPair is the 0-based
+  // pair index (0 = channels 1/2, 1 = 3/4, …), persisted. micChannelCount is the
+  // channel count the current capture actually delivered (runtime only, drives
+  // whether the pair picker is shown); 2 = a normal card, behaves as before.
+  micInputPair: number;
+  micChannelCount: number;
   // Browser voice processing (echo cancellation, noise suppression and
   // automatic gain). Defaults on for iOS/iPadOS and off elsewhere.
   voiceProcessingEnabled: boolean;
@@ -238,6 +247,8 @@ interface RoomState {
   setMicGain: (gain: number) => void;
   setMicDeviceId: (deviceId: string) => void;
   setSpeakerDeviceId: (deviceId: string) => void;
+  setMicInputPair: (pair: number) => void;
+  setMicChannelCount: (count: number) => void;
   setVoiceProcessingEnabled: (enabled: boolean) => void;
   setMicMonitor: (monitor: boolean) => void;
   setSecondaryEnabled: (enabled: boolean) => void;
@@ -283,6 +294,8 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   micGain: loadMicGain(),
   micDeviceId: loadString(MIC_DEVICE_KEY),
   speakerDeviceId: loadString(SPEAKER_DEVICE_KEY),
+  micInputPair: Math.max(0, parseInt(loadString(MIC_INPUT_PAIR_KEY), 10) || 0),
+  micChannelCount: 2,
   voiceProcessingEnabled: loadVoiceProcessing(),
   micMonitor: loadString(MIC_MONITOR_KEY) === "true",
   shareMonitor: loadString(SHARE_MONITOR_KEY) === "true",
@@ -347,6 +360,12 @@ export const useRoomStore = create<RoomState>((set, get) => ({
     saveString(MIC_DEVICE_KEY, micDeviceId);
     set({ micDeviceId });
   },
+  setMicInputPair: (micInputPair) => {
+    const pair = Math.max(0, Math.floor(micInputPair));
+    saveString(MIC_INPUT_PAIR_KEY, String(pair));
+    set({ micInputPair: pair });
+  },
+  setMicChannelCount: (micChannelCount) => set({ micChannelCount }),
   setSpeakerDeviceId: (speakerDeviceId) => {
     saveString(SPEAKER_DEVICE_KEY, speakerDeviceId);
     set({ speakerDeviceId });
