@@ -47,3 +47,8 @@ coverage/
 
 # Local Claude Code dev config (preview launch.json, etc.)
 .claude/
+
+# Operator-provided event sounds: the audio files are per-deployment (dropped on
+# the server), so they're not versioned — but keep the README that documents them.
+sounds/*
+!sounds/README.md

@@ -236,6 +236,17 @@ async function main() {
   const indexHtmlPath = path.join(clientDist, "index.html");
   app.use(express.static(clientDist, { index: false }));
 
+  // Optional operator-provided event sounds, served from repo-root `sounds/`
+  // (gitignored, populated by the operator). Drop e.g. sounds/join.mp3 and every
+  // client plays it on join instead of the built-in synth cue — no rebuild
+  // needed, mirroring the INSTANCE_NAME rebrand model. Absent dir/file → the
+  // static handler 404s and the client falls back to the synth (see
+  // client/src/lib/sounds.ts). Recognised names: <cue>.{mp3,wav,ogg} where cue
+  // is join, leave, message, mute, unmute, thunk, share-start, share-stop,
+  // peer-mute, peer-unmute.
+  const soundsDir = path.resolve(__dirname, "../../sounds");
+  app.use("/sounds", express.static(soundsDir));
+
   // Inject the operator-configurable instance name into the served index.html so
   // the pre-built static client can be rebranded via INSTANCE_NAME in .env with
   // no rebuild: an inline config script the client reads before it mounts (see

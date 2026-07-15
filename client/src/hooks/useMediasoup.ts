@@ -5,7 +5,7 @@ import type { Transport, Producer, Consumer } from "mediasoup-client/types";
 import { forceOpusParams } from "../lib/sdp-munger";
 import { applySpeakerToContext } from "../lib/audio-devices";
 import { isIOS, getMicrophoneStream } from "../lib/microphone";
-import { playCue } from "../lib/sounds";
+import { playCue, preloadCueSamples } from "../lib/sounds";
 import { formatMessage, RateLimiter, META_SEP, type ChatMessage } from "../lib/chat";
 import {
   announce_chat_hint,
@@ -85,6 +85,10 @@ const sharedAudioContext = new AudioContext({
   ...(isIOS ? {} : { sampleRate: 48000 }),
   latencyHint: "interactive",
 });
+
+// Probe once for any operator-provided cue samples (/sounds/<cue>.<ext>) so the
+// first join/leave already uses them; cues with no file fall back to the synth.
+preloadCueSamples(sharedAudioContext);
 
 // setTargetAtTime time-constant (seconds) for per-peer gain ramps. Smaller = snappier.
 const GAIN_RAMP = 0.03;

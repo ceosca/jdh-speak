@@ -20,6 +20,67 @@ export type Cue =
   | "peer-mute"
   | "peer-unmute";
 
+// Every cue, so the operator-sample system can probe/override each one.
+const ALL_CUES: Cue[] = [
+  "mute",
+  "unmute",
+  "join",
+  "leave",
+  "message",
+  "thunk",
+  "share-start",
+  "share-stop",
+  "peer-mute",
+  "peer-unmute",
+];
+
+// --- Operator-provided cue samples (optional) --------------------------------
+// The operator can drop an audio file per cue on the server, served at
+// `/sounds/<cue>.<ext>` (e.g. /sounds/join.mp3). When a cue has a file, EVERY
+// client plays that file locally on the event (same local path as the synth —
+// never routed into the mic, so it's not sent through the call); when it has
+// none, we fall back to the synthesised cue below. Files are decoded once and
+// cached. Extensions are tried in order; the first that loads wins.
+const SAMPLE_EXTS = ["mp3", "wav", "ogg"] as const;
+// Cache: AudioBuffer = a file exists and is decoded; null = probed, none found;
+// undefined (absent key) = not probed yet.
+const sampleCache = new Map<Cue, AudioBuffer | null>();
+
+async function loadCueSample(ctx: BaseAudioContext, cue: Cue): Promise<AudioBuffer | null> {
+  for (const ext of SAMPLE_EXTS) {
+    try {
+      const res = await fetch(`/sounds/${cue}.${ext}`, { cache: "force-cache" });
+      if (!res.ok) continue;
+      const buf = await ctx.decodeAudioData(await res.arrayBuffer());
+      sampleCache.set(cue, buf);
+      return buf;
+    } catch {
+      // Not this extension (404 / not audio / decode failed) — try the next.
+    }
+  }
+  sampleCache.set(cue, null); // probed, nothing usable → synth from now on
+  return null;
+}
+
+// Probe every cue once so the FIRST join/leave already uses the operator file
+// (not just later ones). Fire-and-forget; fetches are cheap and cached. Safe to
+// call while the context is suspended — fetch + decodeAudioData don't need it
+// running. Call it once when the shared AudioContext is created.
+export function preloadCueSamples(ctx: BaseAudioContext) {
+  for (const cue of ALL_CUES) {
+    if (!sampleCache.has(cue)) void loadCueSample(ctx, cue);
+  }
+}
+
+function playSample(ctx: AudioContext, buffer: AudioBuffer) {
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  // Play the file as authored (operator normalises their own file). Routed to
+  // the context destination only — identical local-only path as the synth cues.
+  src.connect(ctx.destination);
+  src.start();
+}
+
 interface ToneSpec {
   freq: number;
   // Optional glide target — the pitch ramps from `freq` to `glideTo` over `dur`.
@@ -240,6 +301,16 @@ function creak(ctx: BaseAudioContext, spec: CreakSpec) {
 
 export function playCue(ctx: AudioContext, cue: Cue) {
   if (ctx.state === "suspended") ctx.resume();
+
+  // Operator override: if this cue has a decoded sample, play the file and stop.
+  // If it hasn't been probed yet (undefined), kick off a probe for next time and
+  // fall through to the synth for THIS event — no waiting. `null` = known-absent.
+  const sample = sampleCache.get(cue);
+  if (sample) {
+    playSample(ctx, sample);
+    return;
+  }
+  if (sample === undefined) void loadCueSample(ctx, cue);
 
   switch (cue) {
     // Mute/unmute are sustained pitch SLIDES (portamento), not blips: a mellow
