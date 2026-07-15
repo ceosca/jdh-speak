@@ -49,7 +49,10 @@ const sampleCache = new Map<Cue, AudioBuffer | null>();
 async function loadCueSample(ctx: BaseAudioContext, cue: Cue): Promise<AudioBuffer | null> {
   for (const ext of SAMPLE_EXTS) {
     try {
-      const res = await fetch(`/sounds/${cue}.${ext}`, { cache: "force-cache" });
+      // no-cache (revalidate), NOT force-cache: files change per deployment, and
+      // force-cache could serve a stale earlier response (e.g. a 404/HTML from
+      // before the file was added) so the cue silently never picks up the file.
+      const res = await fetch(`/sounds/${cue}.${ext}`, { cache: "no-cache" });
       if (!res.ok) continue;
       const buf = await ctx.decodeAudioData(await res.arrayBuffer());
       sampleCache.set(cue, buf);
