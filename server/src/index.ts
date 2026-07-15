@@ -244,8 +244,11 @@ async function main() {
   // client/src/lib/sounds.ts). Recognised names: <cue>.{mp3,wav,ogg} where cue
   // is join, leave, message, mute, unmute, thunk, share-start, share-stop,
   // peer-mute, peer-unmute.
+  // fallthrough:false so a missing file returns a real 404 here instead of
+  // falling through to the SPA catch-all (which would answer 200 + index.html,
+  // making the client fetch and try to decode HTML as audio on every probe).
   const soundsDir = path.resolve(__dirname, "../../sounds");
-  app.use("/sounds", express.static(soundsDir));
+  app.use("/sounds", express.static(soundsDir, { fallthrough: false }));
 
   // Inject the operator-configurable instance name into the served index.html so
   // the pre-built static client can be rebranded via INSTANCE_NAME in .env with
