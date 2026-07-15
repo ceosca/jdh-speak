@@ -8,6 +8,35 @@
 
 ---
 
+## 2026-07-15
+
+### `25ec76e` — Sonidos de eventos personalizables por el operador (con fallback sintetizado)
+
+- **Qué:** el operador puede **reemplazar los sonidos** de la app (entrar, salir,
+  chat, silenciar, compartir…) dejando un archivo de audio por evento en el
+  servidor. Si un evento tiene archivo, **todos los clientes** lo reproducen al
+  ocurrir; si no tiene, suena el **sonido sintetizado** de siempre. Un solo sonido
+  para toda la sala.
+- **Cómo:** el servidor sirve la carpeta raíz `sounds/` en `/sounds`
+  (`server/src/index.ts`, `express.static` con `fallthrough:false` para que un
+  archivo ausente dé 404 y no caiga a la SPA). El cliente
+  (`client/src/lib/sounds.ts`) sondea `/sounds/<cue>.{mp3,wav,ogg}` con
+  `cache:"no-cache"`, decodifica y cachea una vez (`preloadCueSamples` al crear el
+  `AudioContext`); `playCue` reproduce el sample si existe, si no el sintetizado.
+  Es **local** (mismo camino que el sintetizado): no se transmite por la llamada,
+  cada quien reproduce su copia — cero ancho de banda extra.
+- **Nombres reconocidos:** `<cue>.mp3` (o `.wav`/`.ogg`) donde cue es `join`,
+  `leave`, `message`, `mute`, `unmute`, `peer-mute`, `peer-unmute`, `thunk`,
+  `share-start`, `share-stop` (ver `sounds/README.md`). Los audios **no** se
+  versionan (son por despliegue); solo el README.
+- **Operación:** dejar/añadir archivos en `/home/pi/jdh-speak/sounds/` **no**
+  requiere rebuild ni reinicio (recarga forzada en el navegador para saltar
+  caché). El único reinicio fue el de añadir la ruta la primera vez.
+- **Por qué:** poder darle identidad sonora a la instancia sin tocar código, igual
+  que el rebrand por `INSTANCE_NAME`.
+
+---
+
 ## 2026-06-29
 
 ### `a87f76f` — Stream de URL: solo volumen; y monitor opcional del audio compartido
