@@ -8,6 +8,9 @@ export const DEFAULT_INSTANCE_NAME = "JDH Speak";
 
 interface InstanceConfig {
   instanceName?: string;
+  // ICE servers for WebRTC, also injected by the server from its .env — read via
+  // getIceServers() in lib/ice.ts (kept here since this declares the global).
+  iceServers?: RTCIceServer[];
 }
 
 declare global {

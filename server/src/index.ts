@@ -39,6 +39,41 @@ const PORT = parseInt(process.env.PORT || "3100", 10);
 // client is rebranded without a rebuild. Defaults to "JDH Speak".
 const INSTANCE_NAME = process.env.INSTANCE_NAME?.trim() || "JDH Speak";
 
+// ICE servers, injected into the served index.html like INSTANCE_NAME so the
+// TURN can be changed by editing .env + restarting — no client rebuild, and no
+// credentials in the repo (see docs/turn-server.md).
+//   TURN_URLS       comma-separated, e.g. "turn:host:3478?transport=udp,turn:host:3478?transport=tcp"
+//   TURN_USERNAME / TURN_CREDENTIAL   long-term credentials for those URLs
+//   STUN_URLS       optional override; defaults to Google's public STUN
+// A TURN entry is only emitted when all three TURN_* vars are set; otherwise we
+// ship STUN only. We never hardcode a third-party TURN again.
+const DEFAULT_STUN = "stun:stun.l.google.com:19302";
+
+function buildIceServers(): { urls: string | string[]; username?: string; credential?: string }[] {
+  const split = (v: string | undefined) =>
+    (v ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+  const stunUrls = split(process.env.STUN_URLS);
+  const servers: { urls: string | string[]; username?: string; credential?: string }[] = [
+    { urls: stunUrls.length ? stunUrls : [DEFAULT_STUN] },
+  ];
+
+  const turnUrls = split(process.env.TURN_URLS);
+  const username = process.env.TURN_USERNAME?.trim();
+  const credential = process.env.TURN_CREDENTIAL?.trim();
+  if (turnUrls.length && username && credential) {
+    servers.push({ urls: turnUrls, username, credential });
+  } else if (turnUrls.length) {
+    console.warn("[ice] TURN_URLS set but TURN_USERNAME/TURN_CREDENTIAL missing — ignoring TURN");
+  }
+  return servers;
+}
+
+const ICE_SERVERS = buildIceServers();
+
 async function main() {
   // Create mediasoup workers
   const workers: Worker[] = [];
@@ -266,7 +301,10 @@ async function main() {
     // JS object literal; escape "<" so a name containing "</script>" can't break
     // out of the inline <script>. Injected right after <head> so it runs before
     // the (deferred) app bundle.
-    const configJson = JSON.stringify({ instanceName: INSTANCE_NAME }).replace(/</g, "\\u003c");
+    const configJson = JSON.stringify({
+      instanceName: INSTANCE_NAME,
+      iceServers: ICE_SERVERS,
+    }).replace(/</g, "\\u003c");
     html = html.replace(
       "<head>",
       `<head><script>window.__JDH_SPEAK_CONFIG__=${configJson};</script>`,

@@ -4,10 +4,15 @@ import os from "node:os";
 
 const numCores = os.cpus().length;
 
+// The router forwards 40000-40100 to this host. That range is SHARED with our
+// own coturn (see docs/turn-server.md): mediasoup takes the lower half and
+// coturn's relay range takes 40060-40100, so no new ports had to be opened on
+// the router. Two processes can't bind the same port — keep these disjoint.
+// 60 ports is one per WebRtcTransport (~2 per SFU peer), i.e. ~30 participants.
 export const workerSettings: WorkerSettings = {
   logLevel: "warn",
   rtcMinPort: 40000,
-  rtcMaxPort: 40100,
+  rtcMaxPort: 40059,
 };
 
 export const numWorkers = Math.max(1, numCores);

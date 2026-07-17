@@ -6,6 +6,7 @@ import { forceOpusParams } from "../lib/sdp-munger";
 import { applySpeakerToContext } from "../lib/audio-devices";
 import { isIOS, getMicrophoneStream } from "../lib/microphone";
 import { playCue, preloadCueSamples } from "../lib/sounds";
+import { getIceServers } from "../lib/ice";
 import { formatMessage, RateLimiter, META_SEP, type ChatMessage } from "../lib/chat";
 import {
   announce_chat_hint,
@@ -51,31 +52,12 @@ interface FileSlot {
   objectUrl: string | null;
 }
 
-// ICE servers — self-hosted coturn at turn.oriolgomez.com (shared with the
-// games on the same VPS). STUN is tried first, so most P2P connections
-// never hit the relay; TURN/TURNS only kick in for symmetric NATs and
-// restrictive corporate/hotel networks. Credentials are visible to
-// clients by design (WebRTC requires them in the browser); coturn's
-// denied-peer-ip rules limit blast radius.
-const ICE_SERVERS: RTCIceServer[] = [
-  { urls: "stun:turn.oriolgomez.com:3478" },
-  { urls: "stun:stun.l.google.com:19302" },
-  {
-    urls: "turn:turn.oriolgomez.com:3478?transport=udp",
-    username: "gamesturn",
-    credential: "sin6V0gFokHz78gM0GDfXmat",
-  },
-  {
-    urls: "turn:turn.oriolgomez.com:3478?transport=tcp",
-    username: "gamesturn",
-    credential: "sin6V0gFokHz78gM0GDfXmat",
-  },
-  {
-    urls: "turns:turn.oriolgomez.com:5349?transport=tcp",
-    username: "gamesturn",
-    credential: "sin6V0gFokHz78gM0GDfXmat",
-  },
-];
+// ICE servers come from the server's .env at runtime (see lib/ice.ts and
+// docs/turn-server.md) — no third-party TURN or credentials in this repo.
+// STUN is tried first, so most P2P connections never hit the relay; TURN only
+// kicks in for symmetric NATs and restrictive corporate/hotel networks. TURN
+// credentials are visible to clients by design (WebRTC needs them in the
+// browser); coturn's denied-peer-ip rules limit the blast radius.
 
 // Shared AudioContext — single output buffer for all peers (lower latency than
 // one per peer). On iOS we let it adopt the device-native rate instead of pinning
@@ -676,7 +658,7 @@ export function useMediasoup() {
       if (localStream) connectMicToGraph(localStream);
 
       const pc = new RTCPeerConnection({
-        iceServers: ICE_SERVERS,
+        iceServers: getIceServers(),
       });
 
       // Send the processed outgoing track (mic gain + limiter, + shared audio),
@@ -852,7 +834,7 @@ export function useMediasoup() {
       );
       const sendTransport = device.createSendTransport({
         ...(sendRes.params as Parameters<typeof device.createSendTransport>[0]),
-        iceServers: ICE_SERVERS,
+        iceServers: getIceServers(),
       });
 
       sendTransport.on("connect", async ({ dtlsParameters }, callback, errback) => {
@@ -888,7 +870,7 @@ export function useMediasoup() {
       );
       const recvTransport = device.createRecvTransport({
         ...(recvRes.params as Parameters<typeof device.createRecvTransport>[0]),
-        iceServers: ICE_SERVERS,
+        iceServers: getIceServers(),
       });
 
       recvTransport.on("connect", async ({ dtlsParameters }, callback, errback) => {
