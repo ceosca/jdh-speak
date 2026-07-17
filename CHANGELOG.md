@@ -8,6 +8,30 @@
 
 ---
 
+## 2026-07-17
+
+### `docs` — Guía para montar un TURN propio (tarea pendiente de infra)
+
+- **Qué:** nueva **[`docs/turn-server.md`](docs/turn-server.md)** — runbook
+  completo para dejar de depender del coturn ajeno (`turn.oriolgomez.com`, el VPS
+  de Oriol compartido con sus juegos) y montar el nuestro. Aviso destacado en
+  `CLAUDE.md` para que cualquier Claude lo vea al hacer pull.
+- **Por qué importa:** el TURN es el *fallback* de conectividad. Si ese servidor
+  ajeno se cae o rota credenciales, se rompe el **P2P** en NAT simétrico / redes
+  restrictivas y el **fallback TCP/TLS del SFU**. El camino normal del SFU (UDP
+  directo al Pi) **no** se ve afectado — por eso el problema está **latente**: no
+  se nota hasta que alguien entra desde una red difícil.
+- **Contexto útil:** el SFU anda estable con gente de afuera → el Pi **ya es
+  alcanzable** (no hay CGNAT), así que correr coturn en el mismo Pi es viable;
+  solo hay que abrirle sus puertos (3478 udp/tcp, 5349 tcp, 49152–65535 udp).
+- **Incluye:** requisitos, config de `turnserver.conf` (con `external-ip` para el
+  NAT del router, rangos privados denegados), firewall/reenvío, TLS opcional,
+  alternativa administrada (Cloudflare/Metered), **el cambio de código** para que
+  `ICE_SERVERS` salga del entorno (inyectado por el server como ya se hace con
+  `INSTANCE_NAME` → sin rebuild), cómo probar candidatos `relay`, y un checklist.
+
+---
+
 ## 2026-07-15
 
 ### `25ec76e` — Sonidos de eventos personalizables por el operador (con fallback sintetizado)

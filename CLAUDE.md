@@ -31,6 +31,20 @@ work if you've lost context. **Convention: on every `git push`, append an entry*
 for what shipped, so Cristian (and any future Claude) can follow the project
 without re-reading all the code.
 
+## 📌 Pending infra task — set up our own TURN
+
+The ICE servers are **hardcoded** in `client/src/hooks/useMediasoup.ts`
+(`ICE_SERVERS`) and point at a **third-party coturn** (`turn.oriolgomez.com`,
+Oriol's VPS, shared with his games). It's borrowed: if it goes down or rotates
+credentials, P2P on restrictive NATs — and the SFU's TCP/TLS fallback — break.
+The normal SFU path (direct UDP to the Pi) is unaffected, which is why this is
+**latent**: nothing looks broken until someone joins from a hard network.
+
+The Pi is already publicly reachable (the SFU works for remote peers), so
+self-hosting coturn on it is viable. **Full runbook — why it matters, ports,
+coturn config, and the code change to make ICE env-configurable (no rebuild):
+[`docs/turn-server.md`](docs/turn-server.md).**
+
 ## What this is
 
 JDH Speak — low-latency browser audio conferencing (voice) with hi-fi stereo music casting. pnpm monorepo:
