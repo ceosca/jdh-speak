@@ -1,183 +1,171 @@
-# Montar un TURN propio (pendiente importante)
+# Nuestro TURN propio (montado ✅)
 
-> **Para Cristian y su Claude.** Esto es una tarea de infraestructura pendiente,
-> no un bug. Está escrito para poder ejecutarse sin contexto previo.
+> **Para Cristian y su Claude.** Esto ya está **hecho y funcionando**. Este
+> documento describe **lo que hay montado**, por qué se decidió así, y cómo
+> verificarlo o rehacerlo. Está escrito para poder leerse sin contexto previo.
 
-## Por qué importa (el problema hoy)
+## Estado
 
-Los servidores ICE están **hardcodeados** en
-[`client/src/hooks/useMediasoup.ts`](../client/src/hooks/useMediasoup.ts) (busca
-`ICE_SERVERS`, ~línea 60) y apuntan a un **coturn de un tercero**:
+El coturn de terceros (`turn.oriolgomez.com`, el VPS prestado de Oriol) **ya no
+está en el código**. Corremos **nuestro propio coturn en la Raspberry**, y los
+servidores ICE se configuran desde el `.env` del despliegue.
 
-```
-turn.oriolgomez.com   (usuario "gamesturn", credencial en el código)
-```
+- [x] coturn instalado y configurado en el Pi
+- [x] Puertos abiertos (solo hizo falta **uno nuevo**: 3478)
+- [x] `external-ip` auto-actualizado si cambia la IP pública
+- [x] ICE configurable por env (server inyecta → cliente lee)
+- [x] Credenciales en el `.env` del despliegue, **no** en el repo
+- [x] `turn.oriolgomez.com` fuera del código
+- [x] Relay verificado (UDP y TCP, con y sin credencial)
 
-Ese servidor es el **VPS de Oriol Gomez, compartido con sus juegos** — no es
-nuestro. Implica:
+## Por qué importaba
 
-- **Dependencia externa fuera de nuestro control:** si se cae, cambia las
-  credenciales o nos saca, se rompe la conectividad en las redes difíciles.
-- **Qué se rompe exactamente:** el TURN es el *fallback*. Afecta a
-  - **P2P** (≤5 participantes): conexiones navegador-a-navegador detrás de NAT
-    simétrico o redes restrictivas (corporativas, hoteles, algunos móviles).
-  - **El fallback TCP/TLS del SFU** cuando la red del cliente bloquea UDP.
-- **No afecta** el camino normal del SFU (media UDP directa al Pi), que es lo que
-  hoy anda estable. Por eso el problema **está latente**: no se nota hasta que
-  alguien entra desde una red jodida.
+El TURN es el *fallback* de conectividad. Afecta a:
 
-**Objetivo:** tener nuestro propio TURN y sacarnos la dependencia de encima.
+- **P2P** (≤5 participantes): navegador-a-navegador detrás de NAT simétrico o
+  redes restrictivas (corporativas, hoteles, algunos móviles).
+- **El fallback TCP del SFU** cuando la red del cliente bloquea UDP.
 
-## Buena noticia: el Pi ya es alcanzable
+**No afecta** el camino normal del SFU (media UDP directa al Pi). Por eso el
+problema era **latente**: no se notaba hasta que alguien entraba desde una red
+jodida. Depender del servidor de un tercero significaba que si se caía o rotaba
+credenciales, eso se rompía sin avisar.
 
-El SFU funciona con gente de afuera, o sea que el Pi **ya tiene IP pública
-alcanzable + reenvío de puertos** (mediasoup usa UDP `40000–40100` y
-`ANNOUNCED_IP`). **No hay CGNAT bloqueando.** Por lo tanto, correr coturn en el
-mismo Pi es viable: solo hay que abrirle sus puertos.
+## La decisión clave: reutilizar el rango de puertos ya abierto
 
-(Si algún día el SFU dejara de funcionar para gente de afuera, revisar CGNAT
-primero: `curl -s ifconfig.me` debe coincidir con la IP de internet del router y
-no empezar en `100.64.–100.127.`)
+El router ya reenviaba **`40000–40100`** a `192.168.4.2` para mediasoup, pero
+mediasoup usa **1 puerto por transporte** y ese rango estaba sobredimensionado.
+En vez de abrir un rango nuevo (el enfoque naíf pedía `49152–65535` = 16.384
+puertos), **se repartió el rango existente**:
 
-## Qué necesita un TURN
+| Servicio | Rango | Dónde se configura |
+|---|---|---|
+| **mediasoup** (SFU) | `40000–40059` | `server/src/mediasoup-config.ts` (`rtcMaxPort`) |
+| **coturn** (relay) | `40060–40100` | `/etc/turnserver.conf` (`min-port`/`max-port`) |
 
-1. **Ser alcanzable desde internet** (✓ ya lo tenemos).
-2. **Puertos abiertos** (reenvío en el router **y** firewall del Pi):
-   - `3478` **UDP y TCP** — TURN/STUN
-   - `5349` **TCP** — TURN sobre TLS (`turns:`), opcional pero muy útil en redes
-     que solo dejan salir 443/TLS
-   - **Rango UDP de relay**: `49152–65535` (es por donde pasa la media relayeada)
-3. **Credenciales** (usuario/clave fijos, o secreto compartido para credenciales
-   temporales).
-4. **(Opcional, para `turns:`)** un dominio apuntando al Pi + certificado
-   Let's Encrypt.
+⚠️ **Deben seguir siendo disjuntos**: dos procesos no pueden bindear el mismo
+puerto. Si algún día se sube `rtcMaxPort`, **chocará con el TURN**.
 
-⚠️ **Ojo con el ancho de banda:** el TURN **reenvía media**. Si una llamada cae a
-relay, el audio de esos peers pasa por la subida del Pi. Para un grupo chico está
-bien; tenerlo en cuenta.
+Así, montar el TURN solo necesitó **1 puerto nuevo en el router**: el `3478`
+(TCP+UDP), que es el puerto de control. Se usa el **estándar** a propósito: un
+TURN en un puerto alto raro lo bloquean justo las redes restrictivas para las que
+existe el TURN.
 
-## Camino A — coturn en el Pi (recomendado)
+**Sin TLS (`turns:`/5349) por ahora:** añade certificado y complejidad, y su
+beneficio real es limitado porque las redes muy restrictivas suelen dejar pasar
+solo el 443, que ya lo ocupa Caddy. El `5349` **ni se abre** (`no-tls`/`no-dtls`).
 
-```bash
-sudo apt update && sudo apt install coturn
-```
+## Qué hay en el Pi
 
-Habilitar el servicio:
-```bash
-sudo sed -i 's/^#TURNSERVER_ENABLED=1/TURNSERVER_ENABLED=1/' /etc/default/coturn
-```
+**`/etc/turnserver.conf`** (no versionado — contiene la credencial; `640
+root:turnserver`). Puntos importantes:
 
-`/etc/turnserver.conf` (mínimo funcional):
 ```conf
 listening-port=3478
-tls-listening-port=5349
+no-tls
+no-dtls
+min-port=40060
+max-port=40100
+external-ip=<IP_PUBLICA>/192.168.4.2
 
-# Rango de relay (abrir en el router y en ufw)
-min-port=49152
-max-port=65535
-
+# Autenticación OBLIGATORIA (sin esto sería un RELAY ABIERTO)
 fingerprint
 lt-cred-mech
-realm=jdh-speak
+realm=jdh.privatedns.org
+user=jdhturn:<credencial larga: openssl rand -hex 24>
 
-# Credencial fija. Generar una larga: openssl rand -hex 24
-user=jdhturn:PONER_UNA_CLAVE_LARGA
+# Cuotas anti-abuso
+user-quota=40
+total-quota=40
+max-bps=250000          # ~2 Mbit/s por sesión; el audio usa ~0,25
 
-# El Pi está detrás del router: mapear IP pública -> IP local del Pi.
-# Si la IP pública es dinámica, ver la nota de DDNS abajo.
-external-ip=IP_PUBLICA/IP_LOCAL_DEL_PI
-
-# Higiene / seguridad
-no-multicast-peers
+# Superficie mínima
 no-cli
-no-tlsv1
-no-tlsv1_1
-# Evitar que el TURN sea usado para tocar la red interna:
-denied-peer-ip=0.0.0.0-0.255.255.255
+no-multicast-peers
+syslog                  # logs a journald (acotados), no un fichero suelto
+
+# Impide usar el TURN para alcanzar la LAN / rangos especiales
 denied-peer-ip=10.0.0.0-10.255.255.255
-denied-peer-ip=127.0.0.0-127.255.255.255
-denied-peer-ip=169.254.0.0-169.254.255.255
-denied-peer-ip=172.16.0.0-172.31.255.255
 denied-peer-ip=192.168.0.0-192.168.255.255
+# … (todos los privados/especiales, IPv4 e IPv6 — ver el fichero)
 ```
 
-Firewall del Pi:
+Además: `TURNSERVER_ENABLED=1` en `/etc/default/coturn`, y ufw con
+`3478/udp` + `3478/tcp` (el rango `40000:40100` ya estaba permitido).
+
+**IP dinámica:** `/usr/local/bin/sonicroom-announce-ip.sh` (timer systemd
+`sonicroom-announce-ip.timer`) actualiza **tanto** `ANNOUNCED_IP` del `.env`
+(mediasoup) **como** el `external-ip` de coturn, y reinicia el servicio que
+corresponda. Si la IP pública cambia y esto no corriera, el TURN anunciaría una
+IP muerta y el relay dejaría de funcionar.
+
+## Cómo está enchufado en la app
+
+Los ICE **ya no están hardcodeados**. El servidor los lee del entorno y los
+inyecta en el `index.html` servido, igual que `INSTANCE_NAME`:
+
+- **`server/src/index.ts`** → `buildIceServers()` lee `TURN_URLS` (separadas por
+  coma), `TURN_USERNAME`, `TURN_CREDENTIAL` y `STUN_URLS` (opcional), y los
+  inyecta como `window.__JDH_SPEAK_CONFIG__.iceServers`. Solo emite el TURN si
+  están las **tres** variables (avisa por log si faltan credenciales).
+- **`client/src/lib/ice.ts`** → `getIceServers()` lee ese global. **Fallback: solo
+  STUN público** si no hay nada configurado. Nunca volver a hardcodear un TURN.
+- **`client/src/hooks/useMediasoup.ts`** → usa `getIceServers()` en sus tres
+  `RTCPeerConnection`.
+
+**`.env` del despliegue** (`/home/pi/jdh-speak/.env`, `chmod 600`, gitignored):
+
 ```bash
-sudo ufw allow 3478/udp
-sudo ufw allow 3478/tcp
-sudo ufw allow 5349/tcp
-sudo ufw allow 49152:65535/udp
+STUN_URLS=stun:jdh.privatedns.org:3478,stun:stun.l.google.com:19302
+TURN_URLS=turn:jdh.privatedns.org:3478?transport=udp,turn:jdh.privatedns.org:3478?transport=tcp
+TURN_USERNAME=jdhturn
+TURN_CREDENTIAL=<la del turnserver.conf>
 ```
-Y **reenviar esos mismos puertos** en el router hacia la IP local del Pi.
 
-Arrancar:
+Se usa el **hostname** (no la IP): el DDNS ya lo mantiene apuntando a la IP
+pública, así que un cambio de IP no rompe a los clientes. Y el STUN es **el
+nuestro** primero, con Google de respaldo.
+
+> Cambiar de TURN/credenciales = editar `.env` + `systemctl restart sonicroom`.
+> **Sin rebuild del cliente** (se inyecta al servir la página).
+
+Nota: la credencial del TURN **es visible para los clientes** — es inevitable,
+WebRTC la necesita en el navegador. Por eso importan las cuotas y los
+`denied-peer-ip`: acotan el daño si alguien la reutiliza.
+
+## Verificar que funciona
+
+**Desde el Pi** (rápido):
 ```bash
-sudo systemctl enable --now coturn
-sudo systemctl status coturn
+PW=$(sudo grep -oP '^user=jdhturn:\K.*' /etc/turnserver.conf)
+# Debe funcionar (0 paquetes perdidos):
+turnutils_uclient -y -u jdhturn -w "$PW" -n 2 -m 1 jdh.privatedns.org
+# Por TCP (fallback si la red bloquea UDP):
+turnutils_uclient -y -t -u jdhturn -w "$PW" -n 2 -m 1 jdh.privatedns.org
+# SIN credencial DEBE fallar ("Cannot complete Allocation") => no es relay abierto:
+turnutils_uclient -y -n 1 -m 1 jdh.privatedns.org
 ```
+⚠️ Estos salen del propio Pi hacia la IP pública (hairpin), así que **no prueban
+del todo** que el router deje entrar el 3478 desde internet.
 
-**TLS (`turns:`, opcional):** con un dominio apuntando al Pi, sacar el cert con
-certbot y agregar a `turnserver.conf`:
-```conf
-cert=/etc/letsencrypt/live/TU_DOMINIO/fullchain.pem
-pkey=/etc/letsencrypt/live/TU_DOMINIO/privkey.pem
-```
-(coturn necesita poder leerlos: revisar permisos / grupo `turnserver`.)
+**La prueba definitiva (desde FUERA de la red):** abrir
+`https://webrtc.github.io/samples/src/content/peerconnection/trickle-ice/` en un
+móvil **con datos móviles** (no WiFi), añadir
+`turn:jdh.privatedns.org:3478`, usuario `jdhturn` + la credencial, y comprobar
+que aparecen candidatos de tipo **`relay`**. Si solo salen `host`/`srflx`, el TURN
+no se está alcanzando (revisar el reenvío del 3478 en el router y `external-ip`).
 
-**IP dinámica:** si el ISP la cambia, `external-ip` queda viejo. Opciones: DDNS
-(duckdns/no-ip) + un hook que reescriba `external-ip` y recargue coturn, o IP fija.
+**En la app:** entrar de a 2 (modo P2P) desde una red móvil restrictiva y
+verificar que el audio conecta.
 
-## Camino B — TURN administrado (si no se quiere self-host)
+## Ancho de banda (a tener en cuenta)
 
-Evita puertos/CGNAT/IP dinámica por completo. Dan `urls` + `username` +
-`credential` y listo:
-- **Cloudflare Realtime TURN** (tier gratis generoso)
-- **Metered**, **Twilio**, **Xirsys** (tiers gratis chicos)
+El TURN **reenvía media**: si una llamada cae a relay, ese audio pasa por la
+**subida del Pi**. Para un grupo chico está bien; `max-bps` acota cada sesión.
 
-## Enchufarlo en JDH Speak (cambio de código necesario)
+## Alternativa (si algún día molesta el self-host)
 
-Hoy `ICE_SERVERS` está **hardcodeado en el cliente**, así que cambiar de TURN
-obliga a recompilar. **Hacerlo configurable por entorno**, igual que ya se hace
-con `INSTANCE_NAME`:
-
-1. **`server/src/index.ts`** — leer del entorno (p. ej. `TURN_URLS` separadas por
-   coma, `TURN_USERNAME`, `TURN_CREDENTIAL`) e inyectarlas en el mismo global que
-   ya se inyecta al servir el `index.html`:
-   ```js
-   window.__JDH_SPEAK_CONFIG__ = { instanceName, iceServers: [...] }
-   ```
-   (buscar `__JDH_SPEAK_CONFIG__` en ese archivo — el patrón ya está hecho).
-2. **Cliente** — leer `iceServers` de ese global (junto a `getInstanceName()` en
-   `client/src/lib/branding.ts`, o un `lib/ice.ts` nuevo) y usarlo en
-   `useMediasoup.ts` en vez del `const ICE_SERVERS` hardcodeado.
-3. **Fallback:** si no hay env, dejar solo STUN público
-   (`stun:stun.l.google.com:19302`) — nunca volver a hardcodear el TURN ajeno.
-4. **Credenciales fuera del repo:** van en el `.env` del despliegue
-   (`/home/pi/jdh-speak/.env` o donde esté), nunca commiteadas.
-
-Ventaja: cambiar TURN/credenciales = editar `.env` + reiniciar el server. **Sin
-rebuild del cliente** (se inyecta al servir la página).
-
-## Probar que funciona
-
-1. **Directo al coturn:**
-   ```bash
-   turnutils_uclient -v -t -u jdhturn -w LA_CLAVE TU_DOMINIO_O_IP
-   ```
-2. **Desde el navegador:** abrir la página de Trickle ICE
-   (`webrtc.github.io/samples/src/content/peerconnection/trickle-ice/`), cargar
-   `turn:TU_HOST:3478` + usuario/clave y comprobar que aparecen candidatos de
-   tipo **`relay`**. Si solo salen `host`/`srflx`, el TURN no está siendo
-   alcanzado (revisar puertos/`external-ip`).
-3. **En la app:** entrar de a 2 (modo P2P) desde una red móvil restrictiva y
-   verificar que el audio conecta.
-
-## Resumen para el que lo haga
-
-- [ ] Confirmar puertos abiertos (3478 udp/tcp, 5349 tcp, 49152–65535 udp)
-- [ ] Instalar + configurar coturn en el Pi (`external-ip` con el mapeo correcto)
-- [ ] (Opcional) dominio + cert para `turns:`
-- [ ] Hacer `ICE_SERVERS` configurable por env (server inyecta → cliente lee)
-- [ ] Poner las credenciales en el `.env` del despliegue (no en el repo)
-- [ ] Verificar candidatos `relay` con Trickle ICE
-- [ ] Sacar `turn.oriolgomez.com` del código
+TURN administrado — evita puertos, IP dinámica y ancho de banda propio.
+**Cloudflare Realtime TURN** (tier gratis), Metered, Twilio, Xirsys. Como el ICE
+ya es configurable por `.env`, cambiar es editar cuatro variables y reiniciar:
+**no hace falta tocar código**.

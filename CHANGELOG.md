@@ -32,6 +32,40 @@
 
 ---
 
+## 2026-07-17
+
+### `de632bf` — TURN propio: fuera la dependencia del servidor de Oriol
+
+- **Qué:** ya **no dependemos del coturn prestado** (`turn.oriolgomez.com`, el VPS
+  de Oriol). Corremos **nuestro propio coturn en la Raspberry**, y los servidores
+  ICE se configuran desde el `.env` del despliegue en vez de estar hardcodeados
+  con credenciales ajenas dentro del repo.
+- **Cómo (código):** `buildIceServers()` en `server/src/index.ts` lee `TURN_URLS`,
+  `TURN_USERNAME`, `TURN_CREDENTIAL` y `STUN_URLS` y los inyecta en el HTML
+  servido como `__JDH_SPEAK_CONFIG__.iceServers` (mismo mecanismo que
+  `INSTANCE_NAME`). El cliente los lee con `getIceServers()`
+  (`client/src/lib/ice.ts`), con **fallback a solo STUN** si no hay nada.
+  ⇒ Cambiar de TURN = editar `.env` + reiniciar, **sin rebuild del cliente**, y
+  **sin credenciales en el repo**.
+- **Cómo (infra):** en vez de abrir un rango nuevo (el enfoque naíf pedía 16.384
+  puertos), se **repartió el rango que el router ya reenviaba**: mediasoup pasó a
+  `40000–40059` (`rtcMaxPort`) y el relay de coturn usa `40060–40100`. Solo hizo
+  falta **1 puerto nuevo** en el router: el `3478`. ⚠️ **Deben seguir disjuntos.**
+- **Seguridad:** autenticación obligatoria (`lt-cred-mech` + credencial de 24
+  bytes aleatorios), **todos los rangos privados denegados** (`denied-peer-ip`, así
+  el TURN no sirve para tocar la LAN), cuotas (40 allocations, ~2 Mbit/s por
+  sesión), `no-cli`, y `5349` ni se abre (`no-tls`/`no-dtls`). Verificado: con
+  credencial relayea (0 pérdidas, UDP y TCP); **sin credencial es rechazado**.
+- **Fiabilidad:** el timer que ya actualizaba `ANNOUNCED_IP` ahora también
+  actualiza el `external-ip` de coturn y lo reinicia — si el ISP cambia la IP, el
+  TURN no queda anunciando una IP muerta.
+- **Por qué:** el TURN es el fallback para NAT simétrico y redes restrictivas
+  (y el fallback TCP del SFU). Era una dependencia latente: nada parecía roto
+  hasta que alguien entraba desde una red difícil y el servidor ajeno fallaba.
+- **Detalle completo:** `docs/turn-server.md`.
+
+---
+
 ## 2026-07-15
 
 ### `25ec76e` — Sonidos de eventos personalizables por el operador (con fallback sintetizado)

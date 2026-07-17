@@ -31,19 +31,26 @@ work if you've lost context. **Convention: on every `git push`, append an entry*
 for what shipped, so Cristian (and any future Claude) can follow the project
 without re-reading all the code.
 
-## 📌 Pending infra task — set up our own TURN
+## ✅ We run our own TURN (done — was the pending infra task)
 
-The ICE servers are **hardcoded** in `client/src/hooks/useMediasoup.ts`
-(`ICE_SERVERS`) and point at a **third-party coturn** (`turn.oriolgomez.com`,
-Oriol's VPS, shared with his games). It's borrowed: if it goes down or rotates
-credentials, P2P on restrictive NATs — and the SFU's TCP/TLS fallback — break.
-The normal SFU path (direct UDP to the Pi) is unaffected, which is why this is
-**latent**: nothing looks broken until someone joins from a hard network.
+The third-party coturn (`turn.oriolgomez.com`, Oriol's borrowed VPS) is **gone
+from the code**. We now run **our own coturn on the Pi**, and the ICE servers are
+**configured from the deployment's `.env`** — injected into the served
+`index.html` like `INSTANCE_NAME`, so changing the TURN is an `.env` edit +
+server restart, with **no client rebuild and no credentials in the repo**.
 
-The Pi is already publicly reachable (the SFU works for remote peers), so
-self-hosting coturn on it is viable. **Full runbook — why it matters, ports,
-coturn config, and the code change to make ICE env-configurable (no rebuild):
-[`docs/turn-server.md`](docs/turn-server.md).**
+- Client reads them via `getIceServers()` (`client/src/lib/ice.ts`); with no
+  `TURN_*` set it falls back to public STUN only. **Never hardcode a TURN here.**
+- Env vars: `TURN_URLS` (comma-separated), `TURN_USERNAME`, `TURN_CREDENTIAL`,
+  optional `STUN_URLS`. See `server/src/index.ts` (`buildIceServers`).
+- **Port ranges are shared and must stay disjoint:** the router forwards
+  `40000-40100`; mediasoup is capped to `40000-40059`
+  (`server/src/mediasoup-config.ts`) and coturn's relay uses `40060-40100`.
+  Widening `rtcMaxPort` again would collide with the TURN.
+- coturn config lives on the Pi at `/etc/turnserver.conf` (not in this repo):
+  auth required, quotas, and all private ranges denied.
+
+**Details, config and how to verify: [`docs/turn-server.md`](docs/turn-server.md).**
 
 ## What this is
 
