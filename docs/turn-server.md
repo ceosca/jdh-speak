@@ -16,14 +16,12 @@ servidores ICE se configuran desde el `.env` del despliegue.
 - [x] ICE configurable por env (server inyecta → cliente lee)
 - [x] Credenciales en el `.env` del despliegue, **no** en el repo
 - [x] `turn.oriolgomez.com` fuera del código
-- [x] Relay verificado (UDP y TCP, con y sin credencial) — **desde el propio Pi**
-- [ ] **PENDIENTE: confirmar desde FUERA de la red** (Trickle ICE con datos
-      móviles, ver "Verificar" abajo). Los tests hechos salen del Pi hacia la IP
-      pública, así que pasan por el *hairpin* del router: buena señal, pero **no
-      prueban** que el `3478` entre desde internet. Si NO estuviera abierto, no se
-      rompe nada de lo que hoy funciona (el SFU va por UDP directo y no usa TURN):
-      el fallo sería **latente**, visible solo cuando alguien entre desde una red
-      restrictiva y no conecte.
+- [x] Relay verificado (UDP y TCP, con y sin credencial)
+- [x] **Alcanzable desde FUERA de la red** — confirmado con `tcpdump` en el Pi
+      mientras un participante remoto recargaba: sus paquetes llegan de su IP
+      pública al `3478` y coturn responde (STUN Binding 20→64 bytes, y el arranque
+      del protocolo TURN 108→84). Es decir, el reenvío del `3478` en el router
+      funciona de verdad, no solo por *hairpin*.
 
 ## Por qué importaba
 
@@ -154,6 +152,19 @@ turnutils_uclient -y -n 1 -m 1 jdh.privatedns.org
 ```
 ⚠️ Estos salen del propio Pi hacia la IP pública (hairpin), así que **no prueban
 del todo** que el router deje entrar el 3478 desde internet.
+
+**Comprobar la alcanzabilidad real desde fuera** (lo que se hizo, y lo más
+cómodo: no requiere que nadie configure nada). Capturar en el Pi mientras un
+participante **remoto** recarga la página — su navegador consultará el STUN:
+```bash
+sudo timeout 150 tcpdump -ni any 'udp port 3478'
+```
+Debe verse tráfico entrante desde una **IP pública ajena** (no `192.168.x` ni la
+propia IP pública, que sería hairpin) y la respuesta de coturn — p. ej.
+`IN 186.x.x.x.65466 > 192.168.4.2.3478: UDP, length 20` seguido de
+`Out 192.168.4.2.3478 > 186.x.x.x.65466: UDP, length 64` (STUN Binding
+request→response). Si además aparece un `length 108 → 84`, es el arranque del
+protocolo TURN (Allocate → challenge de auth).
 
 **La prueba definitiva (desde FUERA de la red):** abrir
 `https://webrtc.github.io/samples/src/content/peerconnection/trickle-ice/` en un
