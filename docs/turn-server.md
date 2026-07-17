@@ -16,7 +16,14 @@ servidores ICE se configuran desde el `.env` del despliegue.
 - [x] ICE configurable por env (server inyecta → cliente lee)
 - [x] Credenciales en el `.env` del despliegue, **no** en el repo
 - [x] `turn.oriolgomez.com` fuera del código
-- [x] Relay verificado (UDP y TCP, con y sin credencial)
+- [x] Relay verificado (UDP y TCP, con y sin credencial) — **desde el propio Pi**
+- [ ] **PENDIENTE: confirmar desde FUERA de la red** (Trickle ICE con datos
+      móviles, ver "Verificar" abajo). Los tests hechos salen del Pi hacia la IP
+      pública, así que pasan por el *hairpin* del router: buena señal, pero **no
+      prueban** que el `3478` entre desde internet. Si NO estuviera abierto, no se
+      rompe nada de lo que hoy funciona (el SFU va por UDP directo y no usa TURN):
+      el fallo sería **latente**, visible solo cuando alguien entre desde una red
+      restrictiva y no conecte.
 
 ## Por qué importaba
 
