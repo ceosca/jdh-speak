@@ -72,6 +72,13 @@ no-dtls
 min-port=40060
 max-port=40100
 external-ip=<IP_PUBLICA>/192.168.4.2
+# IMPRESCINDIBLE fijar la IP de escucha/relay explícitamente. Sin esto, coturn
+# auto-descubre las direcciones al arrancar, y si la red aún no tiene IP (arranque
+# o un blip) solo encuentra loopback y ABORTA ("Cannot configure any meaningful IP
+# listener address"). Nos pasó: crash-loop → systemd se rindió → TURN caído → los
+# pares P2P que necesitan relay fallan de forma "aleatoria".
+listening-ip=192.168.4.2
+relay-ip=192.168.4.2
 
 # Autenticación OBLIGATORIA (sin esto sería un RELAY ABIERTO)
 fingerprint
@@ -79,9 +86,12 @@ lt-cred-mech
 realm=jdh.privatedns.org
 user=jdhturn:<credencial larga: openssl rand -hex 24>
 
-# Cuotas anti-abuso
-user-quota=40
-total-quota=40
+# Cuotas: 0 = sin límite. El rango de relay (40060-40100 = 41 puertos) ya es el
+# tope natural de allocations concurrentes; una cuota MENOR que eso corta pares en
+# una malla P2P de 4-5 personas (cada peer-connection reserva un candidato relay
+# al gatherear, aunque acabe conectando directo). max-bps limita el abuso de banda.
+user-quota=0
+total-quota=0
 max-bps=250000          # ~2 Mbit/s por sesión; el audio usa ~0,25
 
 # Superficie mínima
@@ -97,6 +107,19 @@ denied-peer-ip=192.168.0.0-192.168.255.255
 
 Además: `TURNSERVER_ENABLED=1` en `/etc/default/coturn`, y ufw con
 `3478/udp` + `3478/tcp` (el rango `40000:40100` ya estaba permitido).
+
+**Robustez del servicio** (drop-in `/etc/systemd/system/coturn.service.d/override.conf`):
+```ini
+[Unit]
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0     # no rendirse tras unos reinicios rápidos
+[Service]
+Restart=always
+RestartSec=10
+```
+Sin esto, un blip de red (o un arranque con la IP aún sin asignar) tumbaba coturn
+para siempre. Con esto espera a la red y reintenta hasta que vuelve.
 
 **IP dinámica:** `/usr/local/bin/sonicroom-announce-ip.sh` (timer systemd
 `sonicroom-announce-ip.timer`) actualiza **tanto** `ANNOUNCED_IP` del `.env`
