@@ -1,6 +1,7 @@
 import express from "express";
 import { createServer } from "node:http";
 import { createReadStream, readFileSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createWorker } from "mediasoup";
@@ -18,6 +19,7 @@ import {
   streamFallbackAudio,
   TranscodeBusyError,
 } from "./audio-sources.js";
+import { parseTvChannels, type Channel } from "./tv-channels.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -73,6 +75,23 @@ function buildIceServers(): { urls: string | string[]; username?: string; creden
 }
 
 const ICE_SERVERS = buildIceServers();
+
+// TV channels live in tv/db.json at the repo root (next to sounds/). It's an
+// operator-managed deployment file (gitignored, may hold DRM keys). Re-read only
+// when the file's mtime changes so edits show up without a restart.
+const TV_DB_PATH = path.resolve(__dirname, "../../tv/db.json");
+let tvCache: { mtimeMs: number; channels: Channel[] } | null = null;
+async function loadTvChannels(): Promise<Channel[]> {
+  try {
+    const s = await stat(TV_DB_PATH);
+    if (tvCache && tvCache.mtimeMs === s.mtimeMs) return tvCache.channels;
+    const channels = parseTvChannels(await readFile(TV_DB_PATH, "utf8"));
+    tvCache = { mtimeMs: s.mtimeMs, channels };
+    return channels;
+  } catch {
+    return []; // absent/unreadable — TV is optional
+  }
+}
 
 async function main() {
   // Create mediasoup workers
@@ -203,6 +222,11 @@ async function main() {
         res.destroy();
       }
     }
+  });
+
+  // Operator-managed live-TV channel list (see docs/superpowers/specs/...tv...).
+  app.get("/api/tv-channels", async (_req, res) => {
+    res.json(await loadTvChannels());
   });
 
   // Recording download — mixes all participants' captured audio into a single

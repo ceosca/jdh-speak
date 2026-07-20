@@ -52,3 +52,7 @@ coverage/
 # the server), so they're not versioned — but keep the README that documents them.
 sounds/*
 !sounds/README.md
+
+# Operator-provided live-TV channel list (may hold DRM keys) + the standalone tool
+/tv/*
+!/tv/README.md
