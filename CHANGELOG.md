@@ -30,9 +30,16 @@
     `TvDialog.tsx`; `lib/tv.ts`.
   - Al arrancar un archivo/URL mientras la TV suena, la TV se corta primero
     (evita doble audio).
-- **Riesgo a verificar en vivo:** la re-emisión a la sala depende de que el CDN
-  del canal mande cabeceras CORS (si no, Web Audio silencia el audio). Probar con
-  un canal real + un segundo peer.
+  - **Solo audio** (`b2e843a`): `player.configure({ restrictions: { maxHeight: 0 } })`
+    → Shaka elige la variante de solo audio y **nunca baja el video**. Verificado en
+    el navegador: una sola representación `audio/mp4` (`.m4a`, ~49 KB/segmento),
+    cero segmentos de video, ~150–200 kbps (comparable a compartir música, no video).
+    **No sacar `maxHeight: 0`** o vuelve a bajar video de varios Mbps.
+  - **Errores a la vista** (`8e5fa80`): si un canal no carga, se limpia todo, se
+    **anuncia** (`tv_play_error` / `tv_unsupported`) y el diálogo muestra un aviso
+    — clave para el usuario ciego (antes fallaba en silencio).
+- **CORS:** el `fetch` directo a un segmento del CDN dio 200 con cuerpo legible, así
+  que la re-emisión a la sala debería andar; falta el test final con un 2º peer real.
 - **Fuera de v1:** timeshift, selección de idioma, grabación, panel de
   administración de canales.
 - **Requisito:** Chrome (EME/ClearKey). `tv/db.json` en el servidor con
