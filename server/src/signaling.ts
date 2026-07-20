@@ -1,6 +1,6 @@
 import type { Server as HttpServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { Server } from "socket.io";
+import { Server, type Socket } from "socket.io";
 import { z } from "zod";
 import type { DtlsParameters, MediaKind, RtpCapabilities, RtpParameters } from "mediasoup/types";
 import {
@@ -199,8 +199,19 @@ export function createSignalingServer(
     }
   }
 
+  // Real client IP for logging. We sit behind Caddy (reverse_proxy to
+  // 127.0.0.1), so socket.handshake.address is always the proxy — the real
+  // client is the FIRST entry of X-Forwarded-For (Caddy appends its own hops
+  // after it). Falls back to the direct address in dev (no proxy).
+  const clientIp = (socket: Socket): string => {
+    const xff = socket.handshake.headers["x-forwarded-for"];
+    const raw = Array.isArray(xff) ? xff[0] : xff;
+    const first = raw?.split(",")[0]?.trim();
+    return first || socket.handshake.address || "?";
+  };
+
   io.on("connection", (socket) => {
-    console.log(`[ws] connected: ${socket.id}`);
+    console.log(`[ws] connected: ${socket.id} [${clientIp(socket)}]`);
     let currentRoom: Room | null = null;
     let currentPeer: Peer | null = null;
 
@@ -211,7 +222,7 @@ export function createSignalingServer(
         const room = await getOrCreateRoom(roomName);
 
         console.log(
-          `[ws] ${socket.id} joined ${roomName} as "${displayName}"${role ? ` (${role})` : ""}${disableP2p ? " (p2p disabled)" : ""}`,
+          `[ws] ${socket.id} joined ${roomName} as "${displayName}" [${clientIp(socket)}]${role ? ` (${role})` : ""}${disableP2p ? " (p2p disabled)" : ""}`,
         );
 
         const peer = createPeer(room, socket.id, displayName);

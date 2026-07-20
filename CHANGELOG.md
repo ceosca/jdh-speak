@@ -8,6 +8,26 @@
 
 ---
 
+## 2026-07-20 (2)
+
+### `feat/log-client-ip` — loguear la IP real del cliente junto al nombre
+
+- **Qué:** el log del servidor ahora incluye la **IP real** del cliente en las
+  líneas de conexión/entrada, p. ej.
+  `[ws] abc123 joined jdh as "crichu" [186.122.224.201]`. Permite mapear IP↔nombre
+  (para saber quién es quién en el log de Caddy, o quién machaca el servidor).
+- **Cómo:** helper `clientIp(socket)` en `server/src/signaling.ts` que lee la
+  **primera** entrada de `X-Forwarded-For` (Caddy la reenvía; `handshake.address`
+  siempre sería el proxy `127.0.0.1`), con fallback a la dirección directa en dev.
+  Se usa en los `console.log` de `connected` y `joined`.
+- **Cómo consultarlo:**
+  `journalctl -u sonicroom | grep -oP 'as "\K[^"]+" \[[^]]+' ` (o similar) da los
+  pares nombre↔IP.
+- **Privacidad:** deja las IP de los participantes en el journal del sistema
+  (ya estaban en el log de Caddy). Aceptado a propósito.
+
+---
+
 ## 2026-07-20
 
 ### `feat/tv-live-channels` — TV en vivo: canales de TV en la sala
