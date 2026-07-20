@@ -9,6 +9,7 @@ import { ParticipantCard } from "./ParticipantCard";
 import { AudioControls } from "./AudioControls";
 import { FileStreamPlayer } from "./FileStreamPlayer";
 import { UrlDialog } from "./UrlDialog";
+import { TvDialog } from "./TvDialog";
 import { Chat } from "./Chat";
 import { pickFolderAudioFiles } from "../lib/audioFolder";
 import { m } from "../paraglide/messages.js";
@@ -66,6 +67,7 @@ export function Room() {
     startPlaylist,
     startFolderStream,
     startUrlStream,
+    startTvChannel,
     stopFileStream,
     playTrack,
     playerNext,
@@ -88,6 +90,7 @@ export function Room() {
   const [chatOpen, setChatOpen] = useState(false);
   const [playerOpen, setPlayerOpen] = useState(false);
   const [urlOpen, setUrlOpen] = useState(false);
+  const [tvOpen, setTvOpen] = useState(false);
   // Name prompt: shown once on first ever visit (no stored name), and reopened
   // by the "Change name" button under your own card.
   const [namePromptOpen, setNamePromptOpen] = useState(false);
@@ -502,6 +505,7 @@ export function Room() {
             onOpenPlayer={openPlayer}
             playerOpen={playerOpen || fileStreamName != null}
             onOpenUrl={openUrl}
+            onOpenTv={() => setTvOpen(true)}
             onToggleChat={() => setChatOpen((o) => !o)}
             chatOpen={chatOpen}
           />
@@ -547,6 +551,9 @@ export function Room() {
       </div>
 
       {urlOpen && <UrlDialog onClose={() => setUrlOpen(false)} onStartUrl={startUrlStream} />}
+      {tvOpen && (
+        <TvDialog onClose={() => setTvOpen(false)} onPlayChannel={(c) => void startTvChannel(c)} />
+      )}
 
       <input
         ref={filesInputRef}

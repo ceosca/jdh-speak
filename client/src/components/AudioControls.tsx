@@ -8,6 +8,7 @@ import {
   FileArchive,
   FileMusic,
   Link,
+  Tv,
   Waves,
   Settings,
   MessageSquare,
@@ -41,6 +42,8 @@ interface AudioControlsProps {
   playerOpen: boolean;
   // Opens the "Abrir URL" dialog (mp3 / m3u8 / radio …).
   onOpenUrl: () => void;
+  // Opens the live-TV channel picker.
+  onOpenTv: () => void;
   onToggleChat: () => void;
   chatOpen: boolean;
 }
@@ -56,6 +59,7 @@ export function AudioControls({
   onOpenPlayer,
   playerOpen,
   onOpenUrl,
+  onOpenTv,
   onToggleChat,
   chatOpen,
 }: AudioControlsProps) {
@@ -162,6 +166,16 @@ export function AudioControls({
           title={m.controls_open_url_title()}
         >
           <Link className="h-5 w-5" />
+        </button>
+
+        {/* Live TV channels */}
+        <button
+          onClick={onOpenTv}
+          className={`${btn} ${idle}`}
+          aria-label={m.controls_tv()}
+          title={m.controls_tv_title()}
+        >
+          <Tv className="h-5 w-5" />
         </button>
 
         {/* Noise-suppression toggle (echo cancel / noise / auto-gain). */}
