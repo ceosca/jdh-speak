@@ -263,6 +263,12 @@ export function useMediasoup() {
     load(u: string): Promise<void>;
     unload(): Promise<void>;
   } | null>(null);
+  // True while a TV channel is the current streamer source. TV audio is a live
+  // Shaka stream, not a file slot, so it can't cross-fade — startFileSource and
+  // startPlaylist check this and force a clean stopFileStream first instead of
+  // taking the crossfade branch (which would leave TV running alongside the
+  // new source).
+  const tvActiveRef = useRef(false);
   // Stable ref so that ended handlers can call playTrack without a stale closure.
   // Updated synchronously every render after playTrack is defined.
   const playTrackRef = useRef<((index: number) => Promise<void>) | null>(null);
@@ -1699,8 +1705,11 @@ export function useMediasoup() {
       }
       // Tear down a TV channel if one is playing. Keep the element + source node
       // (reused next time); just unload Shaka, pause, and disconnect the source.
+      // Awaited (not fire-and-forget) so a fast channel re-switch — which reuses
+      // the same tvPlayerRef.current for configure()/load() right after this
+      // returns — can't race an in-flight unload().
       if (tvPlayerRef.current) {
-        void tvPlayerRef.current.unload().catch(() => {});
+        await tvPlayerRef.current.unload().catch(() => {});
       }
       tvAudioRef.current?.pause();
       try {
@@ -1708,6 +1717,7 @@ export function useMediasoup() {
       } catch {
         /* not connected */
       }
+      tvActiveRef.current = false;
       if (g) {
         g.fileVolumeGain?.disconnect();
         g.fileVolumeGain = null;
@@ -1825,6 +1835,11 @@ export function useMediasoup() {
       const g = ensureOutGraph();
       resumeSharedContext();
 
+      // If a TV channel is the current source, tear it down first (its audio
+      // can't cross-fade — it's a live Shaka stream), so this starts fresh, not
+      // alongside.
+      if (tvActiveRef.current) await stopFileStream({ silent: true });
+
       const firstStart = store.getState().fileStreamName == null;
 
       // Build (or reuse) the two persistent slots and the shared chain
@@ -1924,6 +1939,10 @@ export function useMediasoup() {
       player.configure({ drm: clearKeys ? { clearKeys } : {} });
       await player.load(channel.url);
       await tvAudioRef.current.play().catch(() => {});
+
+      // TV is now the active streamer source — startFileSource/startPlaylist
+      // check this to force a clean teardown before starting (TV can't cross-fade).
+      tvActiveRef.current = true;
 
       store.getState().setFileStream(channel.nombre);
       store.getState().setPlayerIsUrl(true);
@@ -2109,6 +2128,12 @@ export function useMediasoup() {
 
       // Local files/folder → not a URL stream (the player shows full controls).
       store.getState().setPlayerIsUrl(false);
+
+      // If a TV channel is the current source, tear it down first (its audio
+      // can't cross-fade — it's a live Shaka stream), so this starts fresh, not
+      // alongside.
+      if (tvActiveRef.current) await stopFileStream({ silent: true });
+
       const firstStart = store.getState().fileStreamName == null;
       const oldPlaylist = store.getState().playlist;
 
@@ -2150,7 +2175,7 @@ export function useMediasoup() {
         );
       }
     },
-    [store, playTrack],
+    [store, playTrack, stopFileStream],
   );
 
   // Folder picker fallback (<input webkitdirectory>): order the files by relative
