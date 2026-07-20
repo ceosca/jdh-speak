@@ -87,10 +87,10 @@ export function TvDialog({ onClose, onPlayChannel }: TvDialogProps) {
 
       {state === "ready" && (
         <div className="max-h-[60vh] space-y-4 overflow-y-auto">
-          {groups.map((g) => (
-            <section key={g.categoria} aria-labelledby={`tv-cat-${g.categoria}`}>
+          {groups.map((g, i) => (
+            <section key={g.categoria} aria-labelledby={`tv-cat-${i}`}>
               <h3
-                id={`tv-cat-${g.categoria}`}
+                id={`tv-cat-${i}`}
                 className="mb-1 text-xs font-semibold uppercase tracking-wide text-sonic-300"
               >
                 {g.categoria}
