@@ -24,15 +24,17 @@ descifrado lo hace Shaka en el cliente (no hace falta ffmpeg en el servidor).
 1. **A quién suena:** el canal **se emite a toda la sala** (se mezcla en la pista
    de voz, igual que "Abrir URL" / compartir música). No fuerza SFU.
 2. **Controles del canal:** **mínimos** — reusa el pie del reproductor existente
-   en modo "solo volumen" (volumen + detener), igual que un stream de URL. Para
-   cambiar de canal se reabre "TV en vivo".
-3. **Escape ya no cierra el reproductor** (cambio global en `FileStreamPlayer`):
+   en modo "solo volumen" (volumen + detener), igual que un stream de URL.
+3. **El diálogo de canales NO se cierra al elegir:** queda abierto para poder
+   cambiar de canal sin reabrirlo; se cierra a mano con su **X** o con **Escape**.
+4. **Escape ya no cierra el reproductor** (cambio global en `FileStreamPlayer`):
    el canal (o cualquier fuente) sigue sonando mientras se usa el resto de la
-   plataforma. Se cierra con la **X** o el botón de la barra.
-4. **Datos:** el servidor maneja los canales (**opción A**): sirve `tv/db.json`
+   plataforma. Se cierra con la **X** o el botón de la barra. (Escape SÍ cierra
+   el diálogo de canales, que está por encima — ver punto 3.)
+5. **Datos:** el servidor maneja los canales (**opción A**): sirve `tv/db.json`
    en un endpoint; Cristian edita el archivo a mano. `db.json` **gitignored**
    (dato de despliegue con llaves DRM); se versiona solo un `tv/README.md`.
-5. **DRM/reproducción:** **Shaka Player en el cliente**, ClearKey desde el campo
+6. **DRM/reproducción:** **Shaka Player en el cliente**, ClearKey desde el campo
    `key` (`kid:key`). Shaka se **carga bajo demanda** (`import()` dinámico) para
    no inflar el bundle principal.
 
@@ -57,7 +59,9 @@ descifrado lo hace Shaka en el cliente (no hace falta ffmpeg en el servidor).
   con H en NVDA) y debajo un **botón por canal** (orden alfabético). Lista
   dinámica: sale de `db.json`, no hardcodeada.
 - Estados: cargando / vacío / error (banner accesible).
-- Elegir un canal → `onPlayChannel(channel)` + cerrar el diálogo.
+- Elegir un canal → `onPlayChannel(channel)` y el **diálogo QUEDA ABIERTO** (para
+  cambiar de canal rápido). Se cierra solo con su botón **X** o con **Escape**
+  (`onCancel` del `<dialog>`). Puede marcarse el canal activo (`aria-current`).
 
 ### Cliente — reproducción (`useMediasoup.ts`)
 
@@ -138,7 +142,8 @@ descifrado lo hace Shaka en el cliente (no hace falta ffmpeg en el servidor).
 - `tsc` (cliente+servidor), `lint`, `build` limpios.
 - `GET /api/tv-channels` devuelve el array; con `db.json` ausente → `[]`.
 - En la app: botón "TV en vivo" → diálogo con categorías (encabezados) + botones;
-  elegir un canal → suena; **otro peer en la sala lo oye**; el pie muestra
-  volumen + detener; el volumen lo baja para todos; Escape **no** cierra el
-  reproductor; detener corta Shaka y libera todo.
+  elegir un canal → suena y **el diálogo queda abierto** (se puede elegir otro);
+  **otro peer en la sala lo oye**; el pie muestra volumen + detener; el volumen lo
+  baja para todos; **Escape cierra el diálogo pero NO el reproductor**; cerrar el
+  diálogo (X/Escape) deja el canal sonando; detener (pie) corta Shaka y libera todo.
 - Verificar CORS/re-emisión con un canal real.
