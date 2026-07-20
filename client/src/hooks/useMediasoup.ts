@@ -1939,7 +1939,13 @@ export function useMediasoup() {
         }
         const player = tvPlayerRef.current;
         const clearKeys = parseClearKey(channel.key);
-        player.configure({ drm: clearKeys ? { clearKeys } : {} });
+        // Audio only: restrict video (maxHeight 0) so Shaka picks the audio-only
+        // variant and never downloads the video track — we play into an <audio>
+        // element and re-broadcast to the room, so the video would be pure waste.
+        player.configure({
+          drm: clearKeys ? { clearKeys } : {},
+          restrictions: { maxHeight: 0 },
+        });
         await player.load(channel.url);
         await tvAudioRef.current.play().catch(() => {});
 
