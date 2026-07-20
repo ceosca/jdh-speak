@@ -9,6 +9,7 @@ import { playCue, preloadCueSamples } from "../lib/sounds";
 import { getIceServers } from "../lib/ice";
 import { parseClearKey, type Channel } from "../lib/tv";
 import { formatMessage, RateLimiter, META_SEP, type ChatMessage } from "../lib/chat";
+import { m } from "../paraglide/messages.js";
 import {
   announce_chat_hint,
   announce_a_participant,
@@ -1914,39 +1915,61 @@ export function useMediasoup() {
 
       const fvg = ensureFileVolumeGain(g);
 
-      // Lazy-load Shaka the first time TV is used (keeps it out of the main bundle).
-      const shaka = (await import("shaka-player")).default;
-      shaka.polyfill.installAll();
-      if (!shaka.Player.isBrowserSupported()) {
-        throw new Error("unsupported");
+      try {
+        // Lazy-load Shaka the first time TV is used (keeps it out of the main bundle).
+        const shaka = (await import("shaka-player")).default;
+        shaka.polyfill.installAll();
+        if (!shaka.Player.isBrowserSupported()) {
+          store.getState().announce(m.tv_unsupported());
+          throw new Error("unsupported");
+        }
+
+        // Dedicated <audio> + Web Audio source, made once and reused.
+        if (!tvAudioRef.current) {
+          const el = new Audio();
+          (el as unknown as Record<string, boolean>).playsInline = true;
+          el.crossOrigin = "anonymous";
+          tvAudioRef.current = el;
+          tvSourceRef.current = sharedAudioContext.createMediaElementSource(el);
+        }
+        tvSourceRef.current!.connect(fvg);
+
+        if (!tvPlayerRef.current) {
+          tvPlayerRef.current = new shaka.Player(tvAudioRef.current);
+        }
+        const player = tvPlayerRef.current;
+        const clearKeys = parseClearKey(channel.key);
+        player.configure({ drm: clearKeys ? { clearKeys } : {} });
+        await player.load(channel.url);
+        await tvAudioRef.current.play().catch(() => {});
+
+        // TV is now the active streamer source — startFileSource/startPlaylist
+        // check this to force a clean teardown before starting (TV can't cross-fade).
+        tvActiveRef.current = true;
+
+        store.getState().setFileStream(channel.nombre);
+        store.getState().setPlayerIsUrl(true);
+        store.getState().setFileStreamPlaying(true);
+      } catch (err) {
+        // Clean up the half-established TV path so a later stopFileStream doesn't skip it.
+        try {
+          tvSourceRef.current?.disconnect();
+        } catch {
+          /* not connected */
+        }
+        try {
+          await tvPlayerRef.current?.unload();
+        } catch {
+          /* nothing loaded */
+        }
+        tvAudioRef.current?.pause();
+        tvActiveRef.current = false;
+        // If this was the unsupported case we already announced; otherwise announce a generic error.
+        if (!(err instanceof Error && err.message === "unsupported")) {
+          store.getState().announce(m.tv_play_error());
+        }
+        throw err; // let the dialog react too
       }
-
-      // Dedicated <audio> + Web Audio source, made once and reused.
-      if (!tvAudioRef.current) {
-        const el = new Audio();
-        (el as unknown as Record<string, boolean>).playsInline = true;
-        el.crossOrigin = "anonymous";
-        tvAudioRef.current = el;
-        tvSourceRef.current = sharedAudioContext.createMediaElementSource(el);
-      }
-      tvSourceRef.current!.connect(fvg);
-
-      if (!tvPlayerRef.current) {
-        tvPlayerRef.current = new shaka.Player(tvAudioRef.current);
-      }
-      const player = tvPlayerRef.current;
-      const clearKeys = parseClearKey(channel.key);
-      player.configure({ drm: clearKeys ? { clearKeys } : {} });
-      await player.load(channel.url);
-      await tvAudioRef.current.play().catch(() => {});
-
-      // TV is now the active streamer source — startFileSource/startPlaylist
-      // check this to force a clean teardown before starting (TV can't cross-fade).
-      tvActiveRef.current = true;
-
-      store.getState().setFileStream(channel.nombre);
-      store.getState().setPlayerIsUrl(true);
-      store.getState().setFileStreamPlaying(true);
     },
     [ensureOutGraph, ensureFileVolumeGain, stopFileStream, store],
   );

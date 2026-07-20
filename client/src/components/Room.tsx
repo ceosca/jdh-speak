@@ -552,7 +552,7 @@ export function Room() {
 
       {urlOpen && <UrlDialog onClose={() => setUrlOpen(false)} onStartUrl={startUrlStream} />}
       {tvOpen && (
-        <TvDialog onClose={() => setTvOpen(false)} onPlayChannel={(c) => void startTvChannel(c)} />
+        <TvDialog onClose={() => setTvOpen(false)} onPlayChannel={startTvChannel} />
       )}
 
       <input

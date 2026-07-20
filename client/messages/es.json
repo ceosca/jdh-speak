@@ -47,6 +47,8 @@
   "tv_dialog_error": "No se pudo cargar la lista de canales",
   "tv_dialog_close": "Cerrar la lista de canales",
   "tv_dialog_play": "Reproducir {name}",
+  "tv_unsupported": "La TV no está soportada en este navegador",
+  "tv_play_error": "No se pudo reproducir ese canal",
   "controls_record": "Grabar llamada",
   "controls_stop_recording": "Detener grabación",
   "controls_record_title": "Graba la llamada (el audio de todos) (R)",

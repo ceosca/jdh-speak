@@ -7,7 +7,7 @@ interface TvDialogProps {
   onClose: () => void;
   // Play a channel. The dialog stays OPEN (switch channels without reopening) —
   // it closes only via the X or Escape.
-  onPlayChannel: (channel: Channel) => void;
+  onPlayChannel: (channel: Channel) => Promise<void>;
 }
 
 // Live-TV channel picker. A native <dialog> (inert background, Escape closes the
@@ -20,6 +20,7 @@ export function TvDialog({ onClose, onPlayChannel }: TvDialogProps) {
   const [groups, setGroups] = useState<{ categoria: string; channels: Channel[] }[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "empty" | "error">("loading");
   const [playing, setPlaying] = useState<string>("");
+  const [playError, setPlayError] = useState(false);
 
   useEffect(() => {
     const dlg = dialogRef.current;
@@ -44,9 +45,14 @@ export function TvDialog({ onClose, onPlayChannel }: TvDialogProps) {
     };
   }, []);
 
-  const pick = (c: Channel) => {
+  const pick = async (c: Channel) => {
     setPlaying(c.url);
-    onPlayChannel(c);
+    setPlayError(false);
+    try {
+      await onPlayChannel(c);
+    } catch {
+      setPlayError(true);
+    }
   };
 
   return (
@@ -76,6 +82,12 @@ export function TvDialog({ onClose, onPlayChannel }: TvDialogProps) {
           <X className="h-4 w-4" />
         </button>
       </div>
+
+      {playError && (
+        <p role="alert" className="mb-2 text-sm text-muted">
+          {m.tv_play_error()}
+        </p>
+      )}
 
       {state === "loading" && <p className="text-sm text-sonic-400">{m.tv_dialog_loading()}</p>}
       {state === "empty" && <p className="text-sm text-sonic-400">{m.tv_dialog_empty()}</p>}
