@@ -1,0 +1,888 @@
+[
+  {
+    "nombre": "AMERICA TV AMBA",
+    "categoria": "Argentina",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(americatv_arg)/variant.mpd",
+    "key": "2a15284b30327f14582d34e995763d71:37ba6b8a7e348b54f50767cca0fca899"
+  },
+  {
+    "nombre": "CANAL A",
+    "categoria": "Argentina",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(canala_arg)/variant.mpd",
+    "key": "df1fb1f9758c556cd248c122a74777a4:2d363392b65f26a9aa364ec68cee921a"
+  },
+  {
+    "nombre": "CANAL ENCUENTRO",
+    "categoria": "Argentina",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(encuentro_arg)/variant.mpd",
+    "key": "95753f699000750285c14ac856dd9028:3147e4cd11c9fd98709a79977dfcd6c4"
+  },
+  {
+    "nombre": "CANAL METRO",
+    "categoria": "Argentina",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(metro_arg)/variant.mpd",
+    "key": "5d3598e062ce8c90352ec2dd3cc06fde:c5c235e928620409ff8a74042259c3ab"
+  },
+  {
+    "nombre": "CANAL RURAL",
+    "categoria": "Argentina",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(canalrural_arg)/variant.mpd",
+    "key": "cc585f15a102b7f05c8bf4c89458bf30:98d0940409e575e64cdc8dfe5dcc005b"
+  },
+  {
+    "nombre": "CIUDAD MAGAZINE",
+    "categoria": "Argentina",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(magazine_arg)/variant.mpd",
+    "key": "ef5d6ed5e8dd5b28cc799e50bb18f608:d6a85a5d7eed55bf2b8965af59aade10"
+  },
+  {
+    "nombre": "ELNUEVE AMBA",
+    "categoria": "Argentina",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(elnueve_arg)/variant.mpd",
+    "key": "a03be9ae94552187fd97d25a40f20028:880fc942e35e05e9b0c7e894dd90a0e9"
+  },
+  {
+    "nombre": "ELTRECE AMBA",
+    "categoria": "Argentina",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(eltrece_arg)/variant.mpd",
+    "key": "c3d43de9ff5b5a45cdc9f4e7f177a1a5:e9b5b62c4f58c7bfebf424c42ba6c164"
+  },
+  {
+    "nombre": "METRO ADV",
+    "categoria": "Argentina",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(motoadvtvhd)/variant.mpd",
+    "key": "c2c562c879503fc27e5ffc0b755e5b6f:01a9e3f0ab5b0b46b33cac062760b6f4"
+  },
+  {
+    "nombre": "TELEFE AMBA",
+    "categoria": "Argentina",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(telefe_arg)/variant.mpd",
+    "key": "675cb5adcd788bdee4af50518b041626:b28bf4d4eec81cb96e6ca9a0c022dcd5"
+  },
+  {
+    "nombre": "TV PUBLICA",
+    "categoria": "Argentina",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(tvpublica_arg)/variant.mpd",
+    "key": "0259a1760a8b123dedc1b9f008463e61:86c61c4dd0abd13f5c115cbf2176673e"
+  },
+  {
+    "nombre": "A3CINE",
+    "categoria": "Cine",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(a3cine)/variant.mpd",
+    "key": "b7dd9f772a1b8bc9b2912912fc87eb91:73accef68bf4022ad7c0da50415c6df6"
+  },
+  {
+    "nombre": "AZTECA CINEMA",
+    "categoria": "Cine",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(aztecacinemahd)/variant.mpd",
+    "key": "bbac4c7d3d0f47a319e638e65c985997:de8dd6acc1d3cdb1994720ee41f43417"
+  },
+  {
+    "nombre": "CANAL VOLVER",
+    "categoria": "Cine",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(volver_arg)/variant.mpd",
+    "key": "d4da9d532e89c8d7f6cba837ede7f3a1:8d568a2838a7c03f3cf2e206e76a3012"
+  },
+  {
+    "nombre": "CINECANAL",
+    "categoria": "Cine",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(cinecanal_arg)/variant.mpd",
+    "key": "be58a09e881df744508b1ff0b10f9624:02a94b3bbd46a5381fe4a63d2b848491"
+  },
+  {
+    "nombre": "CINELATINO",
+    "categoria": "Cine",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(cinelatino)/variant.mpd",
+    "key": "e28ec76b3e800ded41db58719ad8b8f4:4e40f2c54234fc211f471ed049b22649"
+  },
+  {
+    "nombre": "CINEMAX",
+    "categoria": "Cine",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(cinemax_arg)/variant.mpd",
+    "key": "2266e5d05d1e502c1eb9b3b225043574:61457529fd1f1dbf3a63718f229d6006"
+  },
+  {
+    "nombre": "CLARO CINEMA",
+    "categoria": "Cine",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(clarocinemahd)/variant.mpd",
+    "key": "74c3f74f661721c738278bb130e5ec6a:e68744b0a606e3b5966af41ef18a0cb6"
+  },
+  {
+    "nombre": "DREAMWORKS",
+    "categoria": "Cine",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(dreamworkshd)/variant.mpd",
+    "key": "e6c7a488a73c9c780eaea5765ad29a00:08ffa90ee936cbacb10a59bb66aed57d"
+  },
+  {
+    "nombre": "EUROPA EUROPA",
+    "categoria": "Cine",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(europaeuropa_arg)/variant.mpd",
+    "key": "aae86df4cc9c0abb9962da808208a342:64b0968c917fe34be26bf6cdab171a86"
+  },
+  {
+    "nombre": "FILMBOX ARTHOUSE",
+    "categoria": "Cine",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(filmboxarthousehd)/variant.mpd",
+    "key": "5179839b084675a6cd20647012598907:fe05b5826edb655f2472eeab1fbc57ca"
+  },
+  {
+    "nombre": "MULTIPREMIER",
+    "categoria": "Cine",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(multipremier)/variant.mpd",
+    "key": "55122e37d92b6b4ab03c427cd4f471b9:0c2d5950edcafe9a2ea09098a155bdda"
+  },
+  {
+    "nombre": "PELIMEX",
+    "categoria": "Cine",
+    "url": "https://telecine-pelimex-1-us.ohlscdn.wurl.tv/512.m3u8"
+  },
+  {
+    "nombre": "SONY MOVIES",
+    "categoria": "Cine",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(sonymovies_arg)/variant.mpd",
+    "key": "0c2e21b1fb3475e3dcfa43f3aebf90c0:3f90991c8bea986cb976baa8bc958c94"
+  },
+  {
+    "nombre": "AMERICA SPORTS",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(americasport_arg)/variant.mpd",
+    "key": "50cb1fe0bf655ac78faa3687a6d61d90:666b39b07fb78d906c51a8eb70276b2b"
+  },
+  {
+    "nombre": "ANTENA MOTOR",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(antenamotorhd)/variant.mpd",
+    "key": "0b139b2e65f29ffe67379cfa86b1505a:aab9ff698a2cb09da34559a4475367cd"
+  },
+  {
+    "nombre": "AZTECA DEPORTES",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(aztecadeporteshd)/variant.mpd",
+    "key": "e459142c426c37a16322969a5ddcbcab:62b00ab99444ae566b261de1a3472700"
+  },
+  {
+    "nombre": "CLARO SPORTS",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(clarosports)/variant.mpd",
+    "key": "21a7580dfcec81607492d5a2db40727e:20e15c193a68a6631b5d0d1f6e5c6204"
+  },
+  {
+    "nombre": "DEPORTV",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(deportv_arg)/variant.mpd",
+    "key": "67bdf2a11676afea85dc4a0a1ad32505:4cac215849ae213aa2893644506ed559"
+  },
+  {
+    "nombre": "DSPORTS",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(dsports_arg)/variant.mpd",
+    "key": "a5e4bb046f274791c52cd4b73956b82e:ae51f5539228fcdf04fa13f4bdd8b7b3"
+  },
+  {
+    "nombre": "DSPORTS 2",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(dsports2_arg)/variant.mpd",
+    "key": "35eead5c196a017344cd7d3052e1fbb1:746bddf74e86949660be83a83ffe9d20"
+  },
+  {
+    "nombre": "EL GARAGE TV",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(elgarage_arg)/variant.mpd",
+    "key": "f6d4a892df627ab489c95270b3d35576:8bb3eafb6c81b467daae7402fff04933"
+  },
+  {
+    "nombre": "ESPN",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(espn_arg)/variant.mpd",
+    "key": "8113ca483fed6872a8db8c1e32b48cb2:895fe3b51a531a69afcef8eb1417aed5"
+  },
+  {
+    "nombre": "ESPN 2",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(espn2_arg)/variant.mpd",
+    "key": "fd71a595f5b61225be82193536bd891b:279d9fb593bf5b8a4b4350171f6139fa"
+  },
+  {
+    "nombre": "ESPN 3",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(espn3_arg)/variant.mpd",
+    "key": "56cffe75198fa81600c625883f10ede1:87e203fb99dded387fd481126e7c5178"
+  },
+  {
+    "nombre": "ESPN 4",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(espn4_arg)/variant.mpd",
+    "key": "50d56945c41f3c8fc0154c414aa2f842:572883af19d1589aec3d40af47dfd179"
+  },
+  {
+    "nombre": "ESPN PREMIUM",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(espnpr_arg)/variant.mpd",
+    "key": "c29b4e05389dc0493aa29d0debbe5a76:bbccac68c01477eed726fb1c11d54560"
+  },
+  {
+    "nombre": "FAST AND FUNBOX",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(fastandfunhd)/variant.mpd",
+    "key": "d05351999664ac94a18cbcb4e68d37e8:071481a9a6867bf8af578f73b2d45014"
+  },
+  {
+    "nombre": "FIGHTBOX",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(fightboxhd)/variant.mpd",
+    "key": "5a2334b7bae13628eb27062e3b79f294:aff28dcb8ca6b51a3fe252bcabf7941c"
+  },
+  {
+    "nombre": "FOX SPORTS",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(foxsports_arg)/variant.mpd",
+    "key": "ce5f0570b7f89e2efe19c7bf3c77dae7:d17fdbc7f72e68adf298b71d935864ba"
+  },
+  {
+    "nombre": "FOX SPORTS 2",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(foxsports2_arg)/variant.mpd",
+    "key": "922eaebf57397ebf2656cbf71ae4775f:3014cf17de69d8f916a83cbf6b4aec94"
+  },
+  {
+    "nombre": "FOX SPORTS 3",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(foxsports3_arg)/variant.mpd",
+    "key": "ee0ff8714c8f96a448eae5c9b796c889:d7c1e6b0d11ba5051096bb34779c6efb"
+  },
+  {
+    "nombre": "FUEL TV",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(fueltvhd)/variant.mpd",
+    "key": "8b8434c3b14b5b102b066d211d2fed1b:824bc2299209b4116926abe83cae0c15"
+  },
+  {
+    "nombre": "GAMETOON",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(gametoon)/variant.mpd",
+    "key": "075dae7484cb440084f04913a99311e0:3a8cfc19eb78725106c975479cd28bd6"
+  },
+  {
+    "nombre": "GINX ESPORTS TV",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(ginxesportstvhd)/variant.mpd",
+    "key": "5fd24b691f5e5108a4b9bfaf70066463:9d54422436550ad2dbb979546a0caf71"
+  },
+  {
+    "nombre": "NBA TV",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(nbatvhd)/variant.mpd",
+    "key": "8d2cb6bc3297139893a7173b5a5cb08c:7f4e276cd0463e417cba51932a3fdc93"
+  },
+  {
+    "nombre": "NFL NETWORK",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(nflnetwork)/variant.mpd",
+    "key": "1e3e776bd918f7b16e36c5c1088fa938:96cbda39fedca8f16ae38529dff2cb76"
+  },
+  {
+    "nombre": "OUTDOOR",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(outdoor)/variant.mpd",
+    "key": "06723e4db0084a4bd5a107cc2e60c273:05d239ff5f8735342942487773cb8131"
+  },
+  {
+    "nombre": "PX SPORTS",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(pxsports)/variant.mpd",
+    "key": "7a3331860220a10a7e8b16c137c61765:e9ab4d4a676be421e88c6e0127c6e087"
+  },
+  {
+    "nombre": "TNT SPORTS PREMIUM",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(tntsports_arg)/variant.mpd",
+    "key": "f7d41f94c41a5943cd836a52a59b7ebc:de0cb81e4146240f61281db5bf0d0ade"
+  },
+  {
+    "nombre": "TRACE SPORTS",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(tracesports)/variant.mpd",
+    "key": "98bac57a85139ab4321a50beb774288c:f5b8cb9ca54c0dc4cd1d2296fcff70be"
+  },
+  {
+    "nombre": "TYC SPORTS",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(tycsports_arg)/variant.mpd",
+    "key": "197ca823ac5f4e48573f9f87113c7d7a:c30eefbf2e79a97b0340e0877f4cdbf5"
+  },
+  {
+    "nombre": "WORLD FISHING NETWORK",
+    "categoria": "Deportes",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(worldfishing)/variant.mpd",
+    "key": "b5f32b68c0d304bc1ed139733bdd837f:71567806ff4c5157681af73ee883c800"
+  },
+  {
+    "nombre": "A&E",
+    "categoria": "Documentales",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(ae_arg)/variant.mpd",
+    "key": "6d763a93d9db04895bbdc59750ff6801:a8b918b7bfe3d184b0650fe723434059"
+  },
+  {
+    "nombre": "ANIMAL PLANET",
+    "categoria": "Documentales",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(animalplanet_arg)/variant.mpd",
+    "key": "d2d0a3a4e0f6c5120c07b6c38984962d:6de786017ba5fd9ab8b5a9c312f07cd7"
+  },
+  {
+    "nombre": "CLASSIC ARTS SHOWCASE",
+    "categoria": "Documentales",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(artstv)/variant.mpd",
+    "key": "bde975cd5e6edfe2a875885c14c13a72:eb8d25a4d0a1448a6a212cb87115d7c1"
+  },
+  {
+    "nombre": "CURIOSITY STREAM",
+    "categoria": "Documentales",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(curiositystreamhd)/variant.mpd",
+    "key": "03c5216d8cd45bb282ea6b8980251081:24af0d8d84fad4a48f92af9a96cc3a50"
+  },
+  {
+    "nombre": "DISCOVERY CHANNEL",
+    "categoria": "Documentales",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(discovery_arg)/variant.mpd",
+    "key": "c9bbc11c43ad8d1e830d079efe5915db:2d7f470afc42a8aac5b86213dab7e400"
+  },
+  {
+    "nombre": "DISCOVERY H&H",
+    "categoria": "Documentales",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(discoveryhh_arg)/variant.mpd",
+    "key": "d599850e9720b1787a48e9ac4e1f2e54:e1e5ef1cc1104d4ffe3b6dcc9f218a86"
+  },
+  {
+    "nombre": "DISCOVERY HGTV",
+    "categoria": "Documentales",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(hgtv_arg)/variant.mpd",
+    "key": "148b3066356389d40f9a7e5d16c06a61:b688faca0bfc33208b2a69ac43ce3e0f"
+  },
+  {
+    "nombre": "DISCOVERY ID",
+    "categoria": "Documentales",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(investigationdiscovery_arg)/variant.mpd",
+    "key": "00cd36c242757bca86bb98102e789cf9:e15bfeff8d806807213ccd1dfb80f7c7"
+  },
+  {
+    "nombre": "EL GOURMET",
+    "categoria": "Documentales",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(elgourmet_arg)/variant.mpd",
+    "key": "0788263ded65acc4d9272f1bef407dae:be20615acea767d657dda8a3772db880"
+  },
+  {
+    "nombre": "FOOD NETWORK",
+    "categoria": "Documentales",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(foodnetwork_arg)/variant.mpd",
+    "key": "7157e6755244da29b59b66b67416e99f:3c47e85aecfe86dec38866abd7fd2119"
+  },
+  {
+    "nombre": "HISTORY 2",
+    "categoria": "Documentales",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(history2_arg)/variant.mpd",
+    "key": "bba8aab1c773dd6fb23e7daf69cdfe2b:e2c426b0b79cde146bf9d64fd137381c"
+  },
+  {
+    "nombre": "HISTORY CHANNEL",
+    "categoria": "Documentales",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(history_arg)/variant.mpd",
+    "key": "13d51d57fa5e8da296ed74bca909db76:eea807e04f48a550557c49b315e12622"
+  },
+  {
+    "nombre": "NATIONAL GEOGRAPHIC",
+    "categoria": "Documentales",
+    "url": "https://dish-arg.ses.ioriver-vcdn.net/Content/DASH/Live/channel(ng_arg)/variant.mpd",
+    "key": "924a9dc61effe5881f0ba99ed776752c:217fe9577a128d6da9dffe7c07aa17b8"
+  },
+  {
+    "nombre": "WOBI",
+    "categoria": "Documentales",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(wobihd)/variant.mpd",
+    "key": "f48185821100565d8bb80aaf4c591f2a:525ba2ebbdbb171737e34a62f6225ba4"
+  },
+  {
+    "nombre": "BABY TV",
+    "categoria": "Infantil",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(babytv_arg)/variant.mpd",
+    "key": "68ceaabd918012f98d2d83ddc00767db:c59f0feabc785cf6e520add98ab0f271"
+  },
+  {
+    "nombre": "BABYFIRST",
+    "categoria": "Infantil",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(bftv)/variant.mpd",
+    "key": "82d882f3aada7d99b71695d0cb418538:ce445596de9e7a97f62515559cd67bdb"
+  },
+  {
+    "nombre": "CARTOON NETWORK",
+    "categoria": "Infantil",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(cartoonnetwork_arg)/variant.mpd",
+    "key": "8cb8c70bf471ab68500a32a4aa844500:ff771729188637ac3bf8dd8773ce3ee2"
+  },
+  {
+    "nombre": "CARTOONITO",
+    "categoria": "Infantil",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(cartoonito_arg)/variant.mpd",
+    "key": "f8beec12f84e3436c6c832293441a8eb:3858d13af38c2737a83a77c6fa38fabf"
+  },
+  {
+    "nombre": "CLAN TV",
+    "categoria": "Infantil",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(clantvhd)/variant.mpd",
+    "key": "673bc4f9d5db2a79390936b6eb0f99af:10ea639b7e75381c44caa9f0aa66d1a2"
+  },
+  {
+    "nombre": "DISCOVERY KIDS",
+    "categoria": "Infantil",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(discoverykids_arg)/variant.mpd",
+    "key": "16061cd84ac8a127de4d7a3f400b49b4:8fc525c6e12872b7694b3ee9c47c9f46"
+  },
+  {
+    "nombre": "DISNEY CHANNEL",
+    "categoria": "Infantil",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(disney_arg)/variant.mpd",
+    "key": "84ed1a450ceabf314a7bf41d4f8a04b9:35ed50f5ca9f207dd138e55efaa93653"
+  },
+  {
+    "nombre": "DISNEY JUNIOR",
+    "categoria": "Infantil",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(disneyjr_arg)/variant.mpd",
+    "key": "46acdaae83a41f4980092ac75fa17877:61fbb519224d2394c335bd16fdf62da9"
+  },
+  {
+    "nombre": "FIX & FOXI",
+    "categoria": "Infantil",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(fixandfoxihd)/variant.mpd",
+    "key": "23bb4080e1fbb765a547aa17c4f29ba5:2aab87ea531d968df28ee885c88c29cb"
+  },
+  {
+    "nombre": "NICK JUNIOR",
+    "categoria": "Infantil",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(nickjrhd)/variant.mpd",
+    "key": "6678b21d11148fc9604268ddbe008d72:8ba320049c30a2df809a90679c49b63d"
+  },
+  {
+    "nombre": "NICKELODEON",
+    "categoria": "Infantil",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(nick_arg)/variant.mpd",
+    "key": "3179b9d80cf3af7bade899df0905ed63:e19bf863ceb29c88981f9da4eb196b88"
+  },
+  {
+    "nombre": "PAKAPAKA",
+    "categoria": "Infantil",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(pakapaka_arg)/variant.mpd",
+    "key": "d702454377cf8b7588e5736817fb9af7:288ebce982cb2614ce398b024987cea7"
+  },
+  {
+    "nombre": "EWTN LATINOAMERICA",
+    "categoria": "Internacional",
+    "url": "https://cdn3.wowza.com/1/SmVrQmZCUXZhVDgz/b3J3MFJv/hls/live/playlist.m3u8"
+  },
+  {
+    "nombre": "JESUS CHRIST NETWORK",
+    "categoria": "Internacional",
+    "url": "https://1601580044.rsc.cdn77.org/live/_jcn_/amlst:PALMIAMI/playlist.m3u8"
+  },
+  {
+    "nombre": "MARIA VISION",
+    "categoria": "Internacional",
+    "url": "https://1601580044.rsc.cdn77.org/live/_jcn_/amlst:Mariavision/playlist.m3u8"
+  },
+  {
+    "nombre": "MARIA VISION ITALIA",
+    "categoria": "Internacional",
+    "url": "https://1601580044.rsc.cdn77.org/live/_jcn_/amlst:CHANNEL_2/playlist.m3u8"
+  },
+  {
+    "nombre": "RAI ITALIA",
+    "categoria": "Internacional",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(rai_arg)/variant.mpd",
+    "key": "b1cd06c3df2d86540fcd39ea5cfeaecb:002beae53167da4cc0dbe9b702a0da68"
+  },
+  {
+    "nombre": "TV5 MONDE",
+    "categoria": "Internacional",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(tv5mondehd)/variant.mpd",
+    "key": "f84e7266998995e74d0c6454a1d4190c:cd90390a3c4db58b7f47a0a8e4aefa6b"
+  },
+  {
+    "nombre": "TVE",
+    "categoria": "Internacional",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(tvespanolhd)/variant.mpd",
+    "key": "a9d96557e426698b1bf8950e74a8af41:7f7fac44782d89f646395ebf19a6c504"
+  },
+  {
+    "nombre": "TVN CHILE",
+    "categoria": "Internacional",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(tvnchile_arg)/variant.mpd",
+    "key": "036993a0b6fecd7c7704d69e0497486f:3de8cf45159bdf059ad2c1368af6a918"
+  },
+  {
+    "nombre": "VE PLUS",
+    "categoria": "Internacional",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(veplus)/variant.mpd",
+    "key": "201c7e7284a4ccdcea87b4a9f0185fe8:1f308cf585997e997a3c668c822f2206"
+  },
+  {
+    "nombre": "CM CANAL DE LA MUSICA",
+    "categoria": "Música",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(cm_arg)/variant.mpd",
+    "key": "274f7754f0117d764dff0a2de1f8c2b9:1b785fa85689a118a495d9747b2b555d"
+  },
+  {
+    "nombre": "EXA TV",
+    "categoria": "Música",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(exatv)/variant.mpd",
+    "key": "3443518a438f72c299ecedd7a8a2ad28:36a6301c3d722a2305c99e3c938aac58"
+  },
+  {
+    "nombre": "HTV",
+    "categoria": "Música",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(htv_arg)/variant.mpd",
+    "key": "2d73cd11c26c8132012293b5e609543b:14a4ed1b85f089cac8b4cf416fd30826"
+  },
+  {
+    "nombre": "MTV",
+    "categoria": "Música",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(83640aad-3943-f226-67b6-94086f915fd5)/variant.mpd",
+    "key": "bb8a6b32e830d4c9c52606d93b852262:12ae020d159c4ef6c5a7a411a3d0aa51"
+  },
+  {
+    "nombre": "QUIERO MUSICA TV",
+    "categoria": "Música",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(quieromusica_arg)/variant.mpd",
+    "key": "7bb3ab3694dfd5c07c1864cfd678a073:7a58eccb867720b2a8f2e01036579846"
+  },
+  {
+    "nombre": "TELERITMO",
+    "categoria": "Música",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(tlrteleritmo)/variant.mpd",
+    "key": "512bdaae49e5887e8b345359979131ee:fd8da34b6671a6de0f08d14ba9ac2d4d"
+  },
+  {
+    "nombre": "TRACE LATINA",
+    "categoria": "Música",
+    "url": "https://tracelatina-arg.akamaized.net/hls/live/2104849/tracelatina/playlist.m3u8"
+  },
+  {
+    "nombre": "TRACE URBAN",
+    "categoria": "Música",
+    "url": "https://traceurban-arg.akamaized.net/hls/live/2104850/traceurban/playlist.m3u8"
+  },
+  {
+    "nombre": "24H TVE",
+    "categoria": "Noticias",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(24hours)/variant.mpd",
+    "key": "d912e25989735515b0b2080cc900fb08:83d61ffb9368cba73dcc83a0302ad6a3"
+  },
+  {
+    "nombre": "A24",
+    "categoria": "Noticias",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(a24)/variant.mpd",
+    "key": "fff647cc4bf0ed6d9c9d105fa203fa9b:1353bdc83ce70cf61354586dc539b8e8"
+  },
+  {
+    "nombre": "ANTENA 3 INTERNACIONAL",
+    "categoria": "Noticias",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(antena3)/variant.mpd",
+    "key": "1236cdf9b12eba6d4a4d1494f7a0dd30:3737ce9763b0816e3feab4624e1aa9a7"
+  },
+  {
+    "nombre": "AZTECA INTERNACIONAL",
+    "categoria": "Noticias",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(aztecainternacionalhd)/variant.mpd",
+    "key": "ba15afee205d1bfe69d6b9f3486ebf37:62570d9ef67f763174b4a8f4343855e2"
+  },
+  {
+    "nombre": "BBC NEWS",
+    "categoria": "Noticias",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(bbcworldnews)/variant.mpd",
+    "key": "6d93971a12a2d772f172618967bdbcdc:9fe4455887ec79ad1165976ebbb27abf"
+  },
+  {
+    "nombre": "BLOOMBERG TV",
+    "categoria": "Noticias",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(bloombergtvhd)/variant.mpd",
+    "key": "7ee225ed0ade4b53d7468962ea0b54a9:af8fd0c35f6390efc737cb4a08b3bd8c"
+  },
+  {
+    "nombre": "C5N",
+    "categoria": "Noticias",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(c5n)/variant.mpd",
+    "key": "0456fd8f8b0989541a74ce1c047478f7:355c7ddf365a8854874783e28ac5b659"
+  },
+  {
+    "nombre": "CANAL 26",
+    "categoria": "Noticias",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(canal26_arg)/variant.mpd",
+    "key": "fa1f24d10cab285af45027c1cb715341:98ead84e63cca910bde3ea314f8a14a9"
+  },
+  {
+    "nombre": "CARACOL INTERNACIONAL",
+    "categoria": "Noticias",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(caracoltvhd)/variant.mpd",
+    "key": "88f1528e0ab6869ccd372f6e543c2b9b:779dfba140aa6206fb2ea8139d0c54fd"
+  },
+  {
+    "nombre": "CNN EN ESPANOL",
+    "categoria": "Noticias",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(cnnesp_arg)/variant.mpd",
+    "key": "af832b0157a59ba6502fa94f4fabbb39:c7dbf6b608cb02fdba17e0008342d8c3"
+  },
+  {
+    "nombre": "CNN INTERNATIONAL",
+    "categoria": "Noticias",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(cnninternacional)/variant.mpd",
+    "key": "290e9d634140a533d040fe7ec239d160:cfff5ccb4c18d2b6f9deb3be039da98c"
+  },
+  {
+    "nombre": "CRONICA TV",
+    "categoria": "Noticias",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(cronicatv)/variant.mpd",
+    "key": "74d8f21022bbc2fd059f88ed11636b3b:04cf4b7d6cf189270207937f3e5870c1"
+  },
+  {
+    "nombre": "DAYSTAR EN ESPANOL",
+    "categoria": "Noticias",
+    "url": "https://live-mcl.cdn01.net/web/v2a5w28m3/playlist.m3u8"
+  },
+  {
+    "nombre": "EURONEWS",
+    "categoria": "Noticias",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(euronews)/variant.mpd",
+    "key": "7b5d88d0281879efcad2d5ef28d20238:1acd7685df30ea5b0db9a0a92b0b0364"
+  },
+  {
+    "nombre": "FRANCE 24 ENGLISH",
+    "categoria": "Noticias",
+    "url": "https://live.france24.com/hls/live/2037218/F24_EN_HI_HLS/master_5000.m3u8"
+  },
+  {
+    "nombre": "FRANCE 24 ESPANOL",
+    "categoria": "Noticias",
+    "url": "https://live.france24.com/hls/live/2037220/F24_ES_HI_HLS/master_5000.m3u8"
+  },
+  {
+    "nombre": "FRANCE 24 FRANCAIS",
+    "categoria": "Noticias",
+    "url": "https://live.france24.com/hls/live/2037179/F24_FR_HI_HLS/master_5000.m3u8"
+  },
+  {
+    "nombre": "LA NACION+",
+    "categoria": "Noticias",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(lanacion_arg)/variant.mpd",
+    "key": "c4ed15bbe911e7815a28ebd28e14afec:926578975c01426fad829b8a81db83a1"
+  },
+  {
+    "nombre": "TELEMUNDO INTERNACIONAL",
+    "categoria": "Noticias",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(telemundo_arg)/variant.mpd",
+    "key": "9910c0085bded0455af1930ca28be248:14d55f96690e2b241a849f1eff7ea8e9"
+  },
+  {
+    "nombre": "TODO NOTICIAS",
+    "categoria": "Noticias",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(tn)/variant.mpd",
+    "key": "990607a0626932634e139856bc19cc68:3f120756bb8c7870b814a0885d8a8b0b"
+  },
+  {
+    "nombre": "CORAZON",
+    "categoria": "Novelas",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(aztecacorazon)/variant.mpd",
+    "key": "7d9ad184f8be4d6ed11ca4ee1ad11488:f0002b622065b6c1c4777d05fa859e99"
+  },
+  {
+    "nombre": "KANAL D DRAMA",
+    "categoria": "Novelas",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(kanalddrama)/variant.mpd",
+    "key": "d2711af06bde427bc1580ceba85a6e2a:1f50cbdec8d4c179b1f60daf0795621d"
+  },
+  {
+    "nombre": "PASIONES TV",
+    "categoria": "Novelas",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(pasioneshd)/variant.mpd",
+    "key": "ca0a4f1cc1d2740fbe0ba9af9745f10a:21c4b13e0c9ffbae8a269e569560cf45"
+  },
+  {
+    "nombre": "ROMANCE CHANNEL",
+    "categoria": "Novelas",
+    "url": "https://romancechannel-arg.akamaized.net/Evrideo/0bc8531f-9192-4c3f-a157-fc052f5a045f_1000026191_HLS/manifest.m3u8"
+  },
+  {
+    "nombre": "VIVE KANAL D DRAMA",
+    "categoria": "Novelas",
+    "url": "https://vivekanalddrama-arg.akamaized.net/playlist.m3u8"
+  },
+  {
+    "nombre": "A3SERIES",
+    "categoria": "Series",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(a3series)/variant.mpd",
+    "key": "f41eb0f3367804d8fc48dec22c2c7d68:42983f2821aba0d2d17afc373a3c3dab"
+  },
+  {
+    "nombre": "ADULT SWIM",
+    "categoria": "Series",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(adultswim_arg)/variant.mpd",
+    "key": "632af0c2348ec15b6d727ce7e16e6629:05eb4fd863d47055e923ed594b9cf4d3"
+  },
+  {
+    "nombre": "AMC",
+    "categoria": "Series",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(amc_arg)/variant.mpd",
+    "key": "66dd5969eb399a76692be23d7d2f12da:4ea973d4c989d268e2c24dd1d2a9f9dd"
+  },
+  {
+    "nombre": "AMC SERIES",
+    "categoria": "Series",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(amcseries_arg)/variant.mpd",
+    "key": "bcb549098df7d195d922f0554474c060:9cff4b5cf59478a6bb8060c1b7fcc9b7"
+  },
+  {
+    "nombre": "AXN",
+    "categoria": "Series",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(axn_arg)/variant.mpd",
+    "key": "7ebf85f5ea4386ff87d0f439b122d224:767d707dbee407b7cd260198505c016d"
+  },
+  {
+    "nombre": "COMEDY CENTRAL",
+    "categoria": "Series",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(comedycentral)/variant.mpd",
+    "key": "ee3ad5fb53e7b4f65d732ce7f03d53a4:e4a1ef4d19cbac85da7f6a29da2c5135"
+  },
+  {
+    "nombre": "FX",
+    "categoria": "Series",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(fx_arg)/variant.mpd",
+    "key": "4916bba87a54eede88a4c5c0b07e4bb1:e09f391974b401bf25f927bf4c1f743e"
+  },
+  {
+    "nombre": "LIFETIME",
+    "categoria": "Series",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(lifetime_arg)/variant.mpd",
+    "key": "0dbf9aed897fe5d8796b455ae68694ac:7b8c4bd6fd82d8773d9490276783f51b"
+  },
+  {
+    "nombre": "SONY CHANNEL",
+    "categoria": "Series",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(sony_arg)/variant.mpd",
+    "key": "61fd8cd30d33031522679dcd5c12025a:6f911424ca5079c9416e2cee730b6f4d"
+  },
+  {
+    "nombre": "SPACE",
+    "categoria": "Series",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(space_arg)/variant.mpd",
+    "key": "6bdabeb47bae9cc2eb5d4c964b5681b1:c0b2699f9904562b2ae88ba849cafb34"
+  },
+  {
+    "nombre": "STAR CHANNEL",
+    "categoria": "Series",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(starchannel_arg)/variant.mpd",
+    "key": "ad4a7a7f3840844fa7188581387bb22a:a4a387411c220b879db932bb95f7e1ac"
+  },
+  {
+    "nombre": "STAR TVE",
+    "categoria": "Series",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(startvhd)/variant.mpd",
+    "key": "28c5d535d08eab85a95f742c6305dcda:a7ffee630eeb09c7310852fd9d3b4a1e"
+  },
+  {
+    "nombre": "STUDIO UNIVERSAL",
+    "categoria": "Series",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(studiouniversal_arg)/variant.mpd",
+    "key": "4281b7af0dce74528c2a42b723f3eb3e:047a8395c5235d3ec852603e5d8705a6"
+  },
+  {
+    "nombre": "TNT",
+    "categoria": "Series",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(tnt_arg)/variant.mpd",
+    "key": "d20d587dfb19ca3e1cccfabb52c03086:0634a6083a88ea08eea626d773d72956"
+  },
+  {
+    "nombre": "TNT NOVELAS",
+    "categoria": "Series",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(tntnovelas_arg)/variant.mpd",
+    "key": "142526907f770ad0536021a1215fc4b1:28a8d798d3e9b5e39732e50cd730f38d"
+  },
+  {
+    "nombre": "TNT SERIES",
+    "categoria": "Series",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(tntseries_arg)/variant.mpd",
+    "key": "aed3f75ea54eb09d19666c2cf8a0f92f:7dcb7673430b36adaaab673ed10e09dc"
+  },
+  {
+    "nombre": "UNIVERSAL TV",
+    "categoria": "Series",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(universal_arg)/variant.mpd",
+    "key": "41cb9973a47158b13da621c0494611d3:8c72d7121972c0edc3f7e0e029d1bbd6"
+  },
+  {
+    "nombre": "USA NETWORK",
+    "categoria": "Series",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(usamexico)/variant.mpd",
+    "key": "39773b0d7b389430776142a2fa613ad9:bce74121a4884ec7d2ed9dd96442a775"
+  },
+  {
+    "nombre": "WARNER CHANNEL",
+    "categoria": "Series",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(warner_arg)/variant.mpd",
+    "key": "7b95853b6afe7627118414c04c0827fb:e1f7e63cc427933f9c9fa01985a25521"
+  },
+  {
+    "nombre": "AZTECA CLIC",
+    "categoria": "Varios",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(aztecaclichd)/variant.mpd",
+    "key": "3feb186d198eb79eb71ee573dc69a207:a95015a94328221a82b199f412d81049"
+  },
+  {
+    "nombre": "CINDIE TV",
+    "categoria": "Varios",
+    "url": "https://cindielite-arg.akamaized.net/scheduler/scheduleMaster/387.m3u8"
+  },
+  {
+    "nombre": "DHE",
+    "categoria": "Varios",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(dnehd)/variant.mpd",
+    "key": "103cc11d061c3bb8aff8dbafbfc5a5a1:e42eb93eb51e8ea78828ccfbb31f4d60"
+  },
+  {
+    "nombre": "E ENTERTAINMENT",
+    "categoria": "Varios",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(eentertainment_arg)/variant.mpd",
+    "key": "6938c6b95645d3721d03d4d1bb044e3e:d5cfb1a45443e29238ad32cdfbdef371"
+  },
+  {
+    "nombre": "FASHIONBOX TV",
+    "categoria": "Varios",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(fashionbox)/variant.mpd",
+    "key": "4752b59660b24fd586e7919d1209c058:546d131b6936fcc591a4aeee4613794a"
+  },
+  {
+    "nombre": "FILM & ARTS",
+    "categoria": "Varios",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(filmandarts_arg)/variant.mpd",
+    "key": "c81c90fd06bfcf146cd6b17159d5e3fd:c050a19095c09a4830ae8b185844d200"
+  },
+  {
+    "nombre": "HOLA TV",
+    "categoria": "Varios",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(holatv)/variant.mpd",
+    "key": "b2cea93a0a01e1218cf0a3d0d2d09f25:a06ac367319c8926249057a2eb2a78d9"
+  },
+  {
+    "nombre": "MC",
+    "categoria": "Varios",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(mchd)/variant.mpd",
+    "key": "077105b9c52693e7c1df39521ab65803:7189d75c1469f0bd11efa54d58d3499b"
+  },
+  {
+    "nombre": "NOVELISIMA",
+    "categoria": "Varios",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(novelisima)/variant.mpd",
+    "key": "fce62f7383612caeea239b82c8286fbd:bd238280cf696fe419b0e402224170dd"
+  },
+  {
+    "nombre": "SHOW BUSINESS TV",
+    "categoria": "Varios",
+    "url": "https://dish-arg.akamaized.net/Content/DASH/Live/channel(showbusinesstvhd)/variant.mpd",
+    "key": "e33c05562a11a4ae87012f648fc6bd83:8de9e420f5d87ab7ee09f5cdc57a25a0"
+  }
+]

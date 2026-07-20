@@ -56,3 +56,6 @@ sounds/*
 # Operator-provided live-TV channel list (may hold DRM keys) + the standalone tool
 /tv/*
 !/tv/README.md
+# db.json holds DRM ClearKeys — versioned ONLY because this repo is PRIVATE.
+# If the repo is ever made public again, remove this line and purge it from history.
+!/tv/db.json
