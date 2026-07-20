@@ -7,7 +7,9 @@ import { applySpeakerToContext } from "../lib/audio-devices";
 import { isIOS, getMicrophoneStream } from "../lib/microphone";
 import { playCue, preloadCueSamples } from "../lib/sounds";
 import { getIceServers } from "../lib/ice";
+import { parseClearKey, type Channel } from "../lib/tv";
 import { formatMessage, RateLimiter, META_SEP, type ChatMessage } from "../lib/chat";
+import { m } from "../paraglide/messages.js";
 import {
   announce_chat_hint,
   announce_a_participant,
@@ -251,6 +253,23 @@ export function useMediasoup() {
   // Precomputed shuffled play order for the current playlist. Rebuilt whenever
   // the playlist is set or shuffle is toggled. Each entry is a playlist index.
   const shuffleOrderRef = useRef<number[]>([]);
+  // Live-TV playback (Shaka + a dedicated <audio>, routed through fileVolumeGain).
+  // createMediaElementSource is one-shot per element, so element + source are made
+  // once and reused; only the Shaka player's loaded content changes per channel.
+  const tvAudioRef = useRef<HTMLAudioElement | null>(null);
+  const tvSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  // Loosely typed: the shaka.Player instance (lazy-loaded).
+  const tvPlayerRef = useRef<{
+    configure(c: unknown): void;
+    load(u: string): Promise<void>;
+    unload(): Promise<void>;
+  } | null>(null);
+  // True while a TV channel is the current streamer source. TV audio is a live
+  // Shaka stream, not a file slot, so it can't cross-fade — startFileSource and
+  // startPlaylist check this and force a clean stopFileStream first instead of
+  // taking the crossfade branch (which would leave TV running alongside the
+  // new source).
+  const tvActiveRef = useRef(false);
   // Stable ref so that ended handlers can call playTrack without a stale closure.
   // Updated synchronously every render after playTrack is defined.
   const playTrackRef = useRef<((index: number) => Promise<void>) | null>(null);
@@ -1590,11 +1609,10 @@ export function useMediasoup() {
   // connected source → xfadeGain → fileVolumeGain → outDest. Active slot
   // xfadeGain = 1, idle = 0. The file mixes into the voice track directly;
   // no separate producer or duck gain on the sent path.
-  const ensureFileSlots = useCallback(
+  // The single "streamer volume" node: files, URL streams and TV all feed it, and
+  // it feeds outDest (room) + the local monitor. Created lazily, once.
+  const ensureFileVolumeGain = useCallback(
     (g: NonNullable<typeof outGraphRef.current>) => {
-      if (g.fileSlots) return g.fileSlots;
-
-      // Ensure fileVolumeGain is ready before wiring slots into it.
       if (!g.fileVolumeGain) {
         g.fileVolumeGain = sharedAudioContext.createGain();
         g.fileVolumeGain.gain.value = store.getState().fileVolume;
@@ -1605,6 +1623,17 @@ export function useMediasoup() {
         // connection on the volume node — no per-slot source → destination wires.
         g.fileVolumeGain.connect(sharedAudioContext.destination);
       }
+      return g.fileVolumeGain;
+    },
+    [store],
+  );
+
+  const ensureFileSlots = useCallback(
+    (g: NonNullable<typeof outGraphRef.current>) => {
+      if (g.fileSlots) return g.fileSlots;
+
+      // Ensure the shared volume node is ready before wiring slots into it.
+      ensureFileVolumeGain(g);
 
       const makeSlot = (active: boolean): FileSlot => {
         const audioEl = new Audio();
@@ -1620,7 +1649,7 @@ export function useMediasoup() {
       g.fileSlots = [makeSlot(true), makeSlot(false)];
       return g.fileSlots;
     },
-    [store],
+    [ensureFileVolumeGain],
   );
 
   // Load a new track into a slot: revoke its previous object URL, swap .src,
@@ -1655,7 +1684,7 @@ export function useMediasoup() {
   );
 
   const stopFileStream = useCallback(
-    async () => {
+    async (opts?: { silent?: boolean }) => {
       if (store.getState().fileStreamName == null) return;
       const g = outGraphRef.current;
       // Abort ended/error listeners on both slots before teardown so they
@@ -1675,6 +1704,21 @@ export function useMediasoup() {
         g.fileSlots = null;
         g.activeSlot = 0;
       }
+      // Tear down a TV channel if one is playing. Keep the element + source node
+      // (reused next time); just unload Shaka, pause, and disconnect the source.
+      // Awaited (not fire-and-forget) so a fast channel re-switch — which reuses
+      // the same tvPlayerRef.current for configure()/load() right after this
+      // returns — can't race an in-flight unload().
+      if (tvPlayerRef.current) {
+        await tvPlayerRef.current.unload().catch(() => {});
+      }
+      tvAudioRef.current?.pause();
+      try {
+        tvSourceRef.current?.disconnect();
+      } catch {
+        /* not connected */
+      }
+      tvActiveRef.current = false;
       if (g) {
         g.fileVolumeGain?.disconnect();
         g.fileVolumeGain = null;
@@ -1701,8 +1745,9 @@ export function useMediasoup() {
         }
       }
       // File now mixes into the voice track — no server-side pin or producer to
-      // close. Play the cue.
-      playCue(sharedAudioContext, "share-stop");
+      // close. Play the cue, unless the caller wants a silent teardown (e.g.
+      // startTvChannel switching channels).
+      if (!opts?.silent) playCue(sharedAudioContext, "share-stop");
     },
     [store],
   );
@@ -1791,6 +1836,11 @@ export function useMediasoup() {
       const g = ensureOutGraph();
       resumeSharedContext();
 
+      // If a TV channel is the current source, tear it down first (its audio
+      // can't cross-fade — it's a live Shaka stream), so this starts fresh, not
+      // alongside.
+      if (tvActiveRef.current) await stopFileStream({ silent: true });
+
       const firstStart = store.getState().fileStreamName == null;
 
       // Build (or reuse) the two persistent slots and the shared chain
@@ -1851,6 +1901,84 @@ export function useMediasoup() {
     [store, startFileSource],
   );
 
+  // Play a live-TV channel (DASH + ClearKey) through Shaka into a dedicated
+  // <audio> element, whose output is routed into fileVolumeGain — same shared
+  // node as files/URL streams, so TV never gets its own producer or SFU pin.
+  const startTvChannel = useCallback(
+    async (channel: Channel) => {
+      const g = ensureOutGraph();
+      resumeSharedContext();
+
+      // One streamer source at a time — stop whatever's playing (silent: switching
+      // channels shouldn't chime).
+      await stopFileStream({ silent: true });
+
+      const fvg = ensureFileVolumeGain(g);
+
+      try {
+        // Lazy-load Shaka the first time TV is used (keeps it out of the main bundle).
+        const shaka = (await import("shaka-player")).default;
+        shaka.polyfill.installAll();
+        if (!shaka.Player.isBrowserSupported()) {
+          store.getState().announce(m.tv_unsupported());
+          throw new Error("unsupported");
+        }
+
+        // Dedicated <audio> + Web Audio source, made once and reused.
+        if (!tvAudioRef.current) {
+          const el = new Audio();
+          (el as unknown as Record<string, boolean>).playsInline = true;
+          el.crossOrigin = "anonymous";
+          tvAudioRef.current = el;
+          tvSourceRef.current = sharedAudioContext.createMediaElementSource(el);
+        }
+        tvSourceRef.current!.connect(fvg);
+
+        if (!tvPlayerRef.current) {
+          tvPlayerRef.current = new shaka.Player(tvAudioRef.current);
+        }
+        const player = tvPlayerRef.current;
+        const clearKeys = parseClearKey(channel.key);
+        // Audio only: restrict video (maxHeight 0) so Shaka picks the audio-only
+        // variant and never downloads the video track — we play into an <audio>
+        // element and re-broadcast to the room, so the video would be pure waste.
+        player.configure({
+          drm: clearKeys ? { clearKeys } : {},
+          restrictions: { maxHeight: 0 },
+        });
+        await player.load(channel.url);
+        await tvAudioRef.current.play().catch(() => {});
+
+        // TV is now the active streamer source — startFileSource/startPlaylist
+        // check this to force a clean teardown before starting (TV can't cross-fade).
+        tvActiveRef.current = true;
+
+        store.getState().setFileStream(channel.nombre);
+        store.getState().setPlayerIsUrl(true);
+        store.getState().setFileStreamPlaying(true);
+      } catch (err) {
+        // Clean up the half-established TV path so a later stopFileStream doesn't skip it.
+        try {
+          tvSourceRef.current?.disconnect();
+        } catch {
+          /* not connected */
+        }
+        try {
+          await tvPlayerRef.current?.unload();
+        } catch {
+          /* nothing loaded */
+        }
+        tvAudioRef.current?.pause();
+        tvActiveRef.current = false;
+        // If this was the unsupported case we already announced; otherwise announce a generic error.
+        if (!(err instanceof Error && err.message === "unsupported")) {
+          store.getState().announce(m.tv_play_error());
+        }
+        throw err; // let the dialog react too
+      }
+    },
+    [ensureOutGraph, ensureFileVolumeGain, stopFileStream, store],
+  );
 
   // --- Folder playlist: crossfade-based track navigation ---
 
@@ -2029,6 +2157,12 @@ export function useMediasoup() {
 
       // Local files/folder → not a URL stream (the player shows full controls).
       store.getState().setPlayerIsUrl(false);
+
+      // If a TV channel is the current source, tear it down first (its audio
+      // can't cross-fade — it's a live Shaka stream), so this starts fresh, not
+      // alongside.
+      if (tvActiveRef.current) await stopFileStream({ silent: true });
+
       const firstStart = store.getState().fileStreamName == null;
       const oldPlaylist = store.getState().playlist;
 
@@ -2070,7 +2204,7 @@ export function useMediasoup() {
         );
       }
     },
-    [store, playTrack],
+    [store, playTrack, stopFileStream],
   );
 
   // Folder picker fallback (<input webkitdirectory>): order the files by relative
@@ -2353,6 +2487,7 @@ export function useMediasoup() {
     startPlaylist,
     startFolderStream,
     startUrlStream,
+    startTvChannel,
     stopFileStream,
     playTrack,
     playerNext,

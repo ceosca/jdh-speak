@@ -8,6 +8,45 @@
 
 ---
 
+## 2026-07-20
+
+### `feat/tv-live-channels` — TV en vivo: canales de TV en la sala
+
+- **Qué:** botón **"TV en vivo"** en la barra → diálogo con las **categorías como
+  encabezados** (navegables con H en NVDA) y **un botón por canal** debajo (de
+  `tv/db.json`, servido por el server). Al elegir un canal, **suena para toda la
+  sala** y **el diálogo queda abierto** (se cambia de canal sin reabrir; se cierra
+  con la X o Escape). Se controla desde el pie del reproductor (volumen + detener).
+  **Escape ya no cierra el reproductor** (así seguís usando la plataforma con algo
+  sonando).
+- **Cómo:**
+  - Server: `GET /api/tv-channels` lee `tv/db.json` (gitignored, dato de
+    despliegue con llaves DRM; re-lee al cambiar el mtime). Parser + test en
+    `server/src/tv-channels.ts`. Se versiona `tv/README.md`.
+  - Cliente: DASH+ClearKey descifrado con **Shaka Player** en el navegador
+    (`import()` diferido → chunk async propio, no infla el bundle). Un `<audio>`
+    dedicado enrutado por `fileVolumeGain → outDest` (misma vía que un stream de
+    URL, **sin productor aparte**, no fuerza SFU). `startTvChannel` en el hook;
+    `TvDialog.tsx`; `lib/tv.ts`.
+  - Al arrancar un archivo/URL mientras la TV suena, la TV se corta primero
+    (evita doble audio).
+  - **Solo audio** (`b2e843a`): `player.configure({ restrictions: { maxHeight: 0 } })`
+    → Shaka elige la variante de solo audio y **nunca baja el video**. Verificado en
+    el navegador: una sola representación `audio/mp4` (`.m4a`, ~49 KB/segmento),
+    cero segmentos de video, ~150–200 kbps (comparable a compartir música, no video).
+    **No sacar `maxHeight: 0`** o vuelve a bajar video de varios Mbps.
+  - **Errores a la vista** (`8e5fa80`): si un canal no carga, se limpia todo, se
+    **anuncia** (`tv_play_error` / `tv_unsupported`) y el diálogo muestra un aviso
+    — clave para el usuario ciego (antes fallaba en silencio).
+- **CORS:** el `fetch` directo a un segmento del CDN dio 200 con cuerpo legible, así
+  que la re-emisión a la sala debería andar; falta el test final con un 2º peer real.
+- **Fuera de v1:** timeshift, selección de idioma, grabación, panel de
+  administración de canales.
+- **Requisito:** Chrome (EME/ClearKey). `tv/db.json` en el servidor con
+  `{ nombre, categoria, url(.mpd), key: "kid:key" }`.
+
+---
+
 ## 2026-07-17
 
 ### `docs` — Guía para montar un TURN propio (tarea pendiente de infra)

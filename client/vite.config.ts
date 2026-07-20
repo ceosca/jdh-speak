@@ -27,6 +27,10 @@ export default defineConfig({
         // these chunks rarely change, so returning users keep them cached.
         manualChunks(id) {
           if (!id.includes("node_modules")) return;
+          // shaka-player is lazy-loaded (only when "TV en vivo" is used). Leave it
+          // un-chunked so Rollup code-splits it into its own async chunk instead of
+          // pulling it into the eager vendor chunk that every visitor downloads.
+          if (id.includes("shaka-player")) return;
           if (id.includes("mediasoup-client")) return "mediasoup";
           return "vendor";
         },

@@ -125,13 +125,6 @@ export function FileStreamPlayer({
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- mount only
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    // Always handle Escape to close, regardless of target.
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      onClose();
-      return;
-    }
-
     // Ctrl+End → jump to the bottom-most control (Open files).
     if (e.key === "End" && e.ctrlKey) {
       e.preventDefault();
