@@ -61,8 +61,11 @@ function formatTime(sec: number): string {
 // the controls). It's the last thing in reading order, and the bottom-most control
 // is "Abrir archivos" — Ctrl+End jumps straight there. Order bottom→top: Open
 // files, Open folder, volume, then (when a track is loaded) the rest of the
-// transport above. `role="application"` lets screen readers drive the contained
-// widgets natively. URL playback lives in its own dialog — one job per control.
+// transport above. It's a plain `role="group"` (NOT `role="application"`, which
+// trapped screen readers into forms mode — "press Enter to enter" — and hid the
+// controls); the buttons/sliders are directly navigable. URL playback lives in
+// its own dialog — one job per control. A series hides the local-file/playlist
+// controls (repeat, shuffle, open files/folder) and shows episode-relative time.
 export function FileStreamPlayer({
   name,
   playing,
@@ -90,9 +93,27 @@ export function FileStreamPlayer({
   const fileVolume = useRoomStore((s) => s.fileVolume);
   const playerTime = useRoomStore((s) => s.playerTime);
   const playerDuration = useRoomStore((s) => s.playerDuration);
+  const serieName = useRoomStore((s) => s.serieName);
+  const serieEpisodes = useRoomStore((s) => s.serieEpisodes);
+  const serieEpisodeIndex = useRoomStore((s) => s.serieEpisodeIndex);
   const hasTrack = name != null;
   const hasPlaylist = playlist.length > 1;
   const volumePct = Math.round(fileVolume * 100);
+
+  // A series plays ONE long .m4b where each episode is a millisecond time-range
+  // inside it, so the raw element time/duration span the whole file. Show
+  // progress RELATIVE to the current episode instead, and seek back into
+  // absolute time by adding the episode's start. (chapterStart is 0 for a plain
+  // local track, so the math is a no-op there.)
+  const isSeries = serieName != null;
+  const currentEp = isSeries ? serieEpisodes[serieEpisodeIndex] : undefined;
+  const chapterStart = currentEp ? currentEp.inicio / 1000 : 0;
+  const progressDuration = currentEp
+    ? Math.max(0, currentEp.fin / 1000 - chapterStart)
+    : playerDuration;
+  const progressTime = currentEp
+    ? Math.min(Math.max(0, playerTime - chapterStart), progressDuration)
+    : playerTime;
 
   // Roving cursor for the playlist listbox: a single tab stop whose
   // aria-activedescendant moves with Up/Down, so reaching the volume below no
@@ -229,15 +250,15 @@ export function FileStreamPlayer({
   };
 
   const progressValueText = m.player_progress_valuetext({
-    current: formatTime(playerTime),
-    total: formatTime(playerDuration),
+    current: formatTime(progressTime),
+    total: formatTime(progressDuration),
   });
 
   return (
     <div
       id="conference-player"
-      role="application"
-      aria-label={m.player_virtual_title()}
+      role="group"
+      aria-label={hasTrack ? (name ?? undefined) : m.player_virtual_title()}
       onKeyDown={onKeyDown}
       tabIndex={-1}
       className="w-full border-t border-sonic-600 bg-sonic-800 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-sonic-accent"
@@ -269,15 +290,15 @@ export function FileStreamPlayer({
                 aria-label={m.player_progress()}
                 aria-valuetext={progressValueText}
                 min={0}
-                max={playerDuration || 0}
+                max={progressDuration || 0}
                 step={1}
-                value={playerTime}
-                onChange={(e) => onSeekTo(parseFloat(e.target.value))}
+                value={progressTime}
+                onChange={(e) => onSeekTo(parseFloat(e.target.value) + chapterStart)}
                 className="w-full accent-sonic-accent"
               />
               <div className="flex justify-between text-xs text-sonic-400" aria-hidden="true">
-                <span>{formatTime(playerTime)}</span>
-                <span>{formatTime(playerDuration)}</span>
+                <span>{formatTime(progressTime)}</span>
+                <span>{formatTime(progressDuration)}</span>
               </div>
             </div>
 
@@ -318,7 +339,9 @@ export function FileStreamPlayer({
               {m.player_focus_hint()}
             </p>
 
-            {/* Repeat + shuffle controls. */}
+            {/* Repeat + shuffle controls. Hidden for a series — it's a single
+                continuous .m4b with no playlist to repeat or shuffle. */}
+            {!isSeries && (
             <div className="mt-1.5 flex items-center gap-1">
               <button
                 onClick={cycleRepeat}
@@ -346,6 +369,7 @@ export function FileStreamPlayer({
                 </span>
               )}
             </div>
+            )}
 
             {/* Playlist track list (only for multi-track playlists). A single tab
                 stop: the listbox holds focus and aria-activedescendant points at
@@ -420,8 +444,9 @@ export function FileStreamPlayer({
 
         {/* Open a local source, stacked at the very bottom (Open files last, so
             Ctrl+End lands on it). Does NOT stop the current track — cross-fades.
-            Hidden during a URL stream (only the volume shows until it closes). */}
-        {!isUrlStream && (
+            Hidden during a URL stream or a series (those aren't local files —
+            only the volume shows). Still available when idle or on a local track. */}
+        {!isUrlStream && !isSeries && (
           <div className="mt-2 flex flex-col gap-2 border-t border-sonic-700 pt-2">
             <button
               onClick={onOpenFolder}
