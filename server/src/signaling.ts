@@ -272,6 +272,7 @@ export function createSignalingServer(
             peerId: id,
             displayName: p.displayName,
             muted: p.muted,
+            streaming: p.streaming,
             producers: Array.from(p.producers.values()).map((prod) => ({
               producerId: prod.id,
               source: (prod.appData?.source as string) ?? "voice",
@@ -539,6 +540,21 @@ export function createSignalingServer(
       currentPeer.muted = parsed.data.muted;
       socket.to(currentRoom.name).emit(parsed.data.muted ? "peer-muted" : "peer-unmuted", {
         peerId: socket.id,
+      });
+      cb?.({ ok: true });
+    });
+
+    // A peer started/stopped streaming audio (file/URL/TV/series/share). Others
+    // keep that peer CENTRED while streaming so the music doesn't follow their
+    // 3D seat. Room-wide broadcast, like the mute state.
+    socket.on("set-streaming", (data: unknown, cb?: (res: unknown) => void) => {
+      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
+      const parsed = z.object({ streaming: z.boolean() }).safeParse(data);
+      if (!parsed.success) return cb?.({ ok: false, error: "Invalid value" });
+      currentPeer.streaming = parsed.data.streaming;
+      socket.to(currentRoom.name).emit("peer-streaming", {
+        peerId: socket.id,
+        streaming: parsed.data.streaming,
       });
       cb?.({ ok: true });
     });

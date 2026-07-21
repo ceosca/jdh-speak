@@ -592,6 +592,7 @@ export function Room() {
                     isMuted,
                     volume: 1,
                     isMusic: false,
+                    isStreaming: false,
                   }}
                   isLocal
                   textOnly={!hasMic}

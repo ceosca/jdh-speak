@@ -233,6 +233,10 @@ function applySpatialLayout(
   // configured seat (which is kept elsewhere, so turning it off restores it).
   autoAll: boolean,
   isMusic: (peerId: string) => boolean,
+  // True while a peer is streaming audio (file/URL/TV/series/share). Their track
+  // carries music mixed into their voice, so it stays CENTRED (never panned) —
+  // music shouldn't move around the room with the person, like a music caster.
+  isStreaming: (peerId: string) => boolean,
   nameOf: (peerId: string) => string,
   // Room-wide seat overrides keyed by displayName. An explicit seat (from the
   // Ctrl+Alt+U panel, shared by everyone) wins unless auto-all is on.
@@ -245,7 +249,7 @@ function applySpatialLayout(
   reverbSend: AudioNode | null,
 ) {
   for (const [peerId, pa] of peerAudios) {
-    const spatial = enabled && !isMusic(peerId);
+    const spatial = enabled && !isMusic(peerId) && !isStreaming(peerId);
     if (spatial) {
       const name = nameOf(peerId);
       const seat = autoAll ? autoSeatOf(name) : (positions[name] ?? autoSeatOf(name));
@@ -540,6 +544,7 @@ export function useMediasoup() {
       state.spatialAudio,
       state.spatialAutoAll,
       (peerId) => !!state.peers.get(peerId)?.isMusic,
+      (peerId) => !!state.peers.get(peerId)?.isStreaming,
       (peerId) => state.peers.get(peerId)?.displayName ?? "",
       state.spatialPositions,
       spatialAutoSeatOf(),
@@ -693,6 +698,17 @@ export function useMediasoup() {
   const secondaryMonitor = useRoomStore((s) => s.secondaryMonitor);
   const micMonitor = useRoomStore((s) => s.micMonitor);
   const shareMonitor = useRoomStore((s) => s.shareMonitor);
+  const fileStreamNameLocal = useRoomStore((s) => s.fileStreamName);
+  const isSharingAudioLocal = useRoomStore((s) => s.isSharingAudio);
+
+  // Tell the room when WE start/stop streaming audio (a file/URL/TV/series or a
+  // system-audio share), so others keep our track centred (never spatialised)
+  // while music is playing through it — music shouldn't follow our 3D seat.
+  useEffect(() => {
+    socketRef.current?.emit("set-streaming", {
+      streaming: fileStreamNameLocal != null || isSharingAudioLocal,
+    });
+  }, [fileStreamNameLocal, isSharingAudioLocal]);
 
   // All incoming audio plays through the shared context, so the speaker pick
   // is one setSinkId there — it covers every peer, current and future.
@@ -1308,6 +1324,7 @@ export function useMediasoup() {
             peerId: string;
             displayName: string;
             muted?: boolean;
+            streaming?: boolean;
             producers: Array<{ producerId: string; source: string }>;
           }>;
           mode: RoomMode;
@@ -1369,6 +1386,7 @@ export function useMediasoup() {
           // Server truth for mute state — a late joiner (or a reconnect that
           // missed the peer-muted events) renders existing mutes correctly.
           store.getState().setPeerMuted(peer.peerId, !!peer.muted);
+          store.getState().setPeerStreaming(peer.peerId, !!peer.streaming);
         }
 
         // Producers queued before this ack (stale modeRef during a rejoin) are
@@ -1742,6 +1760,13 @@ export function useMediasoup() {
         surfaceToggle(`peer:${peerId}`, false, () => {
           playCue(sharedAudioContext, "peer-unmute");
         });
+      });
+
+      // A peer started/stopped streaming audio — re-seat so their track is
+      // centred (never spatialised) while streaming, then back to their seat.
+      socket.on("peer-streaming", ({ peerId, streaming }: { peerId: string; streaming: boolean }) => {
+        store.getState().setPeerStreaming(peerId, streaming);
+        refreshSpatial();
       });
 
       // Incoming chat (including the echo of our own messages): render it, chime

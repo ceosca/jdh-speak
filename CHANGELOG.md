@@ -45,6 +45,25 @@ Combina con el espacial (cada uno posicionado, todos en la misma sala).
 
 ---
 
+## 2026-07-21 (4)
+
+### `feat/music-centered` — la música no sigue el 3D: queda centrada
+
+Antes, cuando un participante reproducía (archivo/URL/TV/serie o compartía audio),
+esa música iba mezclada en su pista de voz y **se paneaba a su asiento 3D** — la
+música "seguía" a la persona por la sala. Ahora **mientras alguien reproduce, su
+pista queda centrada** (nunca espacializada), como el caster de música.
+
+- **Cómo:** nuevo flag por peer `streaming` (server, espejo de `muted`): el cliente
+  emite `set-streaming` cuando arranca/para de reproducir o compartir, el server
+  lo difunde (`peer-streaming`) y lo manda en el join. `applySpatialLayout` centra
+  a los peers con `isStreaming` (además de los casters `isMusic`).
+- **Nota:** mientras alguien reproduce, su **voz también queda centrada** (es una
+  sola pista) — es el trade-off para que la música no se mueva.
+- **Deploy:** server + cliente → `git pull` + `pnpm build` + `systemctl restart jdh-speak`.
+
+---
+
 ## 2026-07-21 (2)
 
 ### `feat/spatial-walk` — audio espacial: caminar con flechas, sin distancia, auto-ubicar

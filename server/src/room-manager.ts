@@ -8,6 +8,11 @@ export interface Peer {
   // Mirrors the client's mute toggle (set via producer-pause/-resume, which
   // fire in P2P mode too) so late joiners can render existing peers' state.
   muted: boolean;
+  // True while this peer is streaming audio (a file/URL/TV/series, or a system
+  // audio share). Their track then carries music mixed into their voice, so
+  // listeners keep it CENTRED (never spatialised) — music shouldn't move around
+  // the room with the person. Broadcast like `muted`.
+  streaming: boolean;
   sendTransport: WebRtcTransport | null;
   recvTransport: WebRtcTransport | null;
   producers: Map<string, Producer>;
@@ -179,6 +184,7 @@ export function createPeer(room: Room, peerId: string, displayName: string): Pee
     id: peerId,
     displayName,
     muted: false,
+    streaming: false,
     sendTransport: null,
     recvTransport: null,
     producers: new Map(),
