@@ -8,6 +8,16 @@ import { isIOS, getMicrophoneStream } from "../lib/microphone";
 import { playCue, preloadCueSamples } from "../lib/sounds";
 import { getIceServers } from "../lib/ice";
 import { parseClearKey, type Channel } from "../lib/tv";
+import {
+  flattenEpisodes,
+  seasonsOf,
+  episodeIndexAt,
+  serieAudioSrc,
+  loadProgress,
+  saveProgress,
+  type Serie,
+  type Episode,
+} from "../lib/serieteca";
 import { formatMessage, RateLimiter, META_SEP, type ChatMessage } from "../lib/chat";
 import { m } from "../paraglide/messages.js";
 import {
@@ -270,6 +280,16 @@ export function useMediasoup() {
   // taking the crossfade branch (which would leave TV running alongside the
   // new source).
   const tvActiveRef = useRef(false);
+  // Series playback: a dedicated <audio> whose src is the same-origin
+  // /api/audio-proxy (the .m4b lacks CORS), routed through fileVolumeGain like TV.
+  // createMediaElementSource is one-shot per element, so element + source persist.
+  const serieAudioRef = useRef<HTMLAudioElement | null>(null);
+  const serieSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const serieActiveRef = useRef(false);
+  const serieEpisodesRef = useRef<Episode[]>([]);
+  const serieIndexRef = useRef(0);
+  const serieNameRef = useRef<string | null>(null);
+  const serieProgressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Stable ref so that ended handlers can call playTrack without a stale closure.
   // Updated synchronously every render after playTrack is defined.
   const playTrackRef = useRef<((index: number) => Promise<void>) | null>(null);
@@ -1719,6 +1739,22 @@ export function useMediasoup() {
         /* not connected */
       }
       tvActiveRef.current = false;
+      // Tear down series playback (keep the element + source node, reused next time).
+      serieAudioRef.current?.pause();
+      if (serieAudioRef.current) serieAudioRef.current.src = "";
+      try {
+        serieSourceRef.current?.disconnect();
+      } catch {
+        /* not connected */
+      }
+      if (serieProgressTimerRef.current) {
+        clearTimeout(serieProgressTimerRef.current);
+        serieProgressTimerRef.current = null;
+      }
+      serieActiveRef.current = false;
+      serieEpisodesRef.current = [];
+      serieNameRef.current = null;
+      store.getState().clearSerie();
       if (g) {
         g.fileVolumeGain?.disconnect();
         g.fileVolumeGain = null;
@@ -1840,6 +1876,7 @@ export function useMediasoup() {
       // can't cross-fade — it's a live Shaka stream), so this starts fresh, not
       // alongside.
       if (tvActiveRef.current) await stopFileStream({ silent: true });
+      if (serieActiveRef.current) await stopFileStream({ silent: true });
 
       const firstStart = store.getState().fileStreamName == null;
 
@@ -1978,6 +2015,158 @@ export function useMediasoup() {
       }
     },
     [ensureOutGraph, ensureFileVolumeGain, stopFileStream, store],
+  );
+
+  // Save the current position, debounced (called from timeupdate + pause).
+  const saveSerieProgress = useCallback(() => {
+    const name = serieNameRef.current;
+    const el = serieAudioRef.current;
+    if (!name || !el) return;
+    if (serieProgressTimerRef.current) clearTimeout(serieProgressTimerRef.current);
+    serieProgressTimerRef.current = setTimeout(() => {
+      saveProgress(name, { episode: serieIndexRef.current, time: el.currentTime });
+    }, 1000);
+  }, []);
+
+  // timeupdate: detect which episode currentTime is in; on change, update the
+  // store (selectors + season) and announce the new episode title.
+  const onSerieTimeUpdate = useCallback(() => {
+    const el = serieAudioRef.current;
+    const episodes = serieEpisodesRef.current;
+    if (!el || !episodes.length) return;
+    const idx = episodeIndexAt(episodes, el.currentTime);
+    if (idx !== serieIndexRef.current) {
+      serieIndexRef.current = idx;
+      const ep = episodes[idx]!;
+      store.getState().setSerieEpisode(idx, ep.tn);
+      store.getState().announce(ep.titulo);
+    }
+    saveSerieProgress();
+  }, [store, saveSerieProgress]);
+
+  const startSerie = useCallback(
+    async (serie: Serie) => {
+      const g = ensureOutGraph();
+      resumeSharedContext();
+      await stopFileStream({ silent: true });
+      const fvg = ensureFileVolumeGain(g);
+
+      const episodes = flattenEpisodes(serie);
+      if (!episodes.length) {
+        store.getState().announce(m.serie_empty());
+        return;
+      }
+
+      // Resume from saved progress if the entry is well-formed and the episode
+      // still exists (loadProgress isn't shape-validated — a malformed time/
+      // episode must not flow into el.currentTime, which would throw).
+      const prog = loadProgress()[serie.nombre];
+      const resumable =
+        !!prog &&
+        Number.isInteger(prog.episode) &&
+        Number.isFinite(prog.time) &&
+        !!episodes[prog.episode];
+      const idx = resumable ? prog.episode : 0;
+      const startTime = resumable ? prog.time : episodes[idx]!.inicio / 1000;
+
+      try {
+        if (!serieAudioRef.current) {
+          const el = new Audio();
+          (el as unknown as Record<string, boolean>).playsInline = true;
+          el.crossOrigin = "anonymous";
+          el.addEventListener("timeupdate", () => onSerieTimeUpdate());
+          // `play`/`pause` are the single source of truth for fileStreamPlaying
+          // while a series is active — every path that starts/stops playback
+          // (toggle, episode seek, next/prev/restart) routes through el.play()/
+          // el.pause(), so listening here keeps the footer button + Alt+K state
+          // correct without every call site having to set it explicitly.
+          el.addEventListener("play", () => store.getState().setFileStreamPlaying(true));
+          el.addEventListener("pause", () => {
+            saveSerieProgress();
+            store.getState().setFileStreamPlaying(false);
+          });
+          el.addEventListener("ended", () =>
+            store.getState().setFileStreamPlaying(false),
+          );
+          serieAudioRef.current = el;
+          serieSourceRef.current = sharedAudioContext.createMediaElementSource(el);
+        }
+        serieSourceRef.current!.connect(fvg);
+
+        serieEpisodesRef.current = episodes;
+        serieIndexRef.current = idx;
+        serieNameRef.current = serie.nombre;
+
+        const el = serieAudioRef.current;
+        el.src = serieAudioSrc(serie.enlace);
+        const seek = () => {
+          el.currentTime = startTime;
+          el.play().catch(() => {});
+        };
+        el.addEventListener("canplay", seek, { once: true });
+        el.load();
+
+        serieActiveRef.current = true;
+        store.getState().setSerie({
+          name: serie.nombre,
+          episodes,
+          seasons: seasonsOf(serie),
+          index: idx,
+          season: episodes[idx]!.tn,
+        });
+        store.getState().setFileStream(serie.nombre);
+        store.getState().setPlayerIsUrl(false);
+        store.getState().setFileStreamPlaying(true);
+      } catch (err) {
+        try {
+          serieSourceRef.current?.disconnect();
+        } catch {
+          /* not connected */
+        }
+        serieAudioRef.current?.pause();
+        serieActiveRef.current = false;
+        store.getState().announce(m.serie_play_error());
+        throw err;
+      }
+    },
+    [ensureOutGraph, ensureFileVolumeGain, stopFileStream, store, onSerieTimeUpdate, saveSerieProgress],
+  );
+
+  const serieSeekEpisode = useCallback(
+    (index: number) => {
+      const el = serieAudioRef.current;
+      const episodes = serieEpisodesRef.current;
+      const ep = episodes[index];
+      if (!el || !ep) return;
+      serieIndexRef.current = index;
+      store.getState().setSerieEpisode(index, ep.tn);
+      el.currentTime = ep.inicio / 1000;
+      el.play().catch(() => {});
+      store.getState().announce(ep.titulo);
+    },
+    [store],
+  );
+
+  const serieNextEpisode = useCallback(() => {
+    const i = serieIndexRef.current;
+    if (i < serieEpisodesRef.current.length - 1) serieSeekEpisode(i + 1);
+  }, [serieSeekEpisode]);
+
+  const seriePrevEpisode = useCallback(() => {
+    const i = serieIndexRef.current;
+    if (i > 0) serieSeekEpisode(i - 1);
+  }, [serieSeekEpisode]);
+
+  const serieRestartEpisode = useCallback(() => {
+    serieSeekEpisode(serieIndexRef.current);
+  }, [serieSeekEpisode]);
+
+  const serieSelectSeason = useCallback(
+    (numero: number) => {
+      const i = serieEpisodesRef.current.findIndex((e) => e.tn === numero);
+      if (i >= 0) serieSeekEpisode(i);
+    },
+    [serieSeekEpisode],
   );
 
   // --- Folder playlist: crossfade-based track navigation ---
@@ -2162,6 +2351,7 @@ export function useMediasoup() {
       // can't cross-fade — it's a live Shaka stream), so this starts fresh, not
       // alongside.
       if (tvActiveRef.current) await stopFileStream({ silent: true });
+      if (serieActiveRef.current) await stopFileStream({ silent: true });
 
       const firstStart = store.getState().fileStreamName == null;
       const oldPlaylist = store.getState().playlist;
@@ -2221,7 +2411,18 @@ export function useMediasoup() {
     [startPlaylist],
   );
 
+  // Play/pause the active streamer. A playing series routes to serieAudioRef
+  // (its own <audio> element, separate from the file-slot chain) — otherwise
+  // this acts on the active file slot, as before. fileStreamPlaying is kept in
+  // sync via the `play`/`pause` listeners wired on each element.
   const toggleFilePlayback = useCallback(() => {
+    if (serieActiveRef.current) {
+      const el = serieAudioRef.current;
+      if (!el) return;
+      if (el.paused) void el.play().catch(() => {});
+      else el.pause();
+      return;
+    }
     const g = outGraphRef.current;
     const el = g?.fileSlots?.[g.activeSlot]?.audioEl;
     if (!el) return;
@@ -2245,16 +2446,29 @@ export function useMediasoup() {
     [store],
   );
 
-  // Seek the active slot by `sec` seconds (clamped to [0, duration]).
+  // Seek the active streamer by `sec` seconds (clamped to [0, duration]). Routes
+  // to the series element while a series is active — see toggleFilePlayback.
   const playerSeekBy = useCallback((sec: number) => {
+    if (serieActiveRef.current) {
+      const el = serieAudioRef.current;
+      if (!el) return;
+      el.currentTime = Math.min(el.duration || Infinity, Math.max(0, el.currentTime + sec));
+      return;
+    }
     const g = outGraphRef.current;
     const el = g?.fileSlots?.[g.activeSlot]?.audioEl;
     if (!el) return;
     el.currentTime = Math.min(el.duration || 0, Math.max(0, el.currentTime + sec));
   }, []);
 
-  // Seek the active slot to an absolute position (clamped to [0, duration]).
+  // Seek the active streamer to an absolute position (clamped to [0, duration]).
   const playerSeekTo = useCallback((sec: number) => {
+    if (serieActiveRef.current) {
+      const el = serieAudioRef.current;
+      if (!el) return;
+      el.currentTime = Math.min(el.duration || Infinity, Math.max(0, sec));
+      return;
+    }
     const g = outGraphRef.current;
     const el = g?.fileSlots?.[g.activeSlot]?.audioEl;
     if (!el) return;
@@ -2279,7 +2493,9 @@ export function useMediasoup() {
 
     const tick = () => {
       const g = outGraphRef.current;
-      const el = g?.fileSlots?.[g.activeSlot]?.audioEl;
+      const el = serieActiveRef.current
+        ? serieAudioRef.current
+        : g?.fileSlots?.[g.activeSlot]?.audioEl;
       if (!el) return;
       const now = performance.now();
       if (now - lastWrite >= 250) {
@@ -2414,6 +2630,34 @@ export function useMediasoup() {
     detachSharedAudio();
     teardownP2p();
     teardownSfu();
+    // Tear down a live series the same way stopFileStream's series block does,
+    // so the .m4b stops buffering, timeupdate stops firing onSerieTimeUpdate
+    // (phantom announce / progress writes against the reset store), and the RAF
+    // ticker no longer sees serieActiveRef true. Element + source node are kept.
+    serieAudioRef.current?.pause();
+    if (serieAudioRef.current) serieAudioRef.current.src = "";
+    try {
+      serieSourceRef.current?.disconnect();
+    } catch {
+      /* not connected */
+    }
+    if (serieProgressTimerRef.current) {
+      clearTimeout(serieProgressTimerRef.current);
+      serieProgressTimerRef.current = null;
+    }
+    serieActiveRef.current = false;
+    serieEpisodesRef.current = [];
+    serieNameRef.current = null;
+    // Same for a live TV channel (stopFileStream's TV block). Fire-and-forget
+    // the Shaka unload — nothing re-uses the player after leave().
+    void tvPlayerRef.current?.unload().catch(() => {});
+    tvAudioRef.current?.pause();
+    try {
+      tvSourceRef.current?.disconnect();
+    } catch {
+      /* not connected */
+    }
+    tvActiveRef.current = false;
     // Tear down the outgoing graph (nodes live in the shared context, so just
     // disconnect them — the context itself is reused for the next room).
     const g = outGraphRef.current;
@@ -2488,6 +2732,12 @@ export function useMediasoup() {
     startFolderStream,
     startUrlStream,
     startTvChannel,
+    startSerie,
+    serieSeekEpisode,
+    serieNextEpisode,
+    seriePrevEpisode,
+    serieRestartEpisode,
+    serieSelectSeason,
     stopFileStream,
     playTrack,
     playerNext,

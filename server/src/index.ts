@@ -13,8 +13,8 @@ import { RecordingManager } from "./recording.js";
 import { createZipStream } from "./zip-stream.js";
 import {
   assertPublicAudioUrl,
+  browserPlayableAudioType,
   fetchPublicAudio,
-  isAudioContentType,
   looksLikeStreamContentType,
   streamFallbackAudio,
   TranscodeBusyError,
@@ -162,9 +162,10 @@ async function main() {
       const upstream = await fetchPublicAudio(raw, req.headers.range);
       const status = upstream.statusCode ?? 502;
       const contentType = upstream.headers["content-type"] || "";
-      if (status >= 200 && status < 300 && isAudioContentType(contentType)) {
+      const playType = browserPlayableAudioType(raw, contentType);
+      if (status >= 200 && status < 300 && playType) {
         res.status(status);
-        res.setHeader("Content-Type", contentType);
+        res.setHeader("Content-Type", playType);
         for (const header of [
           "accept-ranges",
           "content-length",

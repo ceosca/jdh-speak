@@ -8,6 +8,65 @@
 
 ---
 
+## 2026-07-21
+
+### `feat/serieteca` — Serieteca: biblioteca de series de audio en la sala
+
+- **Qué:** botón **"Serieteca"** en la barra → diálogo con **buscador**, secciones
+  **"Continuar escuchando"** y **"Últimas agregadas"**, y el resto del catálogo
+  **agrupado por país**. Al elegir una serie **suena para toda la sala** y **el
+  diálogo queda abierto** (se puede seguir buscando/eligiendo). El reproductor
+  (en el pie, igual que TV) agrega selector de **temporada** y de **episodio**
+  (se oculta el de temporada si la serie tiene una sola), botones **siguiente /
+  anterior / reiniciar episodio**, atajos **Alt+K/J/L/S/A/R/I** y un
+  `announce()` por episodio — todo gateado a que haya una serie activa para no
+  taparle los atajos a TV/archivo/URL.
+- **Cómo:**
+  - **Un `.m4b` continuo por serie** en archive.org — no hay un archivo por
+    episodio. Cada "capítulo" es un **rango en milisegundos** (`inicio`/`fin`)
+    dentro de ese único archivo, y los offsets son **continuos entre
+    temporadas**. La lista de episodios sale de aplanar y ordenar los
+    `capitulos` de todas las `temporadas` por `inicio`; reproducir el episodio
+    *i* es **buscar (`seek`) a `inicio/1000`** dentro del mismo `<audio>`, no
+    cambiar de archivo. `client/src/lib/serieteca.ts` (Task 2).
+  - **Catálogo** leído directo de `https://archive.org/download/m4bua/series.json`
+    (tiene CORS, no necesita el proxy). El `.m4b` en sí **no** tiene CORS, así
+    que su `src` sí va por `/api/audio-proxy` (mismo origen).
+  - **Proxy:** el proxy sólo re-emitía audio con `Content-Type: audio/*`
+    reconocido; archive.org sirve los `.m4b` como
+    `application/octet-stream`, así que caían al **transcodificador**, que
+    rompe el seek por Range que necesita el reproductor de episodios. Se le
+    enseñó a `browserPlayableAudioType` (`server/src/audio-sources.ts`,
+    `fac86aa`) a reconocer extensiones reproducibles conocidas (`.m4b`, `.m4a`,
+    `.mp3`, …) cuando el content-type upstream es binario genérico, y a
+    servirlas por la **vía directa con Range** en vez de transcodificar.
+  - **Difusión a la sala:** reutiliza el mismo grafo que archivo/TV — un
+    `<audio>` dedicado → `createMediaElementSource` → `fileVolumeGain →
+    outDest`, **un solo productor de voz**, **sin forzar SFU**.
+    `startSerie`/navegación de episodios en `useMediasoup.ts` (`e272d43`).
+  - **Progreso ("continuar escuchando")** es **por navegador**, en
+    `localStorage` (`jdh-speak:serieteca:progress`) — sin cuentas ni servidor.
+  - Store (`client/src/stores/room.ts`, `300636d`/`dc00aa9`), diálogo
+    (`SerietecaDialog.tsx` + botón en `AudioControls.tsx`, `44d217e`),
+    controles de temporada/episodio + atajos (`Room.tsx`/`useMediasoup.ts`,
+    `69b0442`).
+  - **Sin binarios nuevos en el servidor** — `<audio>` HTML plano, nada de
+    Shaka/DRM (a diferencia de TV en vivo).
+- **Por qué / riesgos:** el `.m4b` sirve **audio-only** de por sí (no hay pista
+  de video que filtrar, a diferencia de TV). El riesgo queda del lado del
+  Range: falta la prueba en vivo con un **2º peer** confirmando que el seek por
+  episodio funciona de punta a punta a través del proxy en producción (se
+  verificó local/manual, no con dos participantes reales).
+- **Fuera de v1 (YAGNI, no está en la app de referencia que copiamos):** cuentas
+  de usuario, progreso/estadísticas en servidor, vinculación de dispositivos TV.
+- **Deploy (para Cristian):** esto tocó **código de server** (el proxy
+  `browserPlayableAudioType`), así que al hacer `git pull` en la Pi hace falta
+  **`pnpm build`** (cliente) **y `systemctl restart jdh-speak`** (server) — no
+  alcanza solo el build. **No hay archivo nuevo que colocar**: el catálogo se
+  baja solo de archive.org (`series.json`), sin `db.json` ni binarios nuevos.
+
+---
+
 ## 2026-07-20
 
 ### `feat/tv-live-channels` — TV en vivo: canales de TV en la sala

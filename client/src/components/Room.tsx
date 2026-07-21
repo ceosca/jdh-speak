@@ -1,6 +1,6 @@
 import { useEffect, useCallback, useRef, useState } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { Headphones, Users, Loader2, Circle } from "lucide-react";
+import { Headphones, Users, Loader2, Circle, SkipBack, SkipForward, RotateCcw } from "lucide-react";
 import { useRoomStore, loadStoredDisplayName } from "../stores/room";
 import { useMediasoup } from "../hooks/useMediasoup";
 import { formatMessage, messageContent } from "../lib/chat";
@@ -10,6 +10,7 @@ import { AudioControls } from "./AudioControls";
 import { FileStreamPlayer } from "./FileStreamPlayer";
 import { UrlDialog } from "./UrlDialog";
 import { TvDialog } from "./TvDialog";
+import { SerietecaDialog } from "./SerietecaDialog";
 import { Chat } from "./Chat";
 import { pickFolderAudioFiles } from "../lib/audioFolder";
 import { m } from "../paraglide/messages.js";
@@ -68,6 +69,7 @@ export function Room() {
     startFolderStream,
     startUrlStream,
     startTvChannel,
+    startSerie,
     stopFileStream,
     playTrack,
     playerNext,
@@ -83,6 +85,11 @@ export function Room() {
     setPeerVolume,
     setMicGain,
     sendChatMessage,
+    serieSeekEpisode,
+    serieNextEpisode,
+    seriePrevEpisode,
+    serieRestartEpisode,
+    serieSelectSeason,
   } = useMediasoup();
 
   const [joinState, setJoinState] = useState<JoinState>("idle");
@@ -91,6 +98,7 @@ export function Room() {
   const [playerOpen, setPlayerOpen] = useState(false);
   const [urlOpen, setUrlOpen] = useState(false);
   const [tvOpen, setTvOpen] = useState(false);
+  const [serietecaOpen, setSerietecaOpen] = useState(false);
   // Name prompt: shown once on first ever visit (no stored name), and reopened
   // by the "Change name" button under your own card.
   const [namePromptOpen, setNamePromptOpen] = useState(false);
@@ -176,6 +184,11 @@ export function Room() {
   const playlistIndex = useRoomStore((s) => s.playlistIndex);
   const playerRepeat = useRoomStore((s) => s.playerRepeat);
   const playerShuffle = useRoomStore((s) => s.playerShuffle);
+  const serieName = useRoomStore((s) => s.serieName);
+  const serieSeasons = useRoomStore((s) => s.serieSeasons);
+  const serieEpisodes = useRoomStore((s) => s.serieEpisodes);
+  const serieEpisodeIndex = useRoomStore((s) => s.serieEpisodeIndex);
+  const serieCurrentSeason = useRoomStore((s) => s.serieCurrentSeason);
   const announcement = useRoomStore((s) => s.announcement);
   const announceSeq = useRoomStore((s) => s.announceSeq);
   const chatPoliteMsg = useRoomStore((s) => s.chatPoliteMsg);
@@ -292,6 +305,55 @@ export function Room() {
         return;
       }
 
+      // Serieteca playback shortcuts (Alt+K/J/L/S/A/R/I), active only while a
+      // series is the loaded streamer — otherwise these fall through and never
+      // shadow any other shortcut. K = play/pause, J/L = seek -15s/+15s (routed
+      // to the series <audio> element via playerTogglePlay/playerSeekBy), S/A =
+      // next/previous episode, R = restart the current episode, I = announce the
+      // series name + current episode title.
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        const { serieName: activeSerie, serieEpisodes: eps, serieEpisodeIndex: epIdx, announce } =
+          useRoomStore.getState();
+        if (activeSerie != null) {
+          if (e.code === "KeyK" || e.key === "k" || e.key === "K") {
+            e.preventDefault();
+            playerTogglePlay();
+            return;
+          }
+          if (e.code === "KeyJ" || e.key === "j" || e.key === "J") {
+            e.preventDefault();
+            playerSeekBy(-15);
+            return;
+          }
+          if (e.code === "KeyL" || e.key === "l" || e.key === "L") {
+            e.preventDefault();
+            playerSeekBy(15);
+            return;
+          }
+          if (e.code === "KeyS" || e.key === "s" || e.key === "S") {
+            e.preventDefault();
+            serieNextEpisode();
+            return;
+          }
+          if (e.code === "KeyA" || e.key === "a" || e.key === "A") {
+            e.preventDefault();
+            seriePrevEpisode();
+            return;
+          }
+          if (e.code === "KeyR" || e.key === "r" || e.key === "R") {
+            e.preventDefault();
+            serieRestartEpisode();
+            return;
+          }
+          if (e.code === "KeyI" || e.key === "i" || e.key === "I") {
+            e.preventDefault();
+            const ep = eps[epIdx];
+            announce(ep ? `${activeSerie}. ${ep.titulo}.` : `${activeSerie}.`);
+            return;
+          }
+        }
+      }
+
       // Room quality (bitrate) cycle: deliberate Alt+Ctrl+C (no UI, room-wide).
       if (e.altKey && e.ctrlKey && (e.code === "KeyC" || e.key === "c" || e.key === "C")) {
         e.preventDefault();
@@ -336,7 +398,18 @@ export function Room() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [joinState, toggleMute, toggleAudioShare, toggleRecording, cycleRoomBitrate]);
+  }, [
+    joinState,
+    toggleMute,
+    toggleAudioShare,
+    toggleRecording,
+    cycleRoomBitrate,
+    playerTogglePlay,
+    playerSeekBy,
+    serieNextEpisode,
+    seriePrevEpisode,
+    serieRestartEpisode,
+  ]);
 
   // Name prompt overlay (first visit or "Change name"). Rendered above whatever
   // is behind it; on first visit nothing is behind yet.
@@ -506,6 +579,7 @@ export function Room() {
             playerOpen={playerOpen || fileStreamName != null}
             onOpenUrl={openUrl}
             onOpenTv={() => setTvOpen(true)}
+            onOpenSerieteca={() => setSerietecaOpen(true)}
             onToggleChat={() => setChatOpen((o) => !o)}
             chatOpen={chatOpen}
           />
@@ -538,6 +612,75 @@ export function Room() {
         />
       )}
 
+      {/* Series navigation — season/episode selectors + prev/next/restart, shown
+          under the player only while a Serieteca series is the active streamer.
+          Play/pause and ±15 s seek reuse the player's own controls above (they
+          route to the series <audio> element automatically — see
+          toggleFilePlayback/playerSeekBy in useMediasoup). */}
+      {serieName != null && (
+        <div
+          id="serie-player-controls"
+          className="w-full border-t border-sonic-700 bg-sonic-800 p-3"
+        >
+          <div className="mx-auto flex max-w-md flex-col gap-2">
+            <div className="flex items-center gap-2">
+              {serieSeasons.length > 1 && (
+                <select
+                  aria-label={m.serie_season()}
+                  value={serieCurrentSeason}
+                  onChange={(e) => serieSelectSeason(Number(e.target.value))}
+                  className="shrink-0 rounded-lg bg-sonic-700 px-2 py-1.5 text-xs text-sonic-100"
+                >
+                  {serieSeasons.map((s) => (
+                    <option key={s.numero} value={s.numero}>
+                      {m.serie_season()} {s.numero}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <select
+                aria-label={m.serie_episode()}
+                value={serieEpisodeIndex}
+                onChange={(e) => serieSeekEpisode(Number(e.target.value))}
+                className="min-w-0 flex-1 rounded-lg bg-sonic-700 px-2 py-1.5 text-xs text-sonic-100"
+              >
+                {serieEpisodes
+                  .map((e, i) => ({ e, i }))
+                  .filter((x) => x.e.tn === serieCurrentSeason)
+                  .map((x) => (
+                    <option key={x.i} value={x.i}>
+                      {x.e.titulo}
+                    </option>
+                  ))}
+              </select>
+            </div>
+            <div className="flex items-center justify-center gap-1">
+              <button
+                onClick={seriePrevEpisode}
+                className="flex h-8 w-8 items-center justify-center rounded-full text-sonic-300 hover:bg-sonic-700 hover:text-sonic-100"
+                aria-label={m.serie_prev()}
+              >
+                <SkipBack className="h-4 w-4" />
+              </button>
+              <button
+                onClick={serieRestartEpisode}
+                className="flex h-8 w-8 items-center justify-center rounded-full text-sonic-300 hover:bg-sonic-700 hover:text-sonic-100"
+                aria-label={m.serie_restart()}
+              >
+                <RotateCcw className="h-4 w-4" />
+              </button>
+              <button
+                onClick={serieNextEpisode}
+                className="flex h-8 w-8 items-center justify-center rounded-full text-sonic-300 hover:bg-sonic-700 hover:text-sonic-100"
+                aria-label={m.serie_next()}
+              >
+                <SkipForward className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Screen-reader event log (peer join/leave, recording, etc.), at the very
           bottom as before. */}
       <div aria-live="polite" role="status" className="sr-only" id="sr-announcements">
@@ -553,6 +696,9 @@ export function Room() {
       {urlOpen && <UrlDialog onClose={() => setUrlOpen(false)} onStartUrl={startUrlStream} />}
       {tvOpen && (
         <TvDialog onClose={() => setTvOpen(false)} onPlayChannel={startTvChannel} />
+      )}
+      {serietecaOpen && (
+        <SerietecaDialog onClose={() => setSerietecaOpen(false)} onPlaySerie={startSerie} />
       )}
 
       <input

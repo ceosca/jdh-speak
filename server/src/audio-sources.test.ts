@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it, test } from "node:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { spawn as nodeSpawn } from "node:child_process";
 import {
   activeTranscodeCount,
   assertPublicAudioUrl,
+  browserPlayableAudioType,
   buildAudioTranscodeArgs,
   buildFfmpegStreamArgs,
   buildYtDlpArgs,
@@ -346,5 +347,44 @@ describe("streamFallbackAudio (routing, backup and concurrency)", () => {
     const extraction = await held;
     extraction.destroy();
     assert.equal(activeTranscodeCount(), 0);
+  });
+});
+
+test("browserPlayableAudioType", async (t) => {
+  await t.test("passes through a real audio content-type unchanged", () => {
+    assert.equal(
+      browserPlayableAudioType("https://x/y.m4b", "audio/mp4"),
+      "audio/mp4",
+    );
+    assert.equal(
+      browserPlayableAudioType("https://x/stream", "audio/mpeg; charset=binary"),
+      "audio/mpeg; charset=binary",
+    );
+  });
+
+  await t.test("rewrites generic binary to audio/mp4 for .m4b / .m4a by extension", () => {
+    assert.equal(
+      browserPlayableAudioType("https://ia.us.archive.org/items/x/a.m4b", "application/octet-stream"),
+      "audio/mp4",
+    );
+    assert.equal(
+      browserPlayableAudioType("https://x/song.m4a", ""),
+      "audio/mp4",
+    );
+    assert.equal(
+      browserPlayableAudioType("https://x/song.mp3?token=1", "application/octet-stream"),
+      "audio/mpeg",
+    );
+  });
+
+  await t.test("returns null for HTML pages and unknown binary", () => {
+    assert.equal(browserPlayableAudioType("https://x/a.m4b", "text/html"), null);
+    assert.equal(browserPlayableAudioType("https://x/video.ts", "application/octet-stream"), null);
+    assert.equal(browserPlayableAudioType("https://x/clip.mp4", "video/mp4"), null);
+  });
+
+  await t.test("does not treat HLS/DASH manifests as directly playable", () => {
+    assert.equal(browserPlayableAudioType("https://x/a.m3u8", "application/octet-stream"), null);
+    assert.equal(browserPlayableAudioType("https://x/a.mpd", "application/octet-stream"), null);
   });
 });

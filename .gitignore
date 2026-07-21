@@ -59,3 +59,6 @@ sounds/*
 # db.json holds DRM ClearKeys — versioned ONLY because this repo is PRIVATE.
 # If the repo is ever made public again, remove this line and purge it from history.
 !/tv/db.json
+
+# Serieteca reference material (series.json is fetched from archive.org at runtime)
+/serieteca/
