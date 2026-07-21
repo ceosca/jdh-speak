@@ -10,6 +10,7 @@ import {
   createWebRtcTransport,
   removePeer,
   rememberRoomBitrate,
+  rememberSpatialEnabled,
   rememberSpatialPosition,
   renameSpatialPosition,
   type Room,
@@ -290,6 +291,7 @@ export function createSignalingServer(
           // matches the room's current quality.
           audioBitrate: room.audioBitrate,
           spatialPositions: room.spatialPositions,
+          spatialEnabled: room.spatialEnabled,
           // Recent chat so a late joiner can read/announce the last messages.
           messages: room.messages,
         });
@@ -643,6 +645,21 @@ export function createSignalingServer(
     // same direction, so the "virtual table" is consistent for all listeners.
     // Reached only from the hidden Ctrl+Alt+U panel (like the bitrate shortcut),
     // which is why there's no permission model here: knowing the shortcut is it.
+    // Spatial audio on/off for the WHOLE room (Ctrl+Alt+E). Room-wide like the
+    // bitrate: whoever flips it flips it for everyone, so the room shares one
+    // arrangement rather than each person hearing something different.
+    socket.on("set-spatial-enabled", (data: unknown, cb?: (res: unknown) => void) => {
+      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
+      const parsed = z.object({ enabled: z.boolean() }).safeParse(data);
+      if (!parsed.success) return cb?.({ ok: false, error: "Invalid value" });
+      rememberSpatialEnabled(currentRoom.name, parsed.data.enabled);
+      io.to(currentRoom.name).emit("spatial-enabled", {
+        enabled: parsed.data.enabled,
+        by: currentPeer.displayName,
+      });
+      cb?.({ ok: true });
+    });
+
     socket.on("set-spatial-position", (data: unknown, cb?: (res: unknown) => void) => {
       if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
       const parsed = z

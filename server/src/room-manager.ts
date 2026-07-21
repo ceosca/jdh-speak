@@ -36,6 +36,8 @@ export interface Room {
   // Spatial audio seats for this room, by displayName → azimuth degrees
   // (-90 left … 0 ahead … +90 right). Shared by everyone; see roomSpatial.
   spatialPositions: Record<string, number>;
+  // Whether spatial audio is on for the whole room (see roomSpatialEnabled).
+  spatialEnabled: boolean;
   // Rolling chat history (bounded to CHAT_HISTORY_MAX) so late joiners receive
   // recent messages on join. Newest last.
   messages: ChatMessage[];
@@ -61,6 +63,17 @@ const roomBitrates = new Map<string, number>();
 // Kept BY ROOM NAME (surviving room destruction) for the same reason as the
 // bitrate: the seating shouldn't be lost just because the room briefly emptied.
 const roomSpatial = new Map<string, Record<string, number>>();
+
+// Whether spatial audio is ON for the room. Room-wide like the bitrate: whoever
+// flips it (Ctrl+Alt+E) flips it for EVERYONE, so the whole room shares one
+// listening mode instead of each person hearing a different arrangement.
+const roomSpatialEnabled = new Map<string, boolean>();
+
+export function rememberSpatialEnabled(roomName: string, enabled: boolean): void {
+  roomSpatialEnabled.set(roomName, enabled);
+  const room = rooms.get(roomName);
+  if (room) room.spatialEnabled = enabled;
+}
 
 export function rememberSpatialPosition(roomName: string, name: string, degrees: number): void {
   const positions = { ...(roomSpatial.get(roomName) ?? {}), [name]: degrees };
@@ -116,6 +129,7 @@ export async function getOrCreateRoom(roomName: string): Promise<Room> {
     casters: new Set(),
     audioBitrate: roomBitrates.get(roomName) ?? 128,
     spatialPositions: roomSpatial.get(roomName) ?? {},
+    spatialEnabled: roomSpatialEnabled.get(roomName) ?? false,
     messages: [],
   };
   rooms.set(roomName, room);

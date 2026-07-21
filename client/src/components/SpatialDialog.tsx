@@ -39,15 +39,24 @@ export function SpatialDialog({ onClose, onSetPosition }: SpatialDialogProps) {
   const peers = useRoomStore((s) => s.peers);
   const positions = useRoomStore((s) => s.spatialPositions);
   const spatialAudio = useRoomStore((s) => s.spatialAudio);
+  const myName = useRoomStore((s) => s.displayName);
   const [selected, setSelected] = useState("");
 
-  // Only real participants can be seated: a music caster is excluded from
-  // spatialisation (HRTF would collapse its stereo image), so listing it would
-  // offer a control that does nothing.
-  const seatable = useMemo(
-    () => [...peers.values()].filter((p) => !p.isMusic).sort((a, b) => a.displayName.localeCompare(b.displayName)),
-    [peers],
-  );
+  // Everyone in the room, INCLUDING yourself. Your own seat is what the others
+  // hear — you never render your own voice, so moving yourself changes how the
+  // room hears you, not what you hear. (Without this you couldn't place
+  // yourself at all, and alone in a room the list would be empty.)
+  //
+  // Music casters are left out: they're excluded from spatialisation (HRTF
+  // would collapse their stereo image), so listing them would offer a control
+  // that does nothing.
+  const seatable = useMemo(() => {
+    const others = [...peers.values()]
+      .filter((p) => !p.isMusic)
+      .map((p) => ({ key: p.peerId, name: p.displayName, self: false }));
+    const list = myName ? [{ key: "self", name: myName, self: true }, ...others] : others;
+    return list.sort((a, b) => a.name.localeCompare(b.name));
+  }, [peers, myName]);
 
   useEffect(() => {
     const dlg = dialogRef.current;
@@ -59,8 +68,8 @@ export function SpatialDialog({ onClose, onSetPosition }: SpatialDialogProps) {
   // Default to the first participant, and drop a selection whose peer left.
   useEffect(() => {
     setSelected((cur) => {
-      if (cur && seatable.some((p) => p.displayName === cur)) return cur;
-      return seatable[0]?.displayName ?? "";
+      if (cur && seatable.some((p) => p.name === cur)) return cur;
+      return seatable[0]?.name ?? "";
     });
   }, [seatable]);
 
@@ -115,8 +124,8 @@ export function SpatialDialog({ onClose, onSetPosition }: SpatialDialogProps) {
               className="w-full rounded-lg border border-sonic-600 bg-sonic-700 px-2.5 py-1.5 text-sm text-sonic-100 focus:border-sonic-accent focus:outline-none"
             >
               {seatable.map((p) => (
-                <option key={p.peerId} value={p.displayName}>
-                  {p.displayName}
+                <option key={p.key} value={p.name}>
+                  {p.self ? m.spatial_you({ name: p.name }) : p.name}
                 </option>
               ))}
             </select>
@@ -147,6 +156,9 @@ export function SpatialDialog({ onClose, onSetPosition }: SpatialDialogProps) {
 
           <p id="spatial-help" className="text-xs text-sonic-400">
             {m.spatial_dialog_help()}
+            {/* You never hear your own voice, so say what moving yourself does —
+                otherwise it looks like the slider did nothing. */}
+            {selected === myName && ` ${m.spatial_self_hint()}`}
             {/* Seating is shared, but HEARING it is a local choice — say so, or
                 someone with spatial audio off would think the panel is broken. */}
             {!spatialAudio && ` ${m.spatial_dialog_disabled_hint()}`}

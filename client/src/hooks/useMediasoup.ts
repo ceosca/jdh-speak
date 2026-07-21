@@ -527,14 +527,13 @@ export function useMediasoup() {
     [],
   );
 
-  // Toggle spatial audio (Ctrl+Alt+E). Receive-side and local, so it applies
-  // instantly with no reconnect and without affecting anyone else.
+  // Toggle spatial audio (Ctrl+Alt+E) for the WHOLE room. Like the bitrate
+  // shortcut, whoever presses it flips it for everyone: the server stores it and
+  // broadcasts, and every client (including this one) applies it from the
+  // `spatial-enabled` handler — so there's no local-only state to drift.
   const toggleSpatialAudio = useCallback(() => {
-    const next = !store.getState().spatialAudio;
-    store.getState().setSpatialAudio(next);
-    refreshSpatial();
-    store.getState().announce(next ? m.spatial_on() : m.spatial_off());
-  }, [refreshSpatial, store]);
+    socketRef.current?.emit("set-spatial-enabled", { enabled: !store.getState().spatialAudio });
+  }, [store]);
 
   // --- Shared: clean up all peer audio ---
   const cleanupAllPeerAudio = useCallback(() => {
@@ -1191,6 +1190,7 @@ export function useMediasoup() {
           recording: { recordingId: string } | null;
           audioBitrate?: number;
           spatialPositions?: Record<string, number>;
+          spatialEnabled?: boolean;
           messages: ChatMessage[];
         };
         const joinPayload = {
@@ -1209,6 +1209,8 @@ export function useMediasoup() {
         roomBitrateRef.current = joinRes.audioBitrate ?? 128;
         // Seats are room-wide, so adopt whatever the room already has.
         store.getState().setSpatialPositions(joinRes.spatialPositions ?? {});
+        // Spatial on/off is room state too — adopt the room's current mode.
+        store.getState().setSpatialAudio(joinRes.spatialEnabled ?? false);
 
         // Seed chat history (de-duped in the store, silent — no chime/announce).
         for (const m of joinRes.messages ?? []) store.getState().addMessage(m);
@@ -1328,6 +1330,15 @@ export function useMediasoup() {
           // In P2P mode, the new peer will send us an offer — we wait for it
         },
       );
+
+      // Spatial audio was switched on/off for the room — apply and say who did it.
+      socket.on("spatial-enabled", ({ enabled, by }: { enabled: boolean; by: string }) => {
+        store.getState().setSpatialAudio(enabled);
+        refreshSpatial();
+        store
+          .getState()
+          .announceEvent(enabled ? m.spatial_on_by({ name: by }) : m.spatial_off_by({ name: by }));
+      });
 
       // Someone moved a seat in the 3D field (room-wide) — re-apply for everyone.
       socket.on("spatial-positions", (positions: Record<string, number>) => {

@@ -31,7 +31,6 @@ const SECONDARY_ENABLED_KEY = "jdh-speak:secondaryEnabled";
 const SECONDARY_DEVICE_KEY = "jdh-speak:secondaryDeviceId";
 const SECONDARY_MONITOR_KEY = "jdh-speak:secondaryMonitor";
 const MIC_MONITOR_KEY = "jdh-speak:micMonitor";
-const SPATIAL_AUDIO_KEY = "jdh-speak:spatialAudio";
 const SHARE_MONITOR_KEY = "jdh-speak:shareMonitor";
 const FILE_VOLUME_KEY = "jdh-speak:fileVolume";
 const PLAYER_REPEAT_KEY = "jdh-speak:playerRepeat";
@@ -189,9 +188,8 @@ interface RoomState {
   // Monitor your own primary mic locally (hear yourself through your speakers).
   // Off by default; for-you only (like the secondary monitor). Persisted.
   micMonitor: boolean;
-  // Spatial audio: seat each participant at their own direction around you, so
-  // you can tell who is talking by where they sound. Receive-side and purely
-  // local (each listener chooses), toggled live with Ctrl+Alt+E. Persisted.
+  // Spatial audio on/off. ROOM state (server-owned, broadcast): whoever presses
+  // Ctrl+Alt+E flips it for everyone. Not persisted locally — the room decides.
   spatialAudio: boolean;
   // Room-wide spatial seats, by displayName → azimuth degrees (-90 left, 0
   // ahead, +90 right). Server-owned and broadcast, so everyone hears a given
@@ -324,7 +322,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   speakerDeviceId: loadString(SPEAKER_DEVICE_KEY),
   voiceProcessingEnabled: loadVoiceProcessing(),
   micMonitor: loadString(MIC_MONITOR_KEY) === "true",
-  spatialAudio: loadString(SPATIAL_AUDIO_KEY) === "true",
+  spatialAudio: false,
   spatialPositions: {},
   shareMonitor: loadString(SHARE_MONITOR_KEY) === "true",
   secondaryEnabled: loadString(SECONDARY_ENABLED_KEY) === "true",
@@ -420,7 +418,6 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   },
   setSpatialPositions: (spatialPositions) => set({ spatialPositions }),
   setSpatialAudio: (spatialAudio) => {
-    saveString(SPATIAL_AUDIO_KEY, String(spatialAudio));
     set({ spatialAudio });
   },
   setShareMonitor: (shareMonitor) => {
