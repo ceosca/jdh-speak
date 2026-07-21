@@ -67,6 +67,9 @@ export function SerietecaDialog({ onClose, onPlaySerie }: SerietecaDialogProps) 
     try {
       await onPlaySerie(s);
     } catch {
+      // Play failed — clear the optimistic "current" highlight so the failed
+      // series isn't left marked as playing.
+      setPlaying("");
       setPlayError(true);
     }
   };

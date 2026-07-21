@@ -2057,11 +2057,17 @@ export function useMediasoup() {
         return;
       }
 
-      // Resume from saved progress if the episode still exists.
+      // Resume from saved progress if the entry is well-formed and the episode
+      // still exists (loadProgress isn't shape-validated — a malformed time/
+      // episode must not flow into el.currentTime, which would throw).
       const prog = loadProgress()[serie.nombre];
-      const idx = prog && episodes[prog.episode] ? prog.episode : 0;
-      const startTime =
-        prog && episodes[prog.episode] ? prog.time : episodes[idx]!.inicio / 1000;
+      const resumable =
+        !!prog &&
+        Number.isInteger(prog.episode) &&
+        Number.isFinite(prog.time) &&
+        !!episodes[prog.episode];
+      const idx = resumable ? prog.episode : 0;
+      const startTime = resumable ? prog.time : episodes[idx]!.inicio / 1000;
 
       try {
         if (!serieAudioRef.current) {
@@ -2624,6 +2630,34 @@ export function useMediasoup() {
     detachSharedAudio();
     teardownP2p();
     teardownSfu();
+    // Tear down a live series the same way stopFileStream's series block does,
+    // so the .m4b stops buffering, timeupdate stops firing onSerieTimeUpdate
+    // (phantom announce / progress writes against the reset store), and the RAF
+    // ticker no longer sees serieActiveRef true. Element + source node are kept.
+    serieAudioRef.current?.pause();
+    if (serieAudioRef.current) serieAudioRef.current.src = "";
+    try {
+      serieSourceRef.current?.disconnect();
+    } catch {
+      /* not connected */
+    }
+    if (serieProgressTimerRef.current) {
+      clearTimeout(serieProgressTimerRef.current);
+      serieProgressTimerRef.current = null;
+    }
+    serieActiveRef.current = false;
+    serieEpisodesRef.current = [];
+    serieNameRef.current = null;
+    // Same for a live TV channel (stopFileStream's TV block). Fire-and-forget
+    // the Shaka unload — nothing re-uses the player after leave().
+    void tvPlayerRef.current?.unload().catch(() => {});
+    tvAudioRef.current?.pause();
+    try {
+      tvSourceRef.current?.disconnect();
+    } catch {
+      /* not connected */
+    }
+    tvActiveRef.current = false;
     // Tear down the outgoing graph (nodes live in the shared context, so just
     // disconnect them — the context itself is reused for the next room).
     const g = outGraphRef.current;
