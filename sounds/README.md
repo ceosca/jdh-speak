@@ -28,6 +28,14 @@ navegador para saltar la caché).
 | `thunk`            | acción bloqueada (p. ej. chat rate-limitado)    |
 | `share-start`      | empieza a compartirse audio                      |
 | `share-stop`       | deja de compartirse audio                        |
+| `typing` ⟳         | **en bucle** mientras alguien escribe en el chat |
+
+⟳ **`typing` es especial: se reproduce en BUCLE**, no una sola vez. Suena mientras
+alguien está escribiendo en el chat (lo oyen todos, incluido quien escribe) y para
+cuando deja de escribir (al enviar, al vaciar la caja, o tras ~1,2 s sin teclear).
+Si varias personas escriben a la vez, suena **una sola vez**, no superpuesto.
+Conviene un archivo **corto** (~0,5 s) que loopee bien. A diferencia del resto,
+**no tiene sonido sintetizado de repuesto**: sin archivo, simplemente no suena.
 
 Ejemplo: para cambiar solo entrada/salida, deja `join.mp3` y `leave.mp3` aquí; el
 resto seguirá sintetizado.
