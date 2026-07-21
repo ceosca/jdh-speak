@@ -8,6 +8,16 @@ import { isIOS, getMicrophoneStream } from "../lib/microphone";
 import { playCue, preloadCueSamples } from "../lib/sounds";
 import { getIceServers } from "../lib/ice";
 import { parseClearKey, type Channel } from "../lib/tv";
+import {
+  flattenEpisodes,
+  seasonsOf,
+  episodeIndexAt,
+  serieAudioSrc,
+  loadProgress,
+  saveProgress,
+  type Serie,
+  type Episode,
+} from "../lib/serieteca";
 import { formatMessage, RateLimiter, META_SEP, type ChatMessage } from "../lib/chat";
 import { m } from "../paraglide/messages.js";
 import {
@@ -270,6 +280,16 @@ export function useMediasoup() {
   // taking the crossfade branch (which would leave TV running alongside the
   // new source).
   const tvActiveRef = useRef(false);
+  // Series playback: a dedicated <audio> whose src is the same-origin
+  // /api/audio-proxy (the .m4b lacks CORS), routed through fileVolumeGain like TV.
+  // createMediaElementSource is one-shot per element, so element + source persist.
+  const serieAudioRef = useRef<HTMLAudioElement | null>(null);
+  const serieSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const serieActiveRef = useRef(false);
+  const serieEpisodesRef = useRef<Episode[]>([]);
+  const serieIndexRef = useRef(0);
+  const serieNameRef = useRef<string | null>(null);
+  const serieProgressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Stable ref so that ended handlers can call playTrack without a stale closure.
   // Updated synchronously every render after playTrack is defined.
   const playTrackRef = useRef<((index: number) => Promise<void>) | null>(null);
@@ -1719,6 +1739,22 @@ export function useMediasoup() {
         /* not connected */
       }
       tvActiveRef.current = false;
+      // Tear down series playback (keep the element + source node, reused next time).
+      serieAudioRef.current?.pause();
+      if (serieAudioRef.current) serieAudioRef.current.src = "";
+      try {
+        serieSourceRef.current?.disconnect();
+      } catch {
+        /* not connected */
+      }
+      if (serieProgressTimerRef.current) {
+        clearTimeout(serieProgressTimerRef.current);
+        serieProgressTimerRef.current = null;
+      }
+      serieActiveRef.current = false;
+      serieEpisodesRef.current = [];
+      serieNameRef.current = null;
+      store.getState().clearSerie();
       if (g) {
         g.fileVolumeGain?.disconnect();
         g.fileVolumeGain = null;
@@ -1840,6 +1876,7 @@ export function useMediasoup() {
       // can't cross-fade — it's a live Shaka stream), so this starts fresh, not
       // alongside.
       if (tvActiveRef.current) await stopFileStream({ silent: true });
+      if (serieActiveRef.current) await stopFileStream({ silent: true });
 
       const firstStart = store.getState().fileStreamName == null;
 
@@ -1978,6 +2015,143 @@ export function useMediasoup() {
       }
     },
     [ensureOutGraph, ensureFileVolumeGain, stopFileStream, store],
+  );
+
+  // Save the current position, debounced (called from timeupdate + pause).
+  const saveSerieProgress = useCallback(() => {
+    const name = serieNameRef.current;
+    const el = serieAudioRef.current;
+    if (!name || !el) return;
+    if (serieProgressTimerRef.current) clearTimeout(serieProgressTimerRef.current);
+    serieProgressTimerRef.current = setTimeout(() => {
+      saveProgress(name, { episode: serieIndexRef.current, time: el.currentTime });
+    }, 1000);
+  }, []);
+
+  // timeupdate: detect which episode currentTime is in; on change, update the
+  // store (selectors + season) and announce the new episode title.
+  const onSerieTimeUpdate = useCallback(() => {
+    const el = serieAudioRef.current;
+    const episodes = serieEpisodesRef.current;
+    if (!el || !episodes.length) return;
+    const idx = episodeIndexAt(episodes, el.currentTime);
+    if (idx !== serieIndexRef.current) {
+      serieIndexRef.current = idx;
+      const ep = episodes[idx]!;
+      store.getState().setSerieEpisode(idx, ep.tn);
+      store.getState().announce(ep.titulo);
+    }
+    saveSerieProgress();
+  }, [store, saveSerieProgress]);
+
+  const startSerie = useCallback(
+    async (serie: Serie) => {
+      const g = ensureOutGraph();
+      resumeSharedContext();
+      await stopFileStream({ silent: true });
+      const fvg = ensureFileVolumeGain(g);
+
+      const episodes = flattenEpisodes(serie);
+      if (!episodes.length) {
+        store.getState().announce(m.serie_empty());
+        return;
+      }
+
+      // Resume from saved progress if the episode still exists.
+      const prog = loadProgress()[serie.nombre];
+      const idx = prog && episodes[prog.episode] ? prog.episode : 0;
+      const startTime =
+        prog && episodes[prog.episode] ? prog.time : episodes[idx]!.inicio / 1000;
+
+      try {
+        if (!serieAudioRef.current) {
+          const el = new Audio();
+          (el as unknown as Record<string, boolean>).playsInline = true;
+          el.crossOrigin = "anonymous";
+          el.addEventListener("timeupdate", () => onSerieTimeUpdate());
+          el.addEventListener("pause", () => saveSerieProgress());
+          el.addEventListener("ended", () =>
+            store.getState().setFileStreamPlaying(false),
+          );
+          serieAudioRef.current = el;
+          serieSourceRef.current = sharedAudioContext.createMediaElementSource(el);
+        }
+        serieSourceRef.current!.connect(fvg);
+
+        serieEpisodesRef.current = episodes;
+        serieIndexRef.current = idx;
+        serieNameRef.current = serie.nombre;
+
+        const el = serieAudioRef.current;
+        el.src = serieAudioSrc(serie.enlace);
+        const seek = () => {
+          el.currentTime = startTime;
+          el.play().catch(() => {});
+        };
+        el.addEventListener("canplay", seek, { once: true });
+        el.load();
+
+        serieActiveRef.current = true;
+        store.getState().setSerie({
+          name: serie.nombre,
+          episodes,
+          seasons: seasonsOf(serie),
+          index: idx,
+          season: episodes[idx]!.tn,
+        });
+        store.getState().setFileStream(serie.nombre);
+        store.getState().setPlayerIsUrl(false);
+        store.getState().setFileStreamPlaying(true);
+      } catch (err) {
+        try {
+          serieSourceRef.current?.disconnect();
+        } catch {
+          /* not connected */
+        }
+        serieAudioRef.current?.pause();
+        serieActiveRef.current = false;
+        store.getState().announce(m.serie_play_error());
+        throw err;
+      }
+    },
+    [ensureOutGraph, ensureFileVolumeGain, stopFileStream, store, onSerieTimeUpdate, saveSerieProgress],
+  );
+
+  const serieSeekEpisode = useCallback(
+    (index: number) => {
+      const el = serieAudioRef.current;
+      const episodes = serieEpisodesRef.current;
+      const ep = episodes[index];
+      if (!el || !ep) return;
+      serieIndexRef.current = index;
+      store.getState().setSerieEpisode(index, ep.tn);
+      el.currentTime = ep.inicio / 1000;
+      el.play().catch(() => {});
+      store.getState().announce(ep.titulo);
+    },
+    [store],
+  );
+
+  const serieNextEpisode = useCallback(() => {
+    const i = serieIndexRef.current;
+    if (i < serieEpisodesRef.current.length - 1) serieSeekEpisode(i + 1);
+  }, [serieSeekEpisode]);
+
+  const seriePrevEpisode = useCallback(() => {
+    const i = serieIndexRef.current;
+    if (i > 0) serieSeekEpisode(i - 1);
+  }, [serieSeekEpisode]);
+
+  const serieRestartEpisode = useCallback(() => {
+    serieSeekEpisode(serieIndexRef.current);
+  }, [serieSeekEpisode]);
+
+  const serieSelectSeason = useCallback(
+    (numero: number) => {
+      const i = serieEpisodesRef.current.findIndex((e) => e.tn === numero);
+      if (i >= 0) serieSeekEpisode(i);
+    },
+    [serieSeekEpisode],
   );
 
   // --- Folder playlist: crossfade-based track navigation ---
@@ -2162,6 +2336,7 @@ export function useMediasoup() {
       // can't cross-fade — it's a live Shaka stream), so this starts fresh, not
       // alongside.
       if (tvActiveRef.current) await stopFileStream({ silent: true });
+      if (serieActiveRef.current) await stopFileStream({ silent: true });
 
       const firstStart = store.getState().fileStreamName == null;
       const oldPlaylist = store.getState().playlist;
@@ -2488,6 +2663,12 @@ export function useMediasoup() {
     startFolderStream,
     startUrlStream,
     startTvChannel,
+    startSerie,
+    serieSeekEpisode,
+    serieNextEpisode,
+    seriePrevEpisode,
+    serieRestartEpisode,
+    serieSelectSeason,
     stopFileStream,
     playTrack,
     playerNext,
