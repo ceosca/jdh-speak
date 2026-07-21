@@ -33,6 +33,9 @@ export interface Room {
   // own outgoing voice sender. Persists for the room's lifetime so late joiners
   // match the current quality.
   audioBitrate: number;
+  // Spatial audio seats for this room, by displayName → azimuth degrees
+  // (-90 left … 0 ahead … +90 right). Shared by everyone; see roomSpatial.
+  spatialPositions: Record<string, number>;
   // Rolling chat history (bounded to CHAT_HISTORY_MAX) so late joiners receive
   // recent messages on join. Newest last.
   messages: ChatMessage[];
@@ -44,6 +47,39 @@ const rooms = new Map<string, Room>();
 // quality change isn't lost if every peer briefly reconnects at once (the
 // reconnect is how the new bitrate is applied) and the room is recreated.
 const roomBitrates = new Map<string, number>();
+
+// Spatial audio seats: where each participant sits around the room, in degrees
+// of azimuth (-90 = hard left, 0 = straight ahead, +90 = hard right). Set from
+// the hidden Ctrl+Alt+U panel and shared by the WHOLE room, so everyone hears a
+// given person from the same direction.
+//
+// Keyed by displayName, NOT peerId: peerId is the socket id, which changes on
+// every reconnect — a seat keyed by it would be lost the moment someone's
+// connection blips, and could later be applied to a different person entirely.
+// By name, your seat follows you across reconnects.
+//
+// Kept BY ROOM NAME (surviving room destruction) for the same reason as the
+// bitrate: the seating shouldn't be lost just because the room briefly emptied.
+const roomSpatial = new Map<string, Record<string, number>>();
+
+export function rememberSpatialPosition(roomName: string, name: string, degrees: number): void {
+  const positions = { ...(roomSpatial.get(roomName) ?? {}), [name]: degrees };
+  roomSpatial.set(roomName, positions);
+  const room = rooms.get(roomName);
+  if (room) room.spatialPositions = positions;
+}
+
+// Carry a seat over when someone renames, so changing your display name doesn't
+// silently dump you back to the default position.
+export function renameSpatialPosition(roomName: string, from: string, to: string): void {
+  const positions = roomSpatial.get(roomName);
+  if (!positions || positions[from] === undefined || from === to) return;
+  const next = { ...positions, [to]: positions[from] };
+  delete next[from];
+  roomSpatial.set(roomName, next);
+  const room = rooms.get(roomName);
+  if (room) room.spatialPositions = next;
+}
 
 export function rememberRoomBitrate(roomName: string, kbps: number): void {
   roomBitrates.set(roomName, kbps);
@@ -79,6 +115,7 @@ export async function getOrCreateRoom(roomName: string): Promise<Room> {
     disableP2p: false,
     casters: new Set(),
     audioBitrate: roomBitrates.get(roomName) ?? 128,
+    spatialPositions: roomSpatial.get(roomName) ?? {},
     messages: [],
   };
   rooms.set(roomName, room);

@@ -211,10 +211,17 @@ const SPATIAL_ARC_DEG = 140; // total spread, centred straight ahead
 const SPATIAL_RADIUS = 1.6; // metres from the listener
 
 // Web Audio's listener faces -Z, so "ahead" is negative Z.
+// degrees: -90 = hard left, 0 = straight ahead, +90 = hard right.
+function degreesToPoint(degrees: number) {
+  const rad = (degrees * Math.PI) / 180;
+  return { x: Math.sin(rad) * SPATIAL_RADIUS, z: -Math.cos(rad) * SPATIAL_RADIUS };
+}
+
+// Automatic seat for a peer with no explicit position: spread evenly across the
+// arc, so voices are separated out of the box.
 function seatPosition(index: number, total: number) {
   const t = total <= 1 ? 0.5 : index / (total - 1);
-  const rad = ((-SPATIAL_ARC_DEG / 2 + t * SPATIAL_ARC_DEG) * Math.PI) / 180;
-  return { x: Math.sin(rad) * SPATIAL_RADIUS, z: -Math.cos(rad) * SPATIAL_RADIUS };
+  return degreesToPoint(-SPATIAL_ARC_DEG / 2 + t * SPATIAL_ARC_DEG);
 }
 
 // (Re)wire every peer for the current setting and re-spread the seats. Called
@@ -227,6 +234,11 @@ function applySpatialLayout(
   peerAudios: Map<string, PeerAudio>,
   enabled: boolean,
   isMusic: (peerId: string) => boolean,
+  // displayName of a peer, and the room-wide seat overrides keyed by that name.
+  // An explicit seat (set from the Ctrl+Alt+U panel, shared by everyone) always
+  // wins; peers without one fall back to the automatic even spread.
+  nameOf: (peerId: string) => string,
+  positions: Record<string, number>,
 ) {
   // Sorted so a given peer keeps its seat as others come and go (no shuffling
   // voices around mid-conversation just because someone else joined).
@@ -235,7 +247,9 @@ function applySpatialLayout(
   for (const [peerId, pa] of peerAudios) {
     const spatial = enabled && !isMusic(peerId);
     if (spatial) {
-      const { x, z } = seatPosition(seated.indexOf(peerId), seated.length);
+      const override = positions[nameOf(peerId)];
+      const { x, z } =
+        typeof override === "number" ? degreesToPoint(override) : seatPosition(seated.indexOf(peerId), seated.length);
       pa.panner.positionX.value = x;
       pa.panner.positionY.value = 0;
       pa.panner.positionZ.value = z;
@@ -497,8 +511,21 @@ export function useMediasoup() {
       peerAudiosRef.current,
       state.spatialAudio,
       (peerId) => !!state.peers.get(peerId)?.isMusic,
+      (peerId) => state.peers.get(peerId)?.displayName ?? "",
+      state.spatialPositions,
     );
   }, [store]);
+
+  // Move a participant's seat in the room's 3D field. Room-wide: the server
+  // stores it (by display name) and broadcasts to everyone, so a person sounds
+  // like they're in the same place for ALL listeners. Called live while dragging
+  // the slider in the hidden Ctrl+Alt+U panel.
+  const setSpatialPosition = useCallback(
+    (name: string, degrees: number) => {
+      socketRef.current?.emit("set-spatial-position", { name, degrees });
+    },
+    [],
+  );
 
   // Toggle spatial audio (Ctrl+Alt+E). Receive-side and local, so it applies
   // instantly with no reconnect and without affecting anyone else.
@@ -1163,6 +1190,7 @@ export function useMediasoup() {
           mode: RoomMode;
           recording: { recordingId: string } | null;
           audioBitrate?: number;
+          spatialPositions?: Record<string, number>;
           messages: ChatMessage[];
         };
         const joinPayload = {
@@ -1179,6 +1207,8 @@ export function useMediasoup() {
 
         // Match the room's current voice bitrate (late joiner / reconnect).
         roomBitrateRef.current = joinRes.audioBitrate ?? 128;
+        // Seats are room-wide, so adopt whatever the room already has.
+        store.getState().setSpatialPositions(joinRes.spatialPositions ?? {});
 
         // Seed chat history (de-duped in the store, silent — no chime/announce).
         for (const m of joinRes.messages ?? []) store.getState().addMessage(m);
@@ -1298,6 +1328,12 @@ export function useMediasoup() {
           // In P2P mode, the new peer will send us an offer — we wait for it
         },
       );
+
+      // Someone moved a seat in the 3D field (room-wide) — re-apply for everyone.
+      socket.on("spatial-positions", (positions: Record<string, number>) => {
+        store.getState().setSpatialPositions(positions ?? {});
+        refreshSpatial();
+      });
 
       // Someone else pressed a key in chat — one tick, matching their rhythm.
       socket.on("peer-typing-tick", () => playTypingTick(sharedAudioContext));
@@ -2892,6 +2928,7 @@ export function useMediasoup() {
     typingTick,
     sendNudge,
     toggleSpatialAudio,
+    setSpatialPosition,
     peerAudiosRef,
   };
 }

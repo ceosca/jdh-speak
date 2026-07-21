@@ -10,6 +10,7 @@ import { AudioControls } from "./AudioControls";
 import { FileStreamPlayer } from "./FileStreamPlayer";
 import { UrlDialog } from "./UrlDialog";
 import { TvDialog } from "./TvDialog";
+import { SpatialDialog } from "./SpatialDialog";
 import { SerietecaDialog } from "./SerietecaDialog";
 import { Chat } from "./Chat";
 import { pickFolderAudioFiles } from "../lib/audioFolder";
@@ -93,6 +94,7 @@ export function Room() {
     typingTick,
     sendNudge,
     toggleSpatialAudio,
+    setSpatialPosition,
   } = useMediasoup();
 
   const [joinState, setJoinState] = useState<JoinState>("idle");
@@ -101,6 +103,8 @@ export function Room() {
   const [playerOpen, setPlayerOpen] = useState(false);
   const [urlOpen, setUrlOpen] = useState(false);
   const [tvOpen, setTvOpen] = useState(false);
+  // Hidden 3D-seating panel (Ctrl+Alt+U only — no button opens it).
+  const [spatialOpen, setSpatialOpen] = useState(false);
   const [serietecaOpen, setSerietecaOpen] = useState(false);
   // Name prompt: shown once on first ever visit (no stored name), and reopened
   // by the "Change name" button under your own card.
@@ -301,6 +305,15 @@ export function Room() {
         }
       }
 
+      // Hidden 3D-seating panel: Ctrl+Alt+U. Like recording/bitrate, it has no
+      // button anywhere — knowing the shortcut is the gate, so nobody moves
+      // people around the room by accident.
+      if (e.altKey && e.ctrlKey && (e.code === "KeyU" || e.key === "u" || e.key === "U")) {
+        e.preventDefault();
+        setSpatialOpen(true);
+        return;
+      }
+
       // Spatial audio toggle: Ctrl+Alt+E. Receive-side and local, so it applies
       // instantly with no reconnect and doesn't touch anyone else's audio.
       if (e.altKey && e.ctrlKey && (e.code === "KeyE" || e.key === "e" || e.key === "E")) {
@@ -430,6 +443,7 @@ export function Room() {
     serieRestartEpisode,
     sendNudge,
     toggleSpatialAudio,
+    setSpatialPosition,
   ]);
 
   // Name prompt overlay (first visit or "Change name"). Rendered above whatever
@@ -720,6 +734,10 @@ export function Room() {
       )}
       {serietecaOpen && (
         <SerietecaDialog onClose={() => setSerietecaOpen(false)} onPlaySerie={startSerie} />
+      )}
+      {/* Hidden 3D-seating panel — only Ctrl+Alt+U opens it (no button). */}
+      {spatialOpen && (
+        <SpatialDialog onClose={() => setSpatialOpen(false)} onSetPosition={setSpatialPosition} />
       )}
 
       <input

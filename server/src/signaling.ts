@@ -10,6 +10,8 @@ import {
   createWebRtcTransport,
   removePeer,
   rememberRoomBitrate,
+  rememberSpatialPosition,
+  renameSpatialPosition,
   type Room,
   type Peer,
 } from "./room-manager.js";
@@ -287,6 +289,7 @@ export function createSignalingServer(
           // Current room voice bitrate (kbps, 128 = original) so a late joiner
           // matches the room's current quality.
           audioBitrate: room.audioBitrate,
+          spatialPositions: room.spatialPositions,
           // Recent chat so a late joiner can read/announce the last messages.
           messages: room.messages,
         });
@@ -599,11 +602,16 @@ export function createSignalingServer(
       if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
       const parsed = z.object({ displayName: displayNameSchema }).safeParse(data);
       if (!parsed.success) return cb?.({ ok: false, error: "Invalid name" });
+      const previousName = currentPeer.displayName;
       currentPeer.displayName = parsed.data.displayName;
       socket.to(currentRoom.name).emit("peer-renamed", {
         peerId: socket.id,
         displayName: parsed.data.displayName,
       });
+      // Seats are keyed by name, so carry this peer's spatial position over —
+      // otherwise renaming would silently drop them back to the default seat.
+      renameSpatialPosition(currentRoom.name, previousName, parsed.data.displayName);
+      io.to(currentRoom.name).emit("spatial-positions", currentRoom.spatialPositions);
       cb?.({ ok: true, displayName: parsed.data.displayName });
     });
 
@@ -630,6 +638,24 @@ export function createSignalingServer(
     // stuck): if someone drops mid-sentence the ticks simply stop arriving.
     // The client throttles, but don't trust it — a peer could flood the room, so
     // drop ticks that arrive faster than a human types.
+    // Spatial audio seating: move a participant's position in the room's 3D
+    // field. Room-wide on purpose — everyone should hear a given person from the
+    // same direction, so the "virtual table" is consistent for all listeners.
+    // Reached only from the hidden Ctrl+Alt+U panel (like the bitrate shortcut),
+    // which is why there's no permission model here: knowing the shortcut is it.
+    socket.on("set-spatial-position", (data: unknown, cb?: (res: unknown) => void) => {
+      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
+      const parsed = z
+        .object({ name: z.string().min(1).max(256), degrees: z.number().min(-90).max(90) })
+        .safeParse(data);
+      if (!parsed.success) return cb?.({ ok: false, error: "Invalid position" });
+      // Round to the slider's step so tiny float drift can't churn the map.
+      const degrees = Math.round(parsed.data.degrees / 5) * 5;
+      rememberSpatialPosition(currentRoom.name, parsed.data.name, degrees);
+      io.to(currentRoom.name).emit("spatial-positions", currentRoom.spatialPositions);
+      cb?.({ ok: true });
+    });
+
     // Nudge ("zumbido", MSN-style): plays an attention-grabbing sound for the
     // WHOLE room. Because it's loud and unsolicited it's the easiest thing to
     // abuse, so it's throttled harder than anything else — one per NUDGE_MIN_MS

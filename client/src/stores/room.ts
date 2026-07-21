@@ -193,6 +193,10 @@ interface RoomState {
   // you can tell who is talking by where they sound. Receive-side and purely
   // local (each listener chooses), toggled live with Ctrl+Alt+E. Persisted.
   spatialAudio: boolean;
+  // Room-wide spatial seats, by displayName → azimuth degrees (-90 left, 0
+  // ahead, +90 right). Server-owned and broadcast, so everyone hears a given
+  // person from the same direction. Empty = use the automatic spread.
+  spatialPositions: Record<string, number>;
   // Play shared tab/system audio out your selected playback device too (so you
   // hear it where you listen). Off by default; persisted. May echo if the shared
   // tab already plays on that same device.
@@ -269,6 +273,7 @@ interface RoomState {
   setVoiceProcessingEnabled: (enabled: boolean) => void;
   setMicMonitor: (monitor: boolean) => void;
   setSpatialAudio: (enabled: boolean) => void;
+  setSpatialPositions: (positions: Record<string, number>) => void;
   setSecondaryEnabled: (enabled: boolean) => void;
   setSecondaryDeviceId: (deviceId: string) => void;
   setSecondaryMonitor: (monitor: boolean) => void;
@@ -320,6 +325,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   voiceProcessingEnabled: loadVoiceProcessing(),
   micMonitor: loadString(MIC_MONITOR_KEY) === "true",
   spatialAudio: loadString(SPATIAL_AUDIO_KEY) === "true",
+  spatialPositions: {},
   shareMonitor: loadString(SHARE_MONITOR_KEY) === "true",
   secondaryEnabled: loadString(SECONDARY_ENABLED_KEY) === "true",
   secondaryDeviceId: loadString(SECONDARY_DEVICE_KEY),
@@ -412,6 +418,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
     saveString(MIC_MONITOR_KEY, String(micMonitor));
     set({ micMonitor });
   },
+  setSpatialPositions: (spatialPositions) => set({ spatialPositions }),
   setSpatialAudio: (spatialAudio) => {
     saveString(SPATIAL_AUDIO_KEY, String(spatialAudio));
     set({ spatialAudio });
