@@ -2396,6 +2396,9 @@ export function useMediasoup() {
       const playlist = audioFiles.map((f) => ({
         name: f.name,
         objectUrl: URL.createObjectURL(f),
+        // Folder-relative path (e.g. "Álbum/Disco 1/01 tema.mp3") so the player
+        // can render a folder tree; a plain file pick has no webkitRelativePath.
+        path: (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name,
       }));
       store.getState().setPlaylist(playlist);
 

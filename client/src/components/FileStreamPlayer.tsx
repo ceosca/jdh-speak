@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { m } from "../paraglide/messages.js";
 import { useRoomStore, type PlayerRepeat } from "../stores/room";
+import { PlaylistTree } from "./PlaylistTree";
 
 interface FileStreamPlayerProps {
   // The track currently playing, or null when the player is open but idle.
@@ -27,8 +28,9 @@ interface FileStreamPlayerProps {
   // Seek actions.
   onSeekBy: (sec: number) => void;
   onSeekTo: (sec: number) => void;
-  // Playlist navigation (only shown when playlist.length > 1).
-  playlist: { name: string; objectUrl: string }[];
+  // Playlist navigation (only shown when playlist.length > 1). `path` is the
+  // folder-relative path (present for folder picks) — drives the folder tree.
+  playlist: { name: string; objectUrl: string; path?: string }[];
   playlistIndex: number;
   playerRepeat: PlayerRepeat;
   playerShuffle: boolean;
@@ -103,6 +105,10 @@ export function FileStreamPlayer({
   const serieEpisodeIndex = useRoomStore((s) => s.serieEpisodeIndex);
   const hasTrack = name != null;
   const hasPlaylist = playlist.length > 1;
+  // A folder pick with subfolders gives paths like "Root/Sub/file" (≥3 segments);
+  // those get the folder tree. A flat folder ("Root/file") or a plain file pick
+  // keeps the flat listbox.
+  const hasSubfolders = playlist.some((t) => (t.path ?? "").split("/").length >= 3);
   const volumePct = Math.round(fileVolume * 100);
 
   // A series plays ONE long .m4b where each episode is a millisecond time-range
@@ -374,10 +380,20 @@ export function FileStreamPlayer({
             </div>
             )}
 
-            {/* Playlist track list (only for multi-track playlists). A single tab
-                stop: the listbox holds focus and aria-activedescendant points at
-                the roving cursor; Up/Down move it, Enter/Space play. */}
-            {hasPlaylist && (
+            {/* Playlist. A folder pick WITH subfolders → a keyboard tree
+                (Right/Left expand/collapse, Up/Down move, Enter/Space play).
+                Otherwise a flat listbox — a single tab stop whose
+                aria-activedescendant roves with Up/Down; Enter/Space plays. */}
+            {hasPlaylist &&
+              (hasSubfolders ? (
+                <PlaylistTree
+                  key={playlist[0]?.objectUrl}
+                  tracks={playlist}
+                  playlistIndex={playlistIndex}
+                  onPlayTrack={onPlayTrack}
+                  label={m.player_playlist()}
+                />
+              ) : (
               <ul
                 role="listbox"
                 tabIndex={0}
@@ -409,7 +425,7 @@ export function FileStreamPlayer({
                   </li>
                 ))}
               </ul>
-            )}
+              ))}
 
           </>
         )}

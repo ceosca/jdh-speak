@@ -163,7 +163,10 @@ interface RoomState {
   // current session (empty when not streaming). `playlistIndex` is the
   // currently-playing entry. `playerRepeat` and `playerShuffle` are persisted
   // user preferences; the shuffled order is computed in the hook at pick time.
-  playlist: { name: string; objectUrl: string }[];
+  // `path` is the file's folder-relative path (webkitRelativePath) when the
+  // source was a folder pick — used to render a folder tree; absent for
+  // individually-picked files.
+  playlist: { name: string; objectUrl: string; path?: string }[];
   playlistIndex: number;
   playerRepeat: PlayerRepeat;
   playerShuffle: boolean;
@@ -249,7 +252,7 @@ interface RoomState {
   clearSerie: () => void;
   setShareMonitor: (monitor: boolean) => void;
   setFileVolume: (volume: number) => void;
-  setPlaylist: (playlist: { name: string; objectUrl: string }[]) => void;
+  setPlaylist: (playlist: { name: string; objectUrl: string; path?: string }[]) => void;
   setPlaylistIndex: (index: number) => void;
   setPlayerRepeat: (repeat: PlayerRepeat) => void;
   setPlayerShuffle: (shuffle: boolean) => void;
