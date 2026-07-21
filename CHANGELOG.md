@@ -31,11 +31,17 @@ Combina con el espacial (cada uno posicionado, todos en la misma sala).
 - **Deploy:** tocó server + cliente → en la Pi, `git pull` + **`pnpm build`** +
   **`systemctl restart jdh-speak`**.
 - **Reverbs rehechos por geometría** (después, solo cliente): los primeros salían
-  flojos. Ahora cada espacio se define por las **distancias a sus 6 paredes**
-  (modeladas sobre salas de referencia conocidas: auto, living, baño, sótano,
-  estudio, escenario, sala de concierto, iglesia, estadio, catedral, calle), y de
+  flojos. Ahora cada espacio se define por las **distancias a sus 6 paredes**, y de
   ahí se derivan **reflexiones tempranas** (un tap por pared, a su retardo real) y
-  la **cola** según el tamaño. Wet fuerte a propósito. `lib/ambience.ts`.
+  la **cola** según el tamaño. `lib/ambience.ts`.
+- **Banco completo del plugin de referencia** (después): las **46 salas** con sus
+  **medidas reales** (extraídas del manual del plugin) + el **brillo real de cada
+  una** (de sus presets de fábrica) → Auto 1/2, Baño, Toilette, Cabina, Estudio,
+  Living, Salas chica/media/grande, Oficinas, Sótano, Escalera, Pasillo, Cine,
+  Conferencias, Depósito, Capilla, Iglesia, Catedral, Salón real, Sala de concierto
+  1/2, Sala acústica, Grabación grande/chica, Escenario, Arena, Batería, Voces,
+  Cuerdas, Ambientes/Placas, Calle, Callejón. Sin inventar nada. El convolver
+  corre **sin normalizar** (energía cruda, con tope de pico para no clipear).
 
 ---
 

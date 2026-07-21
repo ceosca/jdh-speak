@@ -8,7 +8,7 @@ import { isIOS, getMicrophoneStream } from "../lib/microphone";
 import { playCue, preloadCueSamples, playTypingTick } from "../lib/sounds";
 import { getIceServers } from "../lib/ice";
 import { autoSeat, seatToPoint, type SpatialSeat } from "../lib/spatial";
-import { ambienceName, buildImpulseResponse, findAmbience } from "../lib/ambience";
+import { AMBIENCE_WET, ambienceName, buildImpulseResponse, findAmbience } from "../lib/ambience";
 import { parseClearKey, type Channel } from "../lib/tv";
 import {
   flattenEpisodes,
@@ -554,12 +554,12 @@ export function useMediasoup() {
     if (!g) return;
     const amb = findAmbience(store.getState().ambience);
     const now = sharedAudioContext.currentTime;
-    if (!amb || amb.wet <= 0) {
+    if (!amb || amb.id === "seco") {
       g.reverbWet.gain.setTargetAtTime(0, now, 0.05);
       return;
     }
     g.reverbConvolver.buffer = buildImpulseResponse(sharedAudioContext, amb);
-    g.reverbWet.gain.setTargetAtTime(amb.wet, now, 0.05);
+    g.reverbWet.gain.setTargetAtTime(AMBIENCE_WET, now, 0.05);
   }, [store]);
 
   // Pick the room's ambience (Ctrl+Alt+A panel). Server-owned and broadcast:
@@ -635,6 +635,10 @@ export function useMediasoup() {
     // picked (reverbWet 0). applyAmbience loads the impulse + sets the wet level.
     const reverbInput = ctx.createGain();
     const reverbConvolver = ctx.createConvolver();
+    // Don't let the convolver renormalise: our impulses are peak-normalised in
+    // buildImpulseResponse, so bigger rooms keep more tail energy (louder, more
+    // present) — the "raw energy" feel — while the peak cap prevents clipping.
+    reverbConvolver.normalize = false;
     const reverbWet = ctx.createGain();
     reverbWet.gain.value = 0;
     reverbInput.connect(reverbConvolver);
