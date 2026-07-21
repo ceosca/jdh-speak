@@ -59,6 +59,11 @@
   verificó local/manual, no con dos participantes reales).
 - **Fuera de v1 (YAGNI, no está en la app de referencia que copiamos):** cuentas
   de usuario, progreso/estadísticas en servidor, vinculación de dispositivos TV.
+- **Deploy (para Cristian):** esto tocó **código de server** (el proxy
+  `browserPlayableAudioType`), así que al hacer `git pull` en la Pi hace falta
+  **`pnpm build`** (cliente) **y `systemctl restart jdh-speak`** (server) — no
+  alcanza solo el build. **No hay archivo nuevo que colocar**: el catálogo se
+  baja solo de archive.org (`series.json`), sin `db.json` ni binarios nuevos.
 
 ---
 
