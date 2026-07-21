@@ -45,14 +45,24 @@ export interface ProgressEntry {
 export const SERIES_DB_URL = "https://archive.org/download/m4bua/series.json";
 const PROGRESS_KEY = "jdh-speak:serieteca:progress";
 
-// Drop malformed entries so one bad record can't break the catalog.
+// Drop malformed entries so one bad record can't break the catalog. Validation
+// reaches into temporadas: every entry must be an object with an array
+// `capitulos`, so flattenEpisodes/seasonsOf/episodeIndexAt never throw on a kept
+// series. (Per-capitulo fields are trusted — a bad titulo/inicio/fin degrades a
+// single episode, it doesn't crash the helpers.)
 function isValidSerie(x: unknown): x is Serie {
   if (!x || typeof x !== "object") return false;
   const s = x as Record<string, unknown>;
   return (
     typeof s.nombre === "string" &&
     typeof s.enlace === "string" &&
-    Array.isArray(s.temporadas)
+    Array.isArray(s.temporadas) &&
+    s.temporadas.every(
+      (tp) =>
+        !!tp &&
+        typeof tp === "object" &&
+        Array.isArray((tp as Record<string, unknown>).capitulos),
+    )
   );
 }
 
