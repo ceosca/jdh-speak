@@ -45,6 +45,27 @@ Combina con el espacial (cada uno posicionado, todos en la misma sala).
 
 ---
 
+## 2026-07-21 (5)
+
+### `feat/music-channel` — la música va por un canal aparte (voz posicionada, música centrada)
+
+**En rama, falta prueba en vivo.** Supera al fix anterior (que centraba también la
+voz). Ahora la música (archivo/URL/TV/serie o compartir) sale por un **productor
+SEPARADO** de la voz, así los demás **espacializan la voz** y **centran la música**
+— te movés vos y la música queda quieta.
+
+- **Cómo:** una segunda salida de audio (`musicDest`) recibe la música (antes iba
+  a la voz); se produce como productor **"file"** aparte (Opus DTX, ~0 cuando está
+  en silencio). En el receptor, ese canal va a un mapa propio (`musicAudiosRef`),
+  siempre **centrado** (sin panner) + mandado al reverb; la voz (`peerAudiosRef`)
+  queda intacta y espacializada. El volumen/deafen por peer afecta a ambos.
+- **Transporte:** el canal separado sólo existe en **SFU**, así que **reproducir
+  fuerza SFU** (como el caster/grabación). En llamadas de 2, un "blip" de
+  reconexión al empezar/terminar la música.
+- **Deploy:** server + cliente → `git pull` + `pnpm build` + `systemctl restart jdh-speak`.
+
+---
+
 ## 2026-07-21 (4)
 
 ### `feat/music-centered` — la música no sigue el 3D: queda centrada

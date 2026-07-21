@@ -233,10 +233,6 @@ function applySpatialLayout(
   // configured seat (which is kept elsewhere, so turning it off restores it).
   autoAll: boolean,
   isMusic: (peerId: string) => boolean,
-  // True while a peer is streaming audio (file/URL/TV/series/share). Their track
-  // carries music mixed into their voice, so it stays CENTRED (never panned) —
-  // music shouldn't move around the room with the person, like a music caster.
-  isStreaming: (peerId: string) => boolean,
   nameOf: (peerId: string) => string,
   // Room-wide seat overrides keyed by displayName. An explicit seat (from the
   // Ctrl+Alt+U panel, shared by everyone) wins unless auto-all is on.
@@ -249,7 +245,9 @@ function applySpatialLayout(
   reverbSend: AudioNode | null,
 ) {
   for (const [peerId, pa] of peerAudios) {
-    const spatial = enabled && !isMusic(peerId) && !isStreaming(peerId);
+    // A peer's voice stays spatialised even while they stream — their music
+    // travels on a SEPARATE producer that's rendered centred (see musicAudiosRef).
+    const spatial = enabled && !isMusic(peerId);
     if (spatial) {
       const name = nameOf(peerId);
       const seat = autoAll ? autoSeatOf(name) : (positions[name] ?? autoSeatOf(name));
@@ -283,7 +281,15 @@ export function useMediasoup() {
   const sendTransportRef = useRef<Transport | null>(null);
   const recvTransportRef = useRef<Transport | null>(null);
   const producerRef = useRef<Producer | null>(null);
+  // Separate producer for the music channel (musicDest): file/URL/TV/series and
+  // audio share. Kept apart from the voice producer so listeners centre it.
+  const musicProducerRef = useRef<Producer | null>(null);
   const peerAudiosRef = useRef<Map<string, PeerAudio>>(new Map());
+  // A peer's separate MUSIC channel (source "file"), keyed by peerId. Always
+  // played CENTRED (gain → destination + reverb, no panner), so the music never
+  // follows the person's 3D seat — the voice pipeline in peerAudiosRef stays
+  // spatialised as usual.
+  const musicAudiosRef = useRef<Map<string, PeerAudio>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
   // True when we joined WITHOUT a microphone (opted out, or none available /
   // permission denied) — we listen and use text chat only. The outgoing track is
@@ -326,6 +332,8 @@ export function useMediasoup() {
     micGain: GainNode;
     limiter: DynamicsCompressorNode;
     outDest: MediaStreamAudioDestinationNode;
+    // Separate destination for played music / audio share → its own producer.
+    musicDest: MediaStreamAudioDestinationNode;
     displaySource: MediaStreamAudioSourceNode | null;
     // Two persistent file slots feed the shared fileVolumeGain → outDest chain.
     // The file mixes directly into the voice track (no separate producer).
@@ -544,7 +552,6 @@ export function useMediasoup() {
       state.spatialAudio,
       state.spatialAutoAll,
       (peerId) => !!state.peers.get(peerId)?.isMusic,
-      (peerId) => !!state.peers.get(peerId)?.isStreaming,
       (peerId) => state.peers.get(peerId)?.displayName ?? "",
       state.spatialPositions,
       spatialAutoSeatOf(),
@@ -602,6 +609,10 @@ export function useMediasoup() {
       destroyAudioPipeline(pa);
     }
     peerAudiosRef.current.clear();
+    for (const pa of musicAudiosRef.current.values()) {
+      destroyAudioPipeline(pa);
+    }
+    musicAudiosRef.current.clear();
   }, []);
 
   // --- Outgoing audio graph (mic gain + soft limiter, + optional shared audio) ---
@@ -624,6 +635,11 @@ export function useMediasoup() {
     const outDest = ctx.createMediaStreamDestination();
     micGain.connect(limiter);
     limiter.connect(outDest);
+    // Separate MUSIC channel: file/URL/TV/series playback and the system-audio
+    // share feed THIS destination (not outDest), so they leave on their own
+    // producer — letting listeners keep the music centred while our voice stays
+    // spatialised. An unconnected dest still yields a live (silent) track.
+    const musicDest = ctx.createMediaStreamDestination();
     // Spatialised self-monitor: when the monitor is on AND spatial audio is on,
     // your own voice is played back through YOUR seat, so you hear yourself
     // where the room hears you (and can hear your own position change as you
@@ -656,6 +672,7 @@ export function useMediasoup() {
       micGain,
       limiter,
       outDest,
+      musicDest,
       displaySource: null,
       fileSlots: null,
       activeSlot: 0,
@@ -1059,6 +1076,8 @@ export function useMediasoup() {
   const teardownSfu = useCallback(() => {
     producerRef.current?.close();
     producerRef.current = null;
+    musicProducerRef.current?.close();
+    musicProducerRef.current = null;
     sendTransportRef.current?.close();
     sendTransportRef.current = null;
     recvTransportRef.current?.close();
@@ -1102,6 +1121,20 @@ export function useMediasoup() {
       }
 
       const pipeline = createAudioPipeline(consumer.track);
+
+      // A peer's separate MUSIC channel: always CENTRED (gain → destination +
+      // reverb, no panner), so music never follows their 3D seat. Kept in its own
+      // map so the voice pipeline (peerAudiosRef) is untouched.
+      if (source === "file") {
+        const prev = musicAudiosRef.current.get(peerId);
+        if (prev) destroyAudioPipeline(prev);
+        pipeline.gainNode.disconnect();
+        pipeline.gainNode.connect(sharedAudioContext.destination);
+        if (outGraphRef.current?.reverbInput) pipeline.gainNode.connect(outGraphRef.current.reverbInput);
+        pipeline.gainNode.gain.value = effectiveGain(peerId);
+        musicAudiosRef.current.set(peerId, { ...pipeline, consumer });
+        return;
+      }
 
       // Drop any previous pipeline for this peer first (a re-consume on a mode
       // switch, reconnect, or a live bitrate re-produce) so it never leaks or
@@ -1229,8 +1262,28 @@ export function useMediasoup() {
       });
       producerRef.current = producer;
 
-      // Share audio and file audio both mix directly into outDest (no separate
-      // producer for either — no rebuild needed on SFU setup).
+      // Produce the MUSIC channel (musicDest) on its own producer, tagged
+      // "file", so listeners render it centred (never spatialised) while our
+      // voice stays positioned. DTX on: it costs ~nothing while silent (idle).
+      // musicDest is long-lived (stopTracks:false), like outDest.
+      const musicProducer = await sendTransport.produce({
+        track: ensureOutGraph().musicDest.stream.getAudioTracks()[0],
+        codecOptions: {
+          opusStereo: true,
+          opusDtx: true,
+          opusFec: true,
+          opusMaxPlaybackRate: 48000,
+          opusMaxAverageBitrate: 128000,
+        },
+        codec: device.recvRtpCapabilities.codecs?.find(
+          (c) => c.mimeType.toLowerCase() === "audio/opus",
+        ),
+        appData: { source: "file" },
+        stopTracks: false,
+      });
+      musicProducerRef.current = musicProducer;
+
+      // Share audio and file audio travel on the music producer above.
 
       // Consume any producers announced while the transports were still being
       // built (their new-producer events arrived too early and were queued).
@@ -1546,6 +1599,11 @@ export function useMediasoup() {
           destroyAudioPipeline(peerAudio);
           peerAudiosRef.current.delete(peerId);
           refreshSpatial(); // re-spread the remaining seats
+        }
+        const musicAudio = musicAudiosRef.current.get(peerId);
+        if (musicAudio) {
+          destroyAudioPipeline(musicAudio);
+          musicAudiosRef.current.delete(peerId);
         }
         store.getState().removePeer(peerId);
         if (!wasMusic) {
@@ -1872,18 +1930,23 @@ export function useMediasoup() {
     for (const [peerId, peerAudio] of peerAudiosRef.current) {
       peerAudio.gainNode.gain.setTargetAtTime(effectiveGain(peerId), now, GAIN_RAMP);
     }
+    for (const [peerId, musicAudio] of musicAudiosRef.current) {
+      musicAudio.gainNode.gain.setTargetAtTime(effectiveGain(peerId), now, GAIN_RAMP);
+    }
   }, [store, effectiveGain]);
 
   const setPeerVolume = useCallback(
     (peerId: string, volume: number) => {
       store.getState().setPeerVolume(peerId, volume);
+      const now = sharedAudioContext.currentTime;
       const peerAudio = peerAudiosRef.current.get(peerId);
       if (peerAudio) {
-        peerAudio.gainNode.gain.setTargetAtTime(
-          effectiveGain(peerId),
-          sharedAudioContext.currentTime,
-          GAIN_RAMP,
-        );
+        peerAudio.gainNode.gain.setTargetAtTime(effectiveGain(peerId), now, GAIN_RAMP);
+      }
+      // The peer's music channel follows the same per-peer volume/deafen.
+      const musicAudio = musicAudiosRef.current.get(peerId);
+      if (musicAudio) {
+        musicAudio.gainNode.gain.setTargetAtTime(effectiveGain(peerId), now, GAIN_RAMP);
       }
     },
     [store, effectiveGain],
@@ -1948,12 +2011,11 @@ export function useMediasoup() {
     // Discard the video track — we don't need to send any video
     displayStream.getVideoTracks().forEach((t) => t.stop());
 
-    // Mix the shared audio directly into outDest (the voice track) so it
-    // travels on the existing P2P/SFU track — no separate producer, no SFU pin,
-    // no duck gain (manual volume / caster handle ducking elsewhere).
+    // Mix the shared audio into the MUSIC destination (its own producer), so
+    // listeners keep it centred while our voice stays spatialised.
     const g = ensureOutGraph();
     const displaySource = sharedAudioContext.createMediaStreamSource(new MediaStream(audioTracks));
-    displaySource.connect(g.outDest);
+    displaySource.connect(g.musicDest);
     // Optionally also play it out your selected playback device so you hear it
     // where you listen (the live effect keeps this in sync when toggled).
     if (store.getState().shareMonitor) displaySource.connect(sharedAudioContext.destination);
@@ -1994,7 +2056,7 @@ export function useMediasoup() {
       if (!g.fileVolumeGain) {
         g.fileVolumeGain = sharedAudioContext.createGain();
         g.fileVolumeGain.gain.value = store.getState().fileVolume;
-        g.fileVolumeGain.connect(g.outDest);
+        g.fileVolumeGain.connect(g.musicDest);
         // Local monitor: the streamer hears the file through the SAME volume node
         // that feeds the room, so lowering "volume for all" lowers it for the
         // streamer too (and the crossfade is audible locally). One shared

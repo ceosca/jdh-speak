@@ -148,6 +148,10 @@ export function createSignalingServer(
     return (
       recordingManager.isRecording(room.name) ||
       room.casters.size > 0 ||
+      // A peer streaming audio (file/URL/TV/series/share) sends it on a SEPARATE
+      // "file" producer so listeners can keep the music centred while voices stay
+      // spatialised — that split only exists on the SFU, so streaming forces it.
+      [...room.peers.values()].some((p) => p.streaming) ||
       room.disableP2p
     );
   }
@@ -556,6 +560,9 @@ export function createSignalingServer(
         peerId: socket.id,
         streaming: parsed.data.streaming,
       });
+      // Streaming forces SFU (the separate music producer only exists there);
+      // re-evaluate so the room switches to SFU on start and can fall back on stop.
+      applyModeDecision(currentRoom);
       cb?.({ ok: true });
     });
 
