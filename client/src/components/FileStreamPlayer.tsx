@@ -430,6 +430,18 @@ export function FileStreamPlayer({
               aria-label={m.player_volume_label()}
               aria-valuetext={`${volumePct} %`}
               onChange={(e) => onVolumeChange(clampVolume(parseFloat(e.target.value) / 100))}
+              onKeyDown={(e) => {
+                // Home → 0 %, End → 100 % (not the 200 % max, so a keypress can't
+                // suddenly blast the room). Above 100 % is reachable only by
+                // arrowing up, one step at a time.
+                if (e.key === "Home") {
+                  e.preventDefault();
+                  onVolumeChange(0);
+                } else if (e.key === "End") {
+                  e.preventDefault();
+                  onVolumeChange(1);
+                }
+              }}
               className="min-w-0 flex-1 accent-sonic-accent"
             />
             <span
