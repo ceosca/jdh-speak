@@ -349,7 +349,13 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setSerieEpisode: (serieEpisodeIndex, serieCurrentSeason) =>
     set({ serieEpisodeIndex, serieCurrentSeason }),
   clearSerie: () =>
-    set({ serieName: null, serieEpisodes: [], serieSeasons: [], serieEpisodeIndex: 0 }),
+    set({
+      serieName: null,
+      serieEpisodes: [],
+      serieSeasons: [],
+      serieEpisodeIndex: 0,
+      serieCurrentSeason: 1,
+    }),
   setFileVolume: (fileVolume) => {
     try {
       localStorage.setItem(FILE_VOLUME_KEY, String(fileVolume));
