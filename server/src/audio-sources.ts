@@ -17,6 +17,43 @@ export function isAudioContentType(value: string): boolean {
   return type.startsWith("audio/") || type === "application/ogg";
 }
 
+// Extensions a browser <audio> can decode directly, mapped to the Content-Type
+// we serve them as. archive.org ships .m4b audiobooks as application/octet-stream,
+// which isAudioContentType rejects — that would push them to the transcoder and
+// break byte-Range seeking. When the content-type is generic binary (or absent)
+// but the URL path clearly names a playable audio file, serve it directly with a
+// correct audio Content-Type so <audio> plays it and Range/seek keep working.
+const PLAYABLE_AUDIO_EXT: Record<string, string> = {
+  ".m4b": "audio/mp4",
+  ".m4a": "audio/mp4",
+  ".mp3": "audio/mpeg",
+  ".aac": "audio/aac",
+  ".oga": "audio/ogg",
+  ".ogg": "audio/ogg",
+  ".opus": "audio/opus",
+  ".wav": "audio/wav",
+  ".flac": "audio/flac",
+};
+
+const GENERIC_BINARY_TYPES = new Set(["", "application/octet-stream", "binary/octet-stream"]);
+
+export function browserPlayableAudioType(url: string, contentType: string): string | null {
+  // A real audio content-type is authoritative — serve as-is.
+  if (isAudioContentType(contentType)) return contentType;
+  const base = contentType.split(";", 1)[0].trim().toLowerCase();
+  // Only override when upstream gave us a generic/absent type (never for HTML or video/*).
+  if (!GENERIC_BINARY_TYPES.has(base)) return null;
+  let pathname: string;
+  try {
+    pathname = new URL(url).pathname.toLowerCase();
+  } catch {
+    return null;
+  }
+  const dot = pathname.lastIndexOf(".");
+  if (dot < 0) return null;
+  return PLAYABLE_AUDIO_EXT[pathname.slice(dot)] ?? null;
+}
+
 
 function isPrivateIpv4(address: string): boolean {
   const parts = address.split(".").map(Number);
