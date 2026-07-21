@@ -257,19 +257,21 @@ export function FileStreamPlayer({
   return (
     <div
       id="conference-player"
-      role="group"
-      aria-label={hasTrack ? (name ?? undefined) : m.player_virtual_title()}
       onKeyDown={onKeyDown}
       tabIndex={-1}
       className="w-full border-t border-sonic-600 bg-sonic-800 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-sonic-accent"
     >
       <div className="mx-auto max-w-md p-3">
-        {/* Title + close button */}
+        {/* Title (a level-2 heading so screen readers can jump straight to the
+            player by heading) + close button */}
         <div className="mb-2 flex items-center gap-2">
-          <FileMusic className="h-4 w-4 shrink-0 text-sonic-accent" />
-          <span className="truncate text-sm font-medium text-sonic-100" title={name ?? undefined}>
+          <FileMusic className="h-4 w-4 shrink-0 text-sonic-accent" aria-hidden="true" />
+          <h2
+            className="truncate text-sm font-medium text-sonic-100"
+            title={name ?? undefined}
+          >
             {hasTrack ? name : m.player_virtual_title()}
-          </span>
+          </h2>
           <button
             onClick={onClose}
             className="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-sonic-700 text-sonic-200 transition-all hover:bg-sonic-600"
@@ -318,7 +320,6 @@ export function FileStreamPlayer({
                 onClick={onTogglePlay}
                 className="flex h-10 w-10 items-center justify-center rounded-full bg-sonic-accent text-white transition-all hover:bg-sonic-accent/90"
                 aria-label={playing ? m.file_player_pause() : m.file_player_play()}
-                aria-describedby="file-player-hint"
                 aria-pressed={playing}
               >
                 {playing ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
@@ -333,11 +334,6 @@ export function FileStreamPlayer({
                 </button>
               )}
             </div>
-
-            {/* Keyboard guidance — tied to play button via aria-describedby. */}
-            <p id="file-player-hint" className="mt-1 text-center text-xs text-sonic-400">
-              {m.player_focus_hint()}
-            </p>
 
             {/* Repeat + shuffle controls. Hidden for a series — it's a single
                 continuous .m4b with no playlist to repeat or shuffle. */}
@@ -415,9 +411,12 @@ export function FileStreamPlayer({
             stream); sits just above the Open folder / Open files buttons. */}
         {hasTrack && (
           <div className="mt-2 flex items-center gap-2">
-            <label htmlFor="file-player-volume" className="shrink-0 text-xs text-sonic-300">
+            {/* Visual-only label (aria-hidden) so screen readers don't stop on it
+                separately; the slider carries the name via aria-label, reading as
+                one element: "Volumen para todos, deslizador, 54 %". */}
+            <span className="shrink-0 text-xs text-sonic-300" aria-hidden="true">
               {m.player_volume_label()}
-            </label>
+            </span>
             <input
               ref={volumeRef}
               id="file-player-volume"
@@ -426,6 +425,7 @@ export function FileStreamPlayer({
               max={100}
               step={1}
               value={volumePct}
+              aria-label={m.player_volume_label()}
               aria-valuetext={`${volumePct} %`}
               onChange={(e) => onVolumeChange(clampVolume(parseFloat(e.target.value) / 100))}
               className="min-w-0 flex-1 accent-sonic-accent"
