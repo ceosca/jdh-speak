@@ -192,10 +192,14 @@ interface RoomState {
   // Spatial audio on/off. ROOM state (server-owned, broadcast): whoever presses
   // Ctrl+Alt+E flips it for everyone. Not persisted locally — the room decides.
   spatialAudio: boolean;
-  // Room-wide spatial seats, by displayName → azimuth degrees (-90 left, 0
-  // ahead, +90 right). Server-owned and broadcast, so everyone hears a given
-  // person from the same direction. Empty = use the automatic spread.
+  // Room-wide spatial seats, by displayName → floor position + height. Server-
+  // owned and broadcast, so everyone hears a given person from the same
+  // direction. A name with no seat uses the automatic spread.
   spatialPositions: Record<string, SpatialSeat>;
+  // "Auto-position everyone" on/off. ROOM state (server-owned, broadcast): when
+  // on, every client seats ALL participants on the even spread, ignoring the
+  // configured seats (which stay, so turning it off restores them).
+  spatialAutoAll: boolean;
   // Play shared tab/system audio out your selected playback device too (so you
   // hear it where you listen). Off by default; persisted. May echo if the shared
   // tab already plays on that same device.
@@ -273,6 +277,7 @@ interface RoomState {
   setMicMonitor: (monitor: boolean) => void;
   setSpatialAudio: (enabled: boolean) => void;
   setSpatialPositions: (positions: Record<string, SpatialSeat>) => void;
+  setSpatialAutoAll: (enabled: boolean) => void;
   setSecondaryEnabled: (enabled: boolean) => void;
   setSecondaryDeviceId: (deviceId: string) => void;
   setSecondaryMonitor: (monitor: boolean) => void;
@@ -325,6 +330,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   micMonitor: loadString(MIC_MONITOR_KEY) === "true",
   spatialAudio: false,
   spatialPositions: {},
+  spatialAutoAll: false,
   shareMonitor: loadString(SHARE_MONITOR_KEY) === "true",
   secondaryEnabled: loadString(SECONDARY_ENABLED_KEY) === "true",
   secondaryDeviceId: loadString(SECONDARY_DEVICE_KEY),
@@ -418,6 +424,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
     set({ micMonitor });
   },
   setSpatialPositions: (spatialPositions) => set({ spatialPositions }),
+  setSpatialAutoAll: (spatialAutoAll) => set({ spatialAutoAll }),
   setSpatialAudio: (spatialAudio) => {
     set({ spatialAudio });
   },

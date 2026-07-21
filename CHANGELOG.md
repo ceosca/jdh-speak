@@ -8,6 +8,40 @@
 
 ---
 
+## 2026-07-21 (2)
+
+### `feat/spatial-walk` — audio espacial: caminar con flechas, sin distancia, auto-ubicar
+
+Reforma del **audio espacial** que había armado Cristian (asientos 3D room-wide,
+Ctrl+Alt+E para prender, panel oculto Ctrl+Alt+U). Cambios pedidos por el usuario:
+
+- **Posicionar "caminando" con las flechas** en vez de sliders de ángulo: en el
+  panel Ctrl+Alt+U, con un participante elegido, **↑ adelante, ↓ atrás, ← izquierda,
+  → derecha** te mueven por el piso; **Re Pág / Av Pág** suben y bajan la altura.
+  También hay botones. La posición se **habla como dirección** ("Adelante a la
+  izquierda, arriba"), nunca números. Modelo (x piso izq/der, z piso atrás/adelante,
+  y altura) en `lib/spatial.ts`.
+- **Se sacó la distancia** (el eje en metros que bajaba el volumen + el filtro de
+  agudos). Ojo Cristian: **esto revierte a propósito** tu eje de distancia — el
+  usuario lo consideró "inventado" (no parte del 3D real, solo volumen). Ahora el
+  panner es **dirección pura** (`rolloffFactor 0`), así caminar nunca cambia qué
+  tan fuerte suena nadie. La **altura se mantuvo** (aunque con HRTF genérico casi
+  no se note).
+- **Casilla "Posicionar automáticamente a todos"**: al marcarla, **todos** los
+  participantes ocupan un lugar del reparto parejo (arco al frente, radio fijo,
+  ninguno en el centro, sin dos en el mismo lugar), ignorando las posiciones
+  configuradas — que **quedan guardadas**, así al desmarcarla cada uno vuelve a la
+  suya. Es room-wide como el on/off (server `set-spatial-auto` → `spatial-auto`).
+  El reparto se calcula sobre **toda la sala** (vos + los demás, por nombre), así
+  es idéntico en cada cliente.
+- **Modelo del asiento cambió** de `{az, el, dist}` a `{x, z, y}` — server
+  (`room-manager.ts`, validación en `signaling.ts`) y cliente. El mapa es en
+  memoria, no hay nada que migrar.
+- **Deploy:** tocó server + cliente → en la Pi, `git pull` + **`pnpm build`** y
+  **`systemctl restart jdh-speak`**.
+
+---
+
 ## 2026-07-21
 
 ### `feat/serieteca` — Serieteca: biblioteca de series de audio en la sala

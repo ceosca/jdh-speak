@@ -11,6 +11,7 @@ import {
   removePeer,
   rememberRoomBitrate,
   rememberSpatialEnabled,
+  rememberSpatialAutoAll,
   rememberSpatialPosition,
   renameSpatialPosition,
   type Room,
@@ -292,6 +293,7 @@ export function createSignalingServer(
           audioBitrate: room.audioBitrate,
           spatialPositions: room.spatialPositions,
           spatialEnabled: room.spatialEnabled,
+          spatialAutoAll: room.spatialAutoAll,
           // Recent chat so a late joiner can read/announce the last messages.
           messages: room.messages,
         });
@@ -660,24 +662,40 @@ export function createSignalingServer(
       cb?.({ ok: true });
     });
 
+    // "Auto-position everyone" on/off for the WHOLE room. When on, every client
+    // seats all participants on the even spread, ignoring configured seats
+    // (which are kept, so turning it off restores them). Room-wide like the
+    // enabled flag.
+    socket.on("set-spatial-auto", (data: unknown, cb?: (res: unknown) => void) => {
+      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
+      const parsed = z.object({ enabled: z.boolean() }).safeParse(data);
+      if (!parsed.success) return cb?.({ ok: false, error: "Invalid value" });
+      rememberSpatialAutoAll(currentRoom.name, parsed.data.enabled);
+      io.to(currentRoom.name).emit("spatial-auto", {
+        enabled: parsed.data.enabled,
+        by: currentPeer.displayName,
+      });
+      cb?.({ ok: true });
+    });
+
     socket.on("set-spatial-position", (data: unknown, cb?: (res: unknown) => void) => {
       if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
       const parsed = z
         .object({
           name: z.string().min(1).max(256),
-          // Full sphere: azimuth all the way around (±180 = behind), elevation
-          // up/down, and distance in metres.
-          az: z.number().min(-180).max(180),
-          el: z.number().min(-90).max(90),
-          dist: z.number().min(0.3).max(10),
+          // A spot on the floor (x left/right, z back/front) plus height (y).
+          // Direction only — magnitude never affects loudness.
+          x: z.number().min(-4).max(4),
+          z: z.number().min(-4).max(4),
+          y: z.number().min(-3).max(3),
         })
         .safeParse(data);
       if (!parsed.success) return cb?.({ ok: false, error: "Invalid position" });
-      // Snap to the sliders' steps so float drift can't churn the map.
+      // Snap to the grid so float drift can't churn the map.
       const seat = {
-        az: Math.round(parsed.data.az / 5) * 5,
-        el: Math.round(parsed.data.el / 5) * 5,
-        dist: Math.round(parsed.data.dist * 2) / 2,
+        x: Math.round(parsed.data.x),
+        z: Math.round(parsed.data.z),
+        y: Math.round(parsed.data.y),
       };
       rememberSpatialPosition(currentRoom.name, parsed.data.name, seat);
       io.to(currentRoom.name).emit("spatial-positions", currentRoom.spatialPositions);

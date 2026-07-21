@@ -16,14 +16,13 @@ export interface Peer {
 
 export type RoomMode = "p2p" | "sfu";
 
-// Where a participant sits in the room's 3D field:
-//   az   -180…180 degrees — 0 = straight ahead, + = right, ±180 = behind
-//   el    -90…90 degrees  — 0 = ear level, + = above
-//   dist  metres from the listener
+// Where a participant sits on the floor around the listener, plus height.
+//   x  left(−) … right(+)     z  back(−) … front(+)     y  down(−) … up(+)
+// Direction only — magnitude never affects loudness (distance was removed).
 export interface SpatialSeat {
-  az: number;
-  el: number;
-  dist: number;
+  x: number;
+  z: number;
+  y: number;
 }
 
 export interface Room {
@@ -48,6 +47,10 @@ export interface Room {
   spatialPositions: Record<string, SpatialSeat>;
   // Whether spatial audio is on for the whole room (see roomSpatialEnabled).
   spatialEnabled: boolean;
+  // Whether "auto-position everyone" is on: seat EVERY participant on the even
+  // spread, ignoring configured seats (which are kept, so unchecking restores
+  // them). Room-wide, see roomSpatialAutoAll.
+  spatialAutoAll: boolean;
   // Rolling chat history (bounded to CHAT_HISTORY_MAX) so late joiners receive
   // recent messages on join. Newest last.
   messages: ChatMessage[];
@@ -83,6 +86,16 @@ export function rememberSpatialEnabled(roomName: string, enabled: boolean): void
   roomSpatialEnabled.set(roomName, enabled);
   const room = rooms.get(roomName);
   if (room) room.spatialEnabled = enabled;
+}
+
+// Whether "auto-position everyone" is on for the room. Room-wide like the
+// enabled flag: whoever ticks the panel checkbox ticks it for everyone.
+const roomSpatialAutoAll = new Map<string, boolean>();
+
+export function rememberSpatialAutoAll(roomName: string, enabled: boolean): void {
+  roomSpatialAutoAll.set(roomName, enabled);
+  const room = rooms.get(roomName);
+  if (room) room.spatialAutoAll = enabled;
 }
 
 export function rememberSpatialPosition(roomName: string, name: string, seat: SpatialSeat): void {
@@ -140,6 +153,7 @@ export async function getOrCreateRoom(roomName: string): Promise<Room> {
     audioBitrate: roomBitrates.get(roomName) ?? 128,
     spatialPositions: roomSpatial.get(roomName) ?? {},
     spatialEnabled: roomSpatialEnabled.get(roomName) ?? false,
+    spatialAutoAll: roomSpatialAutoAll.get(roomName) ?? false,
     messages: [],
   };
   rooms.set(roomName, room);

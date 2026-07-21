@@ -7,14 +7,7 @@ import { applySpeakerToContext } from "../lib/audio-devices";
 import { isIOS, getMicrophoneStream } from "../lib/microphone";
 import { playCue, preloadCueSamples, playTypingTick } from "../lib/sounds";
 import { getIceServers } from "../lib/ice";
-import {
-  autoSeat,
-  DEFAULT_SEAT,
-  airAbsorptionHz,
-  seatToPoint,
-  SPATIAL_RADIUS,
-  type SpatialSeat,
-} from "../lib/spatial";
+import { autoSeat, seatToPoint, type SpatialSeat } from "../lib/spatial";
 import { parseClearKey, type Channel } from "../lib/tv";
 import {
   flattenEpisodes,
@@ -191,17 +184,16 @@ function createAudioPipeline(track: MediaStreamTrack): Omit<PeerAudio, "consumer
 
   const panner = sharedAudioContext.createPanner();
   panner.panningModel = "HRTF";
-  // Distance now matters (it's an axis you can set), so let the panner attenuate
-  // — gently, so someone placed far away is still perfectly intelligible.
-  panner.distanceModel = "inverse";
-  panner.refDistance = SPATIAL_RADIUS;
-  panner.rolloffFactor = 0.5;
-  panner.maxDistance = 20;
+  // Direction only: rolloffFactor 0 means the seat's DISTANCE from the listener
+  // never changes loudness — walking around the floor only changes WHERE a voice
+  // sounds, never how loud (distance-as-volume was intentionally removed).
+  panner.rolloffFactor = 0;
 
-  // Air absorption, paired with the panner's attenuation (see airAbsorptionHz).
+  // Kept as a transparent pass-through so the wiring (and the self-monitor chain)
+  // stay identical; it no longer dulls by distance.
   const airFilter = sharedAudioContext.createBiquadFilter();
   airFilter.type = "lowpass";
-  airFilter.frequency.value = 18000;
+  airFilter.frequency.value = 22000;
   airFilter.Q.value = 0.7;
 
   // Start non-spatial; applySpatialLayout inserts the panner when it's enabled.
@@ -236,27 +228,27 @@ function destroyAudioPipeline(pa: PeerAudio) {
 function applySpatialLayout(
   peerAudios: Map<string, PeerAudio>,
   enabled: boolean,
+  // When on, EVERY participant is seated on the even spread, ignoring their
+  // configured seat (which is kept elsewhere, so turning it off restores it).
+  autoAll: boolean,
   isMusic: (peerId: string) => boolean,
-  // displayName of a peer, and the room-wide seat overrides keyed by that name.
-  // An explicit seat (set from the Ctrl+Alt+U panel, shared by everyone) always
-  // wins; peers without one fall back to the automatic even spread.
   nameOf: (peerId: string) => string,
+  // Room-wide seat overrides keyed by displayName. An explicit seat (from the
+  // Ctrl+Alt+U panel, shared by everyone) wins unless auto-all is on.
   positions: Record<string, SpatialSeat>,
+  // The even-spread seat for a display name — computed over the whole room's
+  // participant list, so it's the same on every client.
+  autoSeatOf: (name: string) => SpatialSeat,
 ) {
-  // Sorted so a given peer keeps its seat as others come and go (no shuffling
-  // voices around mid-conversation just because someone else joined).
-  const seated = [...peerAudios.keys()].filter((id) => !isMusic(id)).sort();
-
   for (const [peerId, pa] of peerAudios) {
     const spatial = enabled && !isMusic(peerId);
     if (spatial) {
-      const seat =
-        positions[nameOf(peerId)] ?? autoSeat(seated.indexOf(peerId), seated.length);
+      const name = nameOf(peerId);
+      const seat = autoAll ? autoSeatOf(name) : (positions[name] ?? autoSeatOf(name));
       const { x, y, z } = seatToPoint(seat);
       pa.panner.positionX.value = x;
       pa.panner.positionY.value = y;
       pa.panner.positionZ.value = z;
-      pa.airFilter.frequency.value = airAbsorptionHz(seat.dist);
     }
     // Rewire: gain → [airFilter → panner] → destination. gain only ever feeds
     // the output, so disconnecting it wholesale is safe.
@@ -512,6 +504,19 @@ export function useMediasoup() {
     map.set(key, s);
   }, []);
 
+  // The even-spread seat for a display name, computed over the WHOLE room's
+  // participant list (me + non-music peers, sorted by name) — so the automatic
+  // seating (and the "auto-position everyone" mode) is identical on every
+  // client, and each voice keeps its spot as others come and go.
+  const spatialAutoSeatOf = useCallback(() => {
+    const state = store.getState();
+    const names = new Set<string>();
+    if (state.displayName) names.add(state.displayName);
+    for (const p of state.peers.values()) if (!p.isMusic) names.add(p.displayName);
+    const sorted = [...names].sort();
+    return (name: string): SpatialSeat => autoSeat(Math.max(0, sorted.indexOf(name)), sorted.length || 1);
+  }, [store]);
+
   // Re-seat everyone for the current spatial setting. Called when the toggle
   // flips and whenever the participant set changes (so seats stay spread out).
   const refreshSpatial = useCallback(() => {
@@ -519,11 +524,13 @@ export function useMediasoup() {
     applySpatialLayout(
       peerAudiosRef.current,
       state.spatialAudio,
+      state.spatialAutoAll,
       (peerId) => !!state.peers.get(peerId)?.isMusic,
       (peerId) => state.peers.get(peerId)?.displayName ?? "",
       state.spatialPositions,
+      spatialAutoSeatOf(),
     );
-  }, [store]);
+  }, [store, spatialAutoSeatOf]);
 
   // Move a participant's seat in the room's 3D field. Room-wide: the server
   // stores it (by display name) and broadcasts to everyone, so a person sounds
@@ -540,6 +547,13 @@ export function useMediasoup() {
   const toggleSpatialAudio = useCallback(() => {
     socketRef.current?.emit("set-spatial-enabled", { enabled: !store.getState().spatialAudio });
   }, [store]);
+
+  // Turn "auto-position everyone" on/off for the WHOLE room (the panel checkbox).
+  // Server-owned and broadcast, like the spatial toggle: every client applies it
+  // from the `spatial-auto` handler.
+  const setSpatialAutoAll = useCallback((enabled: boolean) => {
+    socketRef.current?.emit("set-spatial-auto", { enabled });
+  }, []);
 
   // --- Shared: clean up all peer audio ---
   const cleanupAllPeerAudio = useCallback(() => {
@@ -575,14 +589,11 @@ export function useMediasoup() {
     // drag the sliders). Built once; applyMicMonitor wires/unwires it.
     const monitorAir = ctx.createBiquadFilter();
     monitorAir.type = "lowpass";
-    monitorAir.frequency.value = 18000;
+    monitorAir.frequency.value = 22000; // transparent pass-through (no distance dulling)
     monitorAir.Q.value = 0.7;
     const monitorPanner = ctx.createPanner();
     monitorPanner.panningModel = "HRTF";
-    monitorPanner.distanceModel = "inverse";
-    monitorPanner.refDistance = SPATIAL_RADIUS;
-    monitorPanner.rolloffFactor = 0.5;
-    monitorPanner.maxDistance = 20;
+    monitorPanner.rolloffFactor = 0; // direction only — never changes loudness
     // The monitor edge is wired by applyMicMonitor (called right after this and
     // whenever the monitor / spatial settings change).
     outGraphRef.current = {
@@ -819,20 +830,23 @@ export function useMediasoup() {
     if (!state.micMonitor) return;
 
     if (state.spatialAudio) {
-      // Your own seat — the default (centred, ahead) until you've placed yourself.
-      const seat = state.spatialPositions[state.displayName ?? ""] ?? DEFAULT_SEAT;
+      // Your own seat: your configured spot, or the even-spread spot — matching
+      // exactly what the room hears of you (auto-all forces the spread).
+      const myName = state.displayName ?? "";
+      const seat = state.spatialAutoAll
+        ? spatialAutoSeatOf()(myName)
+        : (state.spatialPositions[myName] ?? spatialAutoSeatOf()(myName));
       const { x, y, z } = seatToPoint(seat);
       g.monitorPanner.positionX.value = x;
       g.monitorPanner.positionY.value = y;
       g.monitorPanner.positionZ.value = z;
-      g.monitorAir.frequency.value = airAbsorptionHz(seat.dist);
       g.micGain.connect(g.monitorAir);
       g.monitorAir.connect(g.monitorPanner);
       g.monitorPanner.connect(ctx.destination);
     } else {
       g.micGain.connect(ctx.destination);
     }
-  }, [store]);
+  }, [store, spatialAutoSeatOf]);
 
   useEffect(() => {
     applyMicMonitor();
@@ -1244,6 +1258,7 @@ export function useMediasoup() {
           audioBitrate?: number;
           spatialPositions?: Record<string, SpatialSeat>;
           spatialEnabled?: boolean;
+          spatialAutoAll?: boolean;
           messages: ChatMessage[];
         };
         const joinPayload = {
@@ -1264,6 +1279,7 @@ export function useMediasoup() {
         store.getState().setSpatialPositions(joinRes.spatialPositions ?? {});
         // Spatial on/off is room state too — adopt the room's current mode.
         store.getState().setSpatialAudio(joinRes.spatialEnabled ?? false);
+        store.getState().setSpatialAutoAll(joinRes.spatialAutoAll ?? false);
         // The out graph exists by now — wire the (possibly spatial) monitor.
         applyMicMonitor();
 
@@ -1390,9 +1406,23 @@ export function useMediasoup() {
       socket.on("spatial-enabled", ({ enabled, by }: { enabled: boolean; by: string }) => {
         store.getState().setSpatialAudio(enabled);
         refreshSpatial();
+        applyMicMonitor();
         store
           .getState()
           .announceEvent(enabled ? m.spatial_on_by({ name: by }) : m.spatial_off_by({ name: by }));
+      });
+
+      // "Auto-position everyone" was toggled for the room — re-seat all and
+      // re-wire your own monitor, then say who did it.
+      socket.on("spatial-auto", ({ enabled, by }: { enabled: boolean; by: string }) => {
+        store.getState().setSpatialAutoAll(enabled);
+        refreshSpatial();
+        applyMicMonitor();
+        store
+          .getState()
+          .announceEvent(
+            enabled ? m.spatial_auto_on_by({ name: by }) : m.spatial_auto_off_by({ name: by }),
+          );
       });
 
       // Someone moved a seat in the 3D field (room-wide) — re-apply for everyone.
@@ -3001,6 +3031,7 @@ export function useMediasoup() {
     sendNudge,
     toggleSpatialAudio,
     setSpatialPosition,
+    setSpatialAutoAll,
     peerAudiosRef,
   };
 }

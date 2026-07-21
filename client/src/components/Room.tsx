@@ -95,6 +95,7 @@ export function Room() {
     sendNudge,
     toggleSpatialAudio,
     setSpatialPosition,
+    setSpatialAutoAll,
   } = useMediasoup();
 
   const [joinState, setJoinState] = useState<JoinState>("idle");
@@ -737,7 +738,11 @@ export function Room() {
       )}
       {/* Hidden 3D-seating panel — only Ctrl+Alt+U opens it (no button). */}
       {spatialOpen && (
-        <SpatialDialog onClose={() => setSpatialOpen(false)} onSetPosition={setSpatialPosition} />
+        <SpatialDialog
+          onClose={() => setSpatialOpen(false)}
+          onSetPosition={setSpatialPosition}
+          onSetAutoAll={setSpatialAutoAll}
+        />
       )}
 
       <input
