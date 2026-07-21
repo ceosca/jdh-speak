@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Send, X } from "lucide-react";
+import { Bell, Send, X } from "lucide-react";
 import { useRoomStore, type ChatAnnounceMode } from "../stores/room";
 import { relativeTime, messageContent, META_SEP } from "../lib/chat";
 import { warmUpTts } from "../lib/tts";
@@ -12,6 +12,8 @@ interface ChatProps {
   // One tick per keystroke — drives the room-wide typing sound, so what people
   // hear is the actual typing rhythm. Throttled downstream.
   onTypingTick: () => void;
+  // Sends a room-wide nudge ("zumbido"). Also on Alt+Z (handled in Room).
+  onNudge: () => Promise<void>;
   onClose: () => void;
   // Changes whenever the caller wants the composer (re)focused even though the
   // panel is already open — e.g. handing focus back after the join modal closes.
@@ -22,7 +24,7 @@ interface ChatProps {
 // you arrow through) comes BEFORE the composer, so screen-reader users land on
 // history first. New messages are announced and chimed elsewhere (the hook);
 // this panel is just the visible list + editor.
-export function Chat({ onSend, onTypingTick, onClose, focusSignal }: ChatProps) {
+export function Chat({ onSend, onTypingTick, onNudge, onClose, focusSignal }: ChatProps) {
   const messages = useRoomStore((s) => s.messages);
   const announce = useRoomStore((s) => s.announce);
   const chatAnnounceMode = useRoomStore((s) => s.chatAnnounceMode);
@@ -259,6 +261,17 @@ export function Chat({ onSend, onTypingTick, onClose, focusSignal }: ChatProps) 
           title={m.chat_send_title()}
         >
           <Send className="h-4 w-4" />
+        </button>
+        {/* Nudge: buzzes the whole room (MSN-style). Not a submit button — it's
+            independent of the message text, so it stays enabled on an empty box. */}
+        <button
+          type="button"
+          onClick={() => void onNudge()}
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sonic-700 text-sonic-200 transition-all hover:bg-sonic-600"
+          aria-label={m.chat_nudge()}
+          title={m.chat_nudge_title()}
+        >
+          <Bell className="h-4 w-4" />
         </button>
         <p id="chat-input-help" className="sr-only">
           {m.chat_help()}

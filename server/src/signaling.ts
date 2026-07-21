@@ -23,6 +23,11 @@ import type { RecordingManager, ProducerInfo } from "./recording.js";
 // authoritative floor.
 const TYPING_TICK_MIN_MS = 40;
 
+// Minimum gap between nudges from the same sender. A nudge is loud, room-wide
+// and unsolicited, so this is deliberately long enough to make spamming it
+// pointless without getting in the way of legitimate use.
+const NUDGE_MIN_MS = 5000;
+
 // --- Validation schemas ---
 const roomNameSchema = z
   .string()
@@ -222,6 +227,8 @@ export function createSignalingServer(
     let currentPeer: Peer | null = null;
     // Server-side floor between typing ticks from this socket (see the handler).
     let lastTypingTick = 0;
+    // Last nudge sent by this socket, for the nudge throttle.
+    let lastNudge = 0;
 
     socket.on("join", async (data: unknown, cb: (res: unknown) => void) => {
       try {
@@ -623,6 +630,20 @@ export function createSignalingServer(
     // stuck): if someone drops mid-sentence the ticks simply stop arriving.
     // The client throttles, but don't trust it — a peer could flood the room, so
     // drop ticks that arrive faster than a human types.
+    // Nudge ("zumbido", MSN-style): plays an attention-grabbing sound for the
+    // WHOLE room. Because it's loud and unsolicited it's the easiest thing to
+    // abuse, so it's throttled harder than anything else — one per NUDGE_MIN_MS
+    // per sender, enforced here (the client also disables its button meanwhile).
+    // A blocked nudge answers ok:false so the sender gets the "thunk" instead.
+    socket.on("nudge", (_data: unknown, cb?: (res: unknown) => void) => {
+      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
+      const now = Date.now();
+      if (now - lastNudge < NUDGE_MIN_MS) return cb?.({ ok: false, error: "rate_limited" });
+      lastNudge = now;
+      socket.to(currentRoom.name).emit("peer-nudge", { from: currentPeer.displayName });
+      cb?.({ ok: true });
+    });
+
     socket.on("typing-tick", () => {
       if (!currentRoom || !currentPeer) return;
       const now = Date.now();

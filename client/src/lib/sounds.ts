@@ -18,7 +18,8 @@ export type Cue =
   | "share-start"
   | "share-stop"
   | "peer-mute"
-  | "peer-unmute";
+  | "peer-unmute"
+  | "zumbido";
 
 // Every cue, so the operator-sample system can probe/override each one.
 const ALL_CUES: Cue[] = [
@@ -32,6 +33,7 @@ const ALL_CUES: Cue[] = [
   "share-stop",
   "peer-mute",
   "peer-unmute",
+  "zumbido",
 ];
 
 // --- Operator-provided cue samples (optional) --------------------------------
@@ -487,6 +489,33 @@ export function playCue(ctx: AudioContext, cue: Cue) {
       break;
     case "peer-unmute":
       tone(ctx, { freq: 340, glideTo: 520, dur: 0.12, type: "triangle", gain: 0.1, release: 0.05 });
+      break;
+    // Nudge ("zumbido", the MSN Messenger one). Deliberately the most attention-
+    // grabbing cue: a low, hard buzz — two bursts, like a phone vibrating on a
+    // desk. Normally overridden by /sounds/zumbido.mp3; this is the fallback so
+    // the button is never silent (a nudge that does nothing looks broken).
+    case "zumbido":
+      creak(ctx, {
+        freq: 105,
+        glideTo: 88,
+        dur: 0.3,
+        gain: 0.3,
+        lfoRate: 34,
+        depth: 0.55,
+        filterFreq: 420,
+        q: 2,
+      });
+      creak(ctx, {
+        freq: 105,
+        glideTo: 88,
+        dur: 0.3,
+        gain: 0.3,
+        delay: 0.38,
+        lfoRate: 34,
+        depth: 0.55,
+        filterFreq: 420,
+        q: 2,
+      });
       break;
   }
 }

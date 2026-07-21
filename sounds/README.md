@@ -28,6 +28,7 @@ navegador para saltar la caché).
 | `thunk`            | acción bloqueada (p. ej. chat rate-limitado)    |
 | `share-start`      | empieza a compartirse audio                      |
 | `share-stop`       | deja de compartirse audio                        |
+| `zumbido`          | alguien envía un zumbido (botón del chat o Alt+Z) |
 | `typing` ⌨          | **una vez por TECLA** pulsada en el chat        |
 
 ⌨ **`typing` suena una vez por cada tecla**, no en bucle. Así lo que se oye es el

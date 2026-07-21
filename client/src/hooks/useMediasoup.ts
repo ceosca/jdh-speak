@@ -287,7 +287,6 @@ export function useMediasoup() {
   // Last time we emitted a chat typing tick, to throttle key repeat (see below).
   const lastTypingTickRef = useRef(0);
   const store = useRoomStore;
-
   // One tick per keystroke while composing chat: play it here (so the typist
   // hears their own rhythm) and send it to the room. Throttled so a held key
   // can't machine-gun; the server enforces the same floor authoritatively.
@@ -333,6 +332,20 @@ export function useMediasoup() {
 
   // The gain a peer's audio should currently play at: the listener's per-peer
   // volume, zeroed while deafened.
+  // Nudge ("zumbido"): buzz the whole room, MSN-style. Played locally right away
+  // so the sender gets instant feedback, then broadcast by the server. If the
+  // server refuses (throttled), the "thunk" cue + an announcement say so — the
+  // same feedback a rate-limited chat message gets.
+  const sendNudge = useCallback(async () => {
+    playCue(sharedAudioContext, "zumbido");
+    try {
+      await emit("nudge");
+    } catch {
+      playCue(sharedAudioContext, "thunk");
+      store.getState().announce(m.nudge_too_soon());
+    }
+  }, [emit, store]);
+
   const effectiveGain = useCallback(
     (peerId: string): number => {
       const state = store.getState();
@@ -1179,6 +1192,13 @@ export function useMediasoup() {
 
       // Someone else pressed a key in chat — one tick, matching their rhythm.
       socket.on("peer-typing-tick", () => playTypingTick(sharedAudioContext));
+
+      // Someone nudged the room. Announce who as well as playing it — the sound
+      // alone doesn't say who sent it, and this app is screen-reader-first.
+      socket.on("peer-nudge", ({ from }: { from: string }) => {
+        playCue(sharedAudioContext, "zumbido");
+        store.getState().announceEvent(m.nudge_received({ name: from }));
+      });
 
       socket.on("peer-left", ({ peerId }: { peerId: string }) => {
         const name = store.getState().peers.get(peerId)?.displayName ?? announce_a_participant();
@@ -2524,6 +2544,7 @@ export function useMediasoup() {
     setMicGain,
     sendChatMessage,
     typingTick,
+    sendNudge,
     peerAudiosRef,
   };
 }
