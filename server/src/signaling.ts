@@ -1,6 +1,6 @@
 import type { Server as HttpServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { Server } from "socket.io";
+import { Server, type Socket } from "socket.io";
 import { z } from "zod";
 import type { DtlsParameters, MediaKind, RtpCapabilities, RtpParameters } from "mediasoup/types";
 import {
@@ -16,6 +16,17 @@ import {
 import { decideMode } from "./recording-util.js";
 import { RateLimiter, CHAT_HISTORY_MAX, CHAT_TEXT_MAX, type ChatMessage } from "./chat-util.js";
 import type { RecordingManager, ProducerInfo } from "./recording.js";
+
+// Minimum gap between a socket's chat typing ticks. ~25 keys/sec is already
+// faster than anyone types, so this only clips a flood (held key / hostile
+// client) and never a real typist. The client throttles too; this is the
+// authoritative floor.
+const TYPING_TICK_MIN_MS = 40;
+
+// Minimum gap between nudges from the same sender. A nudge is loud, room-wide
+// and unsolicited, so this is deliberately long enough to make spamming it
+// pointless without getting in the way of legitimate use.
+const NUDGE_MIN_MS = 5000;
 
 // --- Validation schemas ---
 const roomNameSchema = z
@@ -199,10 +210,25 @@ export function createSignalingServer(
     }
   }
 
+  // Real client IP for logging. We sit behind Caddy (reverse_proxy to
+  // 127.0.0.1), so socket.handshake.address is always the proxy — the real
+  // client is the FIRST entry of X-Forwarded-For (Caddy appends its own hops
+  // after it). Falls back to the direct address in dev (no proxy).
+  const clientIp = (socket: Socket): string => {
+    const xff = socket.handshake.headers["x-forwarded-for"];
+    const raw = Array.isArray(xff) ? xff[0] : xff;
+    const first = raw?.split(",")[0]?.trim();
+    return first || socket.handshake.address || "?";
+  };
+
   io.on("connection", (socket) => {
-    console.log(`[ws] connected: ${socket.id}`);
+    console.log(`[ws] connected: ${socket.id} [${clientIp(socket)}]`);
     let currentRoom: Room | null = null;
     let currentPeer: Peer | null = null;
+    // Server-side floor between typing ticks from this socket (see the handler).
+    let lastTypingTick = 0;
+    // Last nudge sent by this socket, for the nudge throttle.
+    let lastNudge = 0;
 
     socket.on("join", async (data: unknown, cb: (res: unknown) => void) => {
       try {
@@ -211,7 +237,7 @@ export function createSignalingServer(
         const room = await getOrCreateRoom(roomName);
 
         console.log(
-          `[ws] ${socket.id} joined ${roomName} as "${displayName}"${role ? ` (${role})` : ""}${disableP2p ? " (p2p disabled)" : ""}`,
+          `[ws] ${socket.id} joined ${roomName} as "${displayName}" [${clientIp(socket)}]${role ? ` (${role})` : ""}${disableP2p ? " (p2p disabled)" : ""}`,
         );
 
         const peer = createPeer(room, socket.id, displayName);
@@ -597,6 +623,33 @@ export function createSignalingServer(
         by: currentPeer.displayName,
       });
       cb?.({ ok: true });
+    });
+
+    // Audible typing indicator: ONE tick per keystroke, so the room hears the
+    // typist's actual rhythm. Deliberately stateless (no "is typing" flag to get
+    // stuck): if someone drops mid-sentence the ticks simply stop arriving.
+    // The client throttles, but don't trust it — a peer could flood the room, so
+    // drop ticks that arrive faster than a human types.
+    // Nudge ("zumbido", MSN-style): plays an attention-grabbing sound for the
+    // WHOLE room. Because it's loud and unsolicited it's the easiest thing to
+    // abuse, so it's throttled harder than anything else — one per NUDGE_MIN_MS
+    // per sender, enforced here (the client also disables its button meanwhile).
+    // A blocked nudge answers ok:false so the sender gets the "thunk" instead.
+    socket.on("nudge", (_data: unknown, cb?: (res: unknown) => void) => {
+      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
+      const now = Date.now();
+      if (now - lastNudge < NUDGE_MIN_MS) return cb?.({ ok: false, error: "rate_limited" });
+      lastNudge = now;
+      socket.to(currentRoom.name).emit("peer-nudge", { from: currentPeer.displayName });
+      cb?.({ ok: true });
+    });
+
+    socket.on("typing-tick", () => {
+      if (!currentRoom || !currentPeer) return;
+      const now = Date.now();
+      if (now - lastTypingTick < TYPING_TICK_MIN_MS) return;
+      lastTypingTick = now;
+      socket.to(currentRoom.name).emit("peer-typing-tick");
     });
 
     socket.on("disconnect", (reason) => {

@@ -28,6 +28,19 @@ navegador para saltar la caché).
 | `thunk`            | acción bloqueada (p. ej. chat rate-limitado)    |
 | `share-start`      | empieza a compartirse audio                      |
 | `share-stop`       | deja de compartirse audio                        |
+| `zumbido`          | alguien envía un zumbido (botón del chat o Alt+Z) |
+| `typing` ⌨          | **una vez por TECLA** pulsada en el chat        |
+
+⌨ **`typing` suena una vez por cada tecla**, no en bucle. Así lo que se oye es el
+**ritmo real** de quien escribe: una letra suelta = un solo golpecito; escribir
+rápido = ráfaga. Lo oyen todos, incluido quien escribe.
+
+- Usa un archivo **muy corto** (~0,1–0,2 s): es **un golpe de tecla**, no una
+  grabación de alguien tecleando. Un archivo largo se solapará consigo mismo.
+- Cada golpe se reproduce con un **tono ligeramente aleatorio** para que una
+  ráfaga no suene a máquina repitiendo el mismo clic.
+- A diferencia del resto, **no tiene sonido sintetizado de repuesto**: sin
+  archivo, simplemente no suena.
 
 Ejemplo: para cambiar solo entrada/salida, deja `join.mp3` y `leave.mp3` aquí; el
 resto seguirá sintetizado.

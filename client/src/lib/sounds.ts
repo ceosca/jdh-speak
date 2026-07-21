@@ -18,7 +18,8 @@ export type Cue =
   | "share-start"
   | "share-stop"
   | "peer-mute"
-  | "peer-unmute";
+  | "peer-unmute"
+  | "zumbido";
 
 // Every cue, so the operator-sample system can probe/override each one.
 const ALL_CUES: Cue[] = [
@@ -32,6 +33,7 @@ const ALL_CUES: Cue[] = [
   "share-stop",
   "peer-mute",
   "peer-unmute",
+  "zumbido",
 ];
 
 // --- Operator-provided cue samples (optional) --------------------------------
@@ -44,9 +46,15 @@ const ALL_CUES: Cue[] = [
 const SAMPLE_EXTS = ["mp3", "wav", "ogg"] as const;
 // Cache: AudioBuffer = a file exists and is decoded; null = probed, none found;
 // undefined (absent key) = not probed yet.
-const sampleCache = new Map<Cue, AudioBuffer | null>();
+const sampleCache = new Map<string, AudioBuffer | null>();
 
-async function loadCueSample(ctx: BaseAudioContext, cue: Cue): Promise<AudioBuffer | null> {
+// Cues that aren't tied to a one-off UI event but to a live activity, played as
+// one short hit per occurrence — currently one tick per keystroke while someone
+// types in chat. Sample-ONLY: with no /sounds/<cue>.<ext> file they stay silent
+// (there's no sensible synthesised stand-in, and silence is the right default).
+const EXTRA_CUES = ["typing"] as const;
+
+async function loadCueSample(ctx: BaseAudioContext, cue: string): Promise<AudioBuffer | null> {
   for (const ext of SAMPLE_EXTS) {
     try {
       // no-cache (revalidate), NOT force-cache: files change per deployment, and
@@ -70,9 +78,55 @@ async function loadCueSample(ctx: BaseAudioContext, cue: Cue): Promise<AudioBuff
 // call while the context is suspended — fetch + decodeAudioData don't need it
 // running. Call it once when the shared AudioContext is created.
 export function preloadCueSamples(ctx: BaseAudioContext) {
-  for (const cue of ALL_CUES) {
+  for (const cue of [...ALL_CUES, ...EXTRA_CUES]) {
     if (!sampleCache.has(cue)) void loadCueSample(ctx, cue);
   }
+}
+
+// --- Typing ticks -----------------------------------------------------------
+// One short hit per keystroke, so what you hear IS the typist's rhythm: a single
+// letter is a single tick, a fast burst is a fast burst. (A loop with a fixed
+// tail can't do that — one letter sounded the same as a whole sentence.)
+//
+// Being stateless is also why this is robust: there's no "currently typing"
+// state to leak, so a dropped connection can't leave a sound running forever.
+//
+// Voices are capped because a fast typist (or several at once) would otherwise
+// stack dozens of overlapping copies into mush; the oldest is dropped first.
+const TYPING_MAX_VOICES = 4;
+const typingVoices: AudioBufferSourceNode[] = [];
+
+export function playTypingTick(ctx: AudioContext) {
+  if (ctx.state === "suspended") void ctx.resume();
+  const buffer = sampleCache.get("typing");
+  if (!buffer) {
+    // No file (null) → stay silent. Not probed yet (undefined) → load for next time.
+    if (buffer === undefined) void loadCueSample(ctx, "typing");
+    return;
+  }
+
+  while (typingVoices.length >= TYPING_MAX_VOICES) {
+    const oldest = typingVoices.shift();
+    try {
+      oldest?.stop();
+    } catch {
+      /* already ended */
+    }
+  }
+
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  // Slight random pitch per tick so a run of keys doesn't sound like a machine
+  // repeating one identical click.
+  src.playbackRate.value = 0.94 + Math.random() * 0.12;
+  src.connect(ctx.destination);
+  src.onended = () => {
+    const i = typingVoices.indexOf(src);
+    if (i >= 0) typingVoices.splice(i, 1);
+    src.disconnect();
+  };
+  src.start();
+  typingVoices.push(src);
 }
 
 function playSample(ctx: AudioContext, buffer: AudioBuffer) {
@@ -435,6 +489,33 @@ export function playCue(ctx: AudioContext, cue: Cue) {
       break;
     case "peer-unmute":
       tone(ctx, { freq: 340, glideTo: 520, dur: 0.12, type: "triangle", gain: 0.1, release: 0.05 });
+      break;
+    // Nudge ("zumbido", the MSN Messenger one). Deliberately the most attention-
+    // grabbing cue: a low, hard buzz — two bursts, like a phone vibrating on a
+    // desk. Normally overridden by /sounds/zumbido.mp3; this is the fallback so
+    // the button is never silent (a nudge that does nothing looks broken).
+    case "zumbido":
+      creak(ctx, {
+        freq: 105,
+        glideTo: 88,
+        dur: 0.3,
+        gain: 0.3,
+        lfoRate: 34,
+        depth: 0.55,
+        filterFreq: 420,
+        q: 2,
+      });
+      creak(ctx, {
+        freq: 105,
+        glideTo: 88,
+        dur: 0.3,
+        gain: 0.3,
+        delay: 0.38,
+        lfoRate: 34,
+        depth: 0.55,
+        filterFreq: 420,
+        q: 2,
+      });
       break;
   }
 }

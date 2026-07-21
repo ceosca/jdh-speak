@@ -90,6 +90,8 @@ export function Room() {
     seriePrevEpisode,
     serieRestartEpisode,
     serieSelectSeason,
+    typingTick,
+    sendNudge,
   } = useMediasoup();
 
   const [joinState, setJoinState] = useState<JoinState>("idle");
@@ -298,6 +300,14 @@ export function Room() {
         }
       }
 
+      // Nudge the room ("zumbido"): Alt+Z, works regardless of focus so you
+      // don't have to open the chat to send one.
+      if (e.altKey && !e.ctrlKey && !e.metaKey && (e.code === "KeyZ" || e.key === "z" || e.key === "Z")) {
+        e.preventDefault();
+        void sendNudge();
+        return;
+      }
+
       // Recording toggle: deliberate Alt+Shift+R (works regardless of focus).
       if (e.altKey && e.shiftKey && (e.code === "KeyR" || e.key === "r" || e.key === "R")) {
         e.preventDefault();
@@ -409,6 +419,7 @@ export function Room() {
     serieNextEpisode,
     seriePrevEpisode,
     serieRestartEpisode,
+    sendNudge,
   ]);
 
   // Name prompt overlay (first visit or "Change name"). Rendered above whatever
@@ -566,7 +577,7 @@ export function Room() {
           </section>
         </main>
 
-        {chatOpen && <Chat onSend={sendChatMessage} onClose={closeChat} />}
+        {chatOpen && <Chat onSend={sendChatMessage} onTypingTick={typingTick} onNudge={sendNudge} onClose={closeChat} />}
       </div>
 
       {/* Bottom control bar. */}
