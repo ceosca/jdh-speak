@@ -7,6 +7,7 @@ import {
   Download,
   FileArchive,
   FileMusic,
+  Library,
   Link,
   Tv,
   Waves,
@@ -44,6 +45,8 @@ interface AudioControlsProps {
   onOpenUrl: () => void;
   // Opens the live-TV channel picker.
   onOpenTv: () => void;
+  // Opens the audio-series catalog (Serieteca).
+  onOpenSerieteca: () => void;
   onToggleChat: () => void;
   chatOpen: boolean;
 }
@@ -60,6 +63,7 @@ export function AudioControls({
   playerOpen,
   onOpenUrl,
   onOpenTv,
+  onOpenSerieteca,
   onToggleChat,
   chatOpen,
 }: AudioControlsProps) {
@@ -176,6 +180,16 @@ export function AudioControls({
           title={m.controls_tv_title()}
         >
           <Tv className="h-5 w-5" />
+        </button>
+
+        {/* Audio-series catalog (Serieteca) */}
+        <button
+          onClick={onOpenSerieteca}
+          className={`${btn} ${idle}`}
+          aria-label={m.controls_serieteca()}
+          title={m.controls_serieteca_title()}
+        >
+          <Library className="h-5 w-5" />
         </button>
 
         {/* Noise-suppression toggle (echo cancel / noise / auto-gain). */}
