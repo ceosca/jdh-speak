@@ -2069,7 +2069,16 @@ export function useMediasoup() {
           (el as unknown as Record<string, boolean>).playsInline = true;
           el.crossOrigin = "anonymous";
           el.addEventListener("timeupdate", () => onSerieTimeUpdate());
-          el.addEventListener("pause", () => saveSerieProgress());
+          // `play`/`pause` are the single source of truth for fileStreamPlaying
+          // while a series is active — every path that starts/stops playback
+          // (toggle, episode seek, next/prev/restart) routes through el.play()/
+          // el.pause(), so listening here keeps the footer button + Alt+K state
+          // correct without every call site having to set it explicitly.
+          el.addEventListener("play", () => store.getState().setFileStreamPlaying(true));
+          el.addEventListener("pause", () => {
+            saveSerieProgress();
+            store.getState().setFileStreamPlaying(false);
+          });
           el.addEventListener("ended", () =>
             store.getState().setFileStreamPlaying(false),
           );
@@ -2396,7 +2405,18 @@ export function useMediasoup() {
     [startPlaylist],
   );
 
+  // Play/pause the active streamer. A playing series routes to serieAudioRef
+  // (its own <audio> element, separate from the file-slot chain) — otherwise
+  // this acts on the active file slot, as before. fileStreamPlaying is kept in
+  // sync via the `play`/`pause` listeners wired on each element.
   const toggleFilePlayback = useCallback(() => {
+    if (serieActiveRef.current) {
+      const el = serieAudioRef.current;
+      if (!el) return;
+      if (el.paused) void el.play().catch(() => {});
+      else el.pause();
+      return;
+    }
     const g = outGraphRef.current;
     const el = g?.fileSlots?.[g.activeSlot]?.audioEl;
     if (!el) return;
@@ -2420,16 +2440,29 @@ export function useMediasoup() {
     [store],
   );
 
-  // Seek the active slot by `sec` seconds (clamped to [0, duration]).
+  // Seek the active streamer by `sec` seconds (clamped to [0, duration]). Routes
+  // to the series element while a series is active — see toggleFilePlayback.
   const playerSeekBy = useCallback((sec: number) => {
+    if (serieActiveRef.current) {
+      const el = serieAudioRef.current;
+      if (!el) return;
+      el.currentTime = Math.min(el.duration || Infinity, Math.max(0, el.currentTime + sec));
+      return;
+    }
     const g = outGraphRef.current;
     const el = g?.fileSlots?.[g.activeSlot]?.audioEl;
     if (!el) return;
     el.currentTime = Math.min(el.duration || 0, Math.max(0, el.currentTime + sec));
   }, []);
 
-  // Seek the active slot to an absolute position (clamped to [0, duration]).
+  // Seek the active streamer to an absolute position (clamped to [0, duration]).
   const playerSeekTo = useCallback((sec: number) => {
+    if (serieActiveRef.current) {
+      const el = serieAudioRef.current;
+      if (!el) return;
+      el.currentTime = Math.min(el.duration || Infinity, Math.max(0, sec));
+      return;
+    }
     const g = outGraphRef.current;
     const el = g?.fileSlots?.[g.activeSlot]?.audioEl;
     if (!el) return;
@@ -2454,7 +2487,9 @@ export function useMediasoup() {
 
     const tick = () => {
       const g = outGraphRef.current;
-      const el = g?.fileSlots?.[g.activeSlot]?.audioEl;
+      const el = serieActiveRef.current
+        ? serieAudioRef.current
+        : g?.fileSlots?.[g.activeSlot]?.audioEl;
       if (!el) return;
       const now = performance.now();
       if (now - lastWrite >= 250) {
