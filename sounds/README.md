@@ -28,14 +28,18 @@ navegador para saltar la caché).
 | `thunk`            | acción bloqueada (p. ej. chat rate-limitado)    |
 | `share-start`      | empieza a compartirse audio                      |
 | `share-stop`       | deja de compartirse audio                        |
-| `typing` ⟳         | **en bucle** mientras alguien escribe en el chat |
+| `typing` ⌨          | **una vez por TECLA** pulsada en el chat        |
 
-⟳ **`typing` es especial: se reproduce en BUCLE**, no una sola vez. Suena mientras
-alguien está escribiendo en el chat (lo oyen todos, incluido quien escribe) y para
-cuando deja de escribir (al enviar, al vaciar la caja, o tras ~1,2 s sin teclear).
-Si varias personas escriben a la vez, suena **una sola vez**, no superpuesto.
-Conviene un archivo **corto** (~0,5 s) que loopee bien. A diferencia del resto,
-**no tiene sonido sintetizado de repuesto**: sin archivo, simplemente no suena.
+⌨ **`typing` suena una vez por cada tecla**, no en bucle. Así lo que se oye es el
+**ritmo real** de quien escribe: una letra suelta = un solo golpecito; escribir
+rápido = ráfaga. Lo oyen todos, incluido quien escribe.
+
+- Usa un archivo **muy corto** (~0,1–0,2 s): es **un golpe de tecla**, no una
+  grabación de alguien tecleando. Un archivo largo se solapará consigo mismo.
+- Cada golpe se reproduce con un **tono ligeramente aleatorio** para que una
+  ráfaga no suene a máquina repitiendo el mismo clic.
+- A diferencia del resto, **no tiene sonido sintetizado de repuesto**: sin
+  archivo, simplemente no suena.
 
 Ejemplo: para cambiar solo entrada/salida, deja `join.mp3` y `leave.mp3` aquí; el
 resto seguirá sintetizado.

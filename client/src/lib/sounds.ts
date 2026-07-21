@@ -46,12 +46,11 @@ const SAMPLE_EXTS = ["mp3", "wav", "ogg"] as const;
 // undefined (absent key) = not probed yet.
 const sampleCache = new Map<string, AudioBuffer | null>();
 
-// Looping cues: played continuously while a state holds (rather than one-shot on
-// an event) and stopped when it ends — currently "someone is typing in chat".
-// These are sample-ONLY: with no /sounds/<cue>.<ext> file they stay silent, since
-// there's no sensible synthesised fallback for a loop.
-const LOOP_CUES = ["typing"] as const;
-export type LoopCue = (typeof LOOP_CUES)[number];
+// Cues that aren't tied to a one-off UI event but to a live activity, played as
+// one short hit per occurrence — currently one tick per keystroke while someone
+// types in chat. Sample-ONLY: with no /sounds/<cue>.<ext> file they stay silent
+// (there's no sensible synthesised stand-in, and silence is the right default).
+const EXTRA_CUES = ["typing"] as const;
 
 async function loadCueSample(ctx: BaseAudioContext, cue: string): Promise<AudioBuffer | null> {
   for (const ext of SAMPLE_EXTS) {
@@ -77,72 +76,55 @@ async function loadCueSample(ctx: BaseAudioContext, cue: string): Promise<AudioB
 // call while the context is suspended — fetch + decodeAudioData don't need it
 // running. Call it once when the shared AudioContext is created.
 export function preloadCueSamples(ctx: BaseAudioContext) {
-  for (const cue of [...ALL_CUES, ...LOOP_CUES]) {
+  for (const cue of [...ALL_CUES, ...EXTRA_CUES]) {
     if (!sampleCache.has(cue)) void loadCueSample(ctx, cue);
   }
 }
 
-// --- Looping cues -----------------------------------------------------------
-// Currently running loops, and which loops are *wanted* (so a start that arrives
-// before the sample finished decoding still starts once it lands, and a stop in
-// the meantime cancels it). Short fades avoid clicks on start/stop.
-const runningLoops = new Map<string, { src: AudioBufferSourceNode; gain: GainNode }>();
-const wantedLoops = new Set<string>();
-const LOOP_FADE = 0.06;
+// --- Typing ticks -----------------------------------------------------------
+// One short hit per keystroke, so what you hear IS the typist's rhythm: a single
+// letter is a single tick, a fast burst is a fast burst. (A loop with a fixed
+// tail can't do that — one letter sounded the same as a whole sentence.)
+//
+// Being stateless is also why this is robust: there's no "currently typing"
+// state to leak, so a dropped connection can't leave a sound running forever.
+//
+// Voices are capped because a fast typist (or several at once) would otherwise
+// stack dozens of overlapping copies into mush; the oldest is dropped first.
+const TYPING_MAX_VOICES = 4;
+const typingVoices: AudioBufferSourceNode[] = [];
 
-function startLoopNow(ctx: AudioContext, cue: LoopCue, buffer: AudioBuffer) {
-  if (runningLoops.has(cue)) return;
-  const src = ctx.createBufferSource();
-  src.buffer = buffer;
-  src.loop = true;
-  const gain = ctx.createGain();
-  gain.gain.setValueAtTime(0.0001, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(1, ctx.currentTime + LOOP_FADE);
-  src.connect(gain);
-  gain.connect(ctx.destination);
-  src.start();
-  runningLoops.set(cue, { src, gain });
-}
-
-// Start a looping cue (idempotent). No-op when the operator hasn't provided a
-// file for it. Local playback only, like every other cue — never routed into the
-// mic, so it isn't sent through the call; each client plays its own copy.
-export function startCueLoop(ctx: AudioContext, cue: LoopCue) {
+export function playTypingTick(ctx: AudioContext) {
   if (ctx.state === "suspended") void ctx.resume();
-  wantedLoops.add(cue);
-  const sample = sampleCache.get(cue);
-  if (sample) {
-    startLoopNow(ctx, cue, sample);
+  const buffer = sampleCache.get("typing");
+  if (!buffer) {
+    // No file (null) → stay silent. Not probed yet (undefined) → load for next time.
+    if (buffer === undefined) void loadCueSample(ctx, "typing");
     return;
   }
-  if (sample === undefined) {
-    // Not probed yet — decode, then start only if still wanted.
-    void loadCueSample(ctx, cue).then((buf) => {
-      if (buf && wantedLoops.has(cue)) startLoopNow(ctx, cue, buf);
-    });
-  }
-}
 
-// Stop a looping cue (idempotent, safe if it never started).
-export function stopCueLoop(ctx: AudioContext, cue: LoopCue) {
-  wantedLoops.delete(cue);
-  const running = runningLoops.get(cue);
-  if (!running) return;
-  runningLoops.delete(cue);
-  const { src, gain } = running;
-  const end = ctx.currentTime + LOOP_FADE;
-  try {
-    gain.gain.cancelScheduledValues(ctx.currentTime);
-    gain.gain.setValueAtTime(Math.max(gain.gain.value, 0.0001), ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.0001, end);
-    src.stop(end + 0.02);
-  } catch {
-    // Already stopped/disposed — nothing to do.
+  while (typingVoices.length >= TYPING_MAX_VOICES) {
+    const oldest = typingVoices.shift();
+    try {
+      oldest?.stop();
+    } catch {
+      /* already ended */
+    }
   }
+
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  // Slight random pitch per tick so a run of keys doesn't sound like a machine
+  // repeating one identical click.
+  src.playbackRate.value = 0.94 + Math.random() * 0.12;
+  src.connect(ctx.destination);
   src.onended = () => {
+    const i = typingVoices.indexOf(src);
+    if (i >= 0) typingVoices.splice(i, 1);
     src.disconnect();
-    gain.disconnect();
   };
+  src.start();
+  typingVoices.push(src);
 }
 
 function playSample(ctx: AudioContext, buffer: AudioBuffer) {

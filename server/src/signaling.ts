@@ -17,6 +17,12 @@ import { decideMode } from "./recording-util.js";
 import { RateLimiter, CHAT_HISTORY_MAX, CHAT_TEXT_MAX, type ChatMessage } from "./chat-util.js";
 import type { RecordingManager, ProducerInfo } from "./recording.js";
 
+// Minimum gap between a socket's chat typing ticks. ~25 keys/sec is already
+// faster than anyone types, so this only clips a flood (held key / hostile
+// client) and never a real typist. The client throttles too; this is the
+// authoritative floor.
+const TYPING_TICK_MIN_MS = 40;
+
 // --- Validation schemas ---
 const roomNameSchema = z
   .string()
@@ -214,9 +220,8 @@ export function createSignalingServer(
     console.log(`[ws] connected: ${socket.id} [${clientIp(socket)}]`);
     let currentRoom: Room | null = null;
     let currentPeer: Peer | null = null;
-    // Whether this socket last reported itself as typing in chat, so a
-    // disconnect mid-typing can clear it for everyone else.
-    let typingNow = false;
+    // Server-side floor between typing ticks from this socket (see the handler).
+    let lastTypingTick = 0;
 
     socket.on("join", async (data: unknown, cb: (res: unknown) => void) => {
       try {
@@ -613,33 +618,22 @@ export function createSignalingServer(
       cb?.({ ok: true });
     });
 
-    // Chat typing indicator (audible): while someone is composing, every client
-    // loops the "typing" cue. The client only emits on TRANSITIONS (start once,
-    // stop once after an idle timeout / send / close), so this isn't per-key
-    // chatter. Broadcast to the rest of the room; the typer starts its own loop
-    // locally, so it hears itself too.
-    socket.on("typing", (data: unknown) => {
+    // Audible typing indicator: ONE tick per keystroke, so the room hears the
+    // typist's actual rhythm. Deliberately stateless (no "is typing" flag to get
+    // stuck): if someone drops mid-sentence the ticks simply stop arriving.
+    // The client throttles, but don't trust it — a peer could flood the room, so
+    // drop ticks that arrive faster than a human types.
+    socket.on("typing-tick", () => {
       if (!currentRoom || !currentPeer) return;
-      const parsed = z.object({ typing: z.boolean() }).safeParse(data);
-      if (!parsed.success) return;
-      typingNow = parsed.data.typing;
-      socket.to(currentRoom.name).emit("peer-typing", {
-        peerId: socket.id,
-        typing: parsed.data.typing,
-      });
+      const now = Date.now();
+      if (now - lastTypingTick < TYPING_TICK_MIN_MS) return;
+      lastTypingTick = now;
+      socket.to(currentRoom.name).emit("peer-typing-tick");
     });
 
     socket.on("disconnect", (reason) => {
       console.log(`[ws] disconnected: ${socket.id} (${reason})`);
       chatLimiter.forget(socket.id);
-
-      // If they dropped mid-typing, tell the room to stop the loop — otherwise
-      // everyone would keep hearing it forever (peer-left also clears it
-      // client-side, but this covers a stop without a full leave).
-      if (typingNow && currentRoom) {
-        socket.to(currentRoom.name).emit("peer-typing", { peerId: socket.id, typing: false });
-        typingNow = false;
-      }
 
       if (currentRoom && currentPeer) {
         const room = currentRoom;

@@ -83,7 +83,7 @@ export function Room() {
     setPeerVolume,
     setMicGain,
     sendChatMessage,
-    setTyping,
+    typingTick,
   } = useMediasoup();
 
   const [joinState, setJoinState] = useState<JoinState>("idle");
@@ -494,7 +494,7 @@ export function Room() {
           </section>
         </main>
 
-        {chatOpen && <Chat onSend={sendChatMessage} onTyping={setTyping} onClose={closeChat} />}
+        {chatOpen && <Chat onSend={sendChatMessage} onTypingTick={typingTick} onClose={closeChat} />}
       </div>
 
       {/* Bottom control bar. */}

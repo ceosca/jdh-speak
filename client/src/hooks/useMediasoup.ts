@@ -5,7 +5,7 @@ import type { Transport, Producer, Consumer } from "mediasoup-client/types";
 import { forceOpusParams } from "../lib/sdp-munger";
 import { applySpeakerToContext } from "../lib/audio-devices";
 import { isIOS, getMicrophoneStream } from "../lib/microphone";
-import { playCue, preloadCueSamples, startCueLoop, stopCueLoop } from "../lib/sounds";
+import { playCue, preloadCueSamples, playTypingTick } from "../lib/sounds";
 import { getIceServers } from "../lib/ice";
 import { parseClearKey, type Channel } from "../lib/tv";
 import { formatMessage, RateLimiter, META_SEP, type ChatMessage } from "../lib/chat";
@@ -284,31 +284,20 @@ export function useMediasoup() {
   // The first received chat message carries a one-time hint that Alt+1..0
   // reads recent messages aloud even with the chat panel closed.
   const chatHintGivenRef = useRef(false);
-  // Who is currently composing a chat message ("local" = us, otherwise a
-  // peerId). The audible typing loop plays while this set is non-empty and
-  // stops when it empties, so several people typing at once = one sound.
-  const typingPeersRef = useRef<Set<string>>(new Set());
+  // Last time we emitted a chat typing tick, to throttle key repeat (see below).
+  const lastTypingTickRef = useRef(0);
   const store = useRoomStore;
 
-  const syncTypingLoop = useCallback(() => {
-    if (typingPeersRef.current.size > 0) startCueLoop(sharedAudioContext, "typing");
-    else stopCueLoop(sharedAudioContext, "typing");
+  // One tick per keystroke while composing chat: play it here (so the typist
+  // hears their own rhythm) and send it to the room. Throttled so a held key
+  // can't machine-gun; the server enforces the same floor authoritatively.
+  const typingTick = useCallback(() => {
+    const now = Date.now();
+    if (now - lastTypingTickRef.current < 40) return;
+    lastTypingTickRef.current = now;
+    playTypingTick(sharedAudioContext);
+    socketRef.current?.emit("typing-tick");
   }, []);
-
-  // Report that WE started/stopped composing. Only acts on transitions, so the
-  // chat composer can call it on every keystroke. We update our own loop
-  // locally (so the typer hears it too) and tell the room.
-  const setTyping = useCallback(
-    (typing: boolean) => {
-      const set = typingPeersRef.current;
-      if (typing === set.has("local")) return;
-      if (typing) set.add("local");
-      else set.delete("local");
-      syncTypingLoop();
-      socketRef.current?.emit("typing", { typing });
-    },
-    [syncTypingLoop],
-  );
 
   // Queue `fn` behind any in-flight mode transition. The chain itself never
   // breaks (failures are surfaced to the caller's promise, then swallowed for
@@ -1188,16 +1177,10 @@ export function useMediasoup() {
         },
       );
 
-      // Someone else started/stopped composing in chat → drive the shared loop.
-      socket.on("peer-typing", ({ peerId, typing }: { peerId: string; typing: boolean }) => {
-        if (typing) typingPeersRef.current.add(peerId);
-        else typingPeersRef.current.delete(peerId);
-        syncTypingLoop();
-      });
+      // Someone else pressed a key in chat — one tick, matching their rhythm.
+      socket.on("peer-typing-tick", () => playTypingTick(sharedAudioContext));
 
       socket.on("peer-left", ({ peerId }: { peerId: string }) => {
-        // If they left mid-typing, drop them so the loop can stop.
-        if (typingPeersRef.current.delete(peerId)) syncTypingLoop();
         const name = store.getState().peers.get(peerId)?.displayName ?? announce_a_participant();
         const wasMusic = !!store.getState().peers.get(peerId)?.isMusic;
         // Clean up P2P connection if any
@@ -1464,7 +1447,7 @@ export function useMediasoup() {
       surfaceToggle,
       runTransition,
       flushPendingCandidates,
-      syncTypingLoop,
+
       store,
     ],
   );
@@ -2448,9 +2431,6 @@ export function useMediasoup() {
     detachSharedAudio();
     teardownP2p();
     teardownSfu();
-    // Nobody's typing once we're out — make sure the loop can't outlive the room.
-    typingPeersRef.current.clear();
-    stopCueLoop(sharedAudioContext, "typing");
     // Tear down the outgoing graph (nodes live in the shared context, so just
     // disconnect them — the context itself is reused for the next room).
     const g = outGraphRef.current;
@@ -2543,7 +2523,7 @@ export function useMediasoup() {
     setPeerVolume,
     setMicGain,
     sendChatMessage,
-    setTyping,
+    typingTick,
     peerAudiosRef,
   };
 }
