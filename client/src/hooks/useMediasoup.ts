@@ -9,6 +9,7 @@ import { playCue, preloadCueSamples, playTypingTick } from "../lib/sounds";
 import { getIceServers } from "../lib/ice";
 import {
   autoSeat,
+  DEFAULT_SEAT,
   airAbsorptionHz,
   seatToPoint,
   SPATIAL_RADIUS,
@@ -335,6 +336,9 @@ export function useMediasoup() {
     // and stays at full volume. Null until the file path is first started.
     fileVolumeGain: GainNode | null;
     micStream: MediaStream | null;
+    // Self-monitor spatialisation (see applyMicMonitor).
+    monitorAir: BiquadFilterNode;
+    monitorPanner: PannerNode;
     // Secondary input device: captured stereo + no voice-processing, mixed
     // directly into outDest alongside the mic chain.
     secondarySource: MediaStreamAudioSourceNode | null;
@@ -565,10 +569,22 @@ export function useMediasoup() {
     const outDest = ctx.createMediaStreamDestination();
     micGain.connect(limiter);
     limiter.connect(outDest);
-    // Local mic monitor (hear yourself): tapped AFTER micGain so it plays at the
-    // same volume people receive — lowering "your mic level" lowers it too.
-    // micGain is permanent, so this edge survives mic re-acquisition.
-    if (store.getState().micMonitor) micGain.connect(ctx.destination);
+    // Spatialised self-monitor: when the monitor is on AND spatial audio is on,
+    // your own voice is played back through YOUR seat, so you hear yourself
+    // where the room hears you (and can hear your own position change as you
+    // drag the sliders). Built once; applyMicMonitor wires/unwires it.
+    const monitorAir = ctx.createBiquadFilter();
+    monitorAir.type = "lowpass";
+    monitorAir.frequency.value = 18000;
+    monitorAir.Q.value = 0.7;
+    const monitorPanner = ctx.createPanner();
+    monitorPanner.panningModel = "HRTF";
+    monitorPanner.distanceModel = "inverse";
+    monitorPanner.refDistance = SPATIAL_RADIUS;
+    monitorPanner.rolloffFactor = 0.5;
+    monitorPanner.maxDistance = 20;
+    // The monitor edge is wired by applyMicMonitor (called right after this and
+    // whenever the monitor / spatial settings change).
     outGraphRef.current = {
       micSource: null,
       micGain,
@@ -579,6 +595,8 @@ export function useMediasoup() {
       activeSlot: 0,
       fileVolumeGain: null,
       micStream: null,
+      monitorAir,
+      monitorPanner,
       secondarySource: null,
       secondaryGain: null,
       secondaryStream: null,
@@ -780,12 +798,45 @@ export function useMediasoup() {
   // SAME volume people receive (post-gain) — lowering "your mic level" lowers the
   // monitor too. For-you only (never reaches the room). micGain is permanent, so
   // a single disconnect-then-connect keeps exactly one edge.
-  useEffect(() => {
+  // Wire the self-monitor for the current settings. With spatial audio ON it
+  // goes through YOUR seat (air filter → HRTF panner), so you hear yourself from
+  // where the room hears you — and hear your own position move as you drag the
+  // Ctrl+Alt+U sliders. With it off, it's the plain dry tap as before.
+  //
+  // IMPORTANT: micGain also feeds the limiter → outDest (what the room hears),
+  // so only ever disconnect the SPECIFIC monitor edges here. A bare
+  // micGain.disconnect() would cut your outgoing audio.
+  const applyMicMonitor = useCallback(() => {
     const g = outGraphRef.current;
     if (!g) return;
-    try { g.micGain.disconnect(sharedAudioContext.destination); } catch { /* not connected */ }
-    if (micMonitor) g.micGain.connect(sharedAudioContext.destination);
-  }, [micMonitor]);
+    const ctx = sharedAudioContext;
+    try { g.micGain.disconnect(ctx.destination); } catch { /* not connected */ }
+    try { g.micGain.disconnect(g.monitorAir); } catch { /* not connected */ }
+    g.monitorAir.disconnect();
+    g.monitorPanner.disconnect();
+
+    const state = store.getState();
+    if (!state.micMonitor) return;
+
+    if (state.spatialAudio) {
+      // Your own seat — the default (centred, ahead) until you've placed yourself.
+      const seat = state.spatialPositions[state.displayName ?? ""] ?? DEFAULT_SEAT;
+      const { x, y, z } = seatToPoint(seat);
+      g.monitorPanner.positionX.value = x;
+      g.monitorPanner.positionY.value = y;
+      g.monitorPanner.positionZ.value = z;
+      g.monitorAir.frequency.value = airAbsorptionHz(seat.dist);
+      g.micGain.connect(g.monitorAir);
+      g.monitorAir.connect(g.monitorPanner);
+      g.monitorPanner.connect(ctx.destination);
+    } else {
+      g.micGain.connect(ctx.destination);
+    }
+  }, [store]);
+
+  useEffect(() => {
+    applyMicMonitor();
+  }, [micMonitor, applyMicMonitor]);
 
   // Toggle the shared-audio monitor live: also play the shared tab/system audio
   // out the app's selected playback device (it follows the speaker pick via the
@@ -1213,6 +1264,8 @@ export function useMediasoup() {
         store.getState().setSpatialPositions(joinRes.spatialPositions ?? {});
         // Spatial on/off is room state too — adopt the room's current mode.
         store.getState().setSpatialAudio(joinRes.spatialEnabled ?? false);
+        // The out graph exists by now — wire the (possibly spatial) monitor.
+        applyMicMonitor();
 
         // Seed chat history (de-duped in the store, silent — no chime/announce).
         for (const m of joinRes.messages ?? []) store.getState().addMessage(m);
@@ -1346,6 +1399,9 @@ export function useMediasoup() {
       socket.on("spatial-positions", (positions: Record<string, SpatialSeat>) => {
         store.getState().setSpatialPositions(positions ?? {});
         refreshSpatial();
+        // If YOUR seat moved, the self-monitor has to follow it — that's what
+        // makes dragging your own sliders audible while monitoring.
+        applyMicMonitor();
       });
 
       // Someone else pressed a key in chat — one tick, matching their rhythm.
@@ -1626,6 +1682,7 @@ export function useMediasoup() {
       surfaceToggle,
       runTransition,
       flushPendingCandidates,
+      applyMicMonitor,
       refreshSpatial,
 
       store,
@@ -2847,6 +2904,8 @@ export function useMediasoup() {
       g.micSource?.disconnect();
       g.micGain.disconnect();
       g.limiter.disconnect();
+      g.monitorAir.disconnect();
+      g.monitorPanner.disconnect();
       g.displaySource?.disconnect();
       // Tear down both file slots: abort listeners, stop elements, revoke URLs,
       // disconnect source nodes. xfadeGain is disconnected per-slot below;
