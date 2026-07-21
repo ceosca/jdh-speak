@@ -8,6 +8,31 @@
 
 ---
 
+## 2026-07-21 (3)
+
+### `feat/ambience` — Ambientes: efecto de espacio (reverb) para toda la sala
+
+Para armar "fiesta sonora": un panel oculto **Ctrl+Alt+A** ("Ambiente") deja
+elegir un **espacio acústico** — **Seco (sin efecto), Auto, Habitación, Baño,
+Sala de concierto, Catedral, Estadio** — y **todo lo que suena en la sala** (voces
+y música) sale con esa reverb, así toda la escena queda "dentro" del lugar.
+Combina con el espacial (cada uno posicionado, todos en la misma sala).
+
+- **Room-wide** como el on/off del espacial: quien lo elige lo aplica para todos
+  (server `set-ambience` → `ambience`, en el join). Se **anuncia** quién lo puso.
+- **Sin archivos de audio**: cada espacio es una **reverb por convolución** con un
+  **impulso generado por código** (`lib/ambience.ts`) — su cola/tamaño/pre-delay
+  por preset. El **húmedo (wet) está medido** para que las **voces sigan
+  entendiéndose** (auto = sutil; catedral = más cola).
+- **Cómo suena**: un **bus de reverb compartido** en `useMediasoup` — cada peer y
+  la música mandan al bus (envío tomado post-volumen, así un peer silenciado o
+  ensordecido no aporta), y el retorno húmedo va a tus parlantes. Seco hasta
+  elegir. Panel `AmbienceDialog.tsx` (Ctrl+Alt+A), sin botón (como grabación/3D).
+- **Deploy:** tocó server + cliente → en la Pi, `git pull` + **`pnpm build`** +
+  **`systemctl restart jdh-speak`**.
+
+---
+
 ## 2026-07-21 (2)
 
 ### `feat/spatial-walk` — audio espacial: caminar con flechas, sin distancia, auto-ubicar

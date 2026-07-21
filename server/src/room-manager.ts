@@ -51,6 +51,9 @@ export interface Room {
   // spread, ignoring configured seats (which are kept, so unchecking restores
   // them). Room-wide, see roomSpatialAutoAll.
   spatialAutoAll: boolean;
+  // Acoustic ambience (reverb space) preset id for the whole room ("seco" =
+  // dry/off). Room-wide, see roomAmbience.
+  ambience: string;
   // Rolling chat history (bounded to CHAT_HISTORY_MAX) so late joiners receive
   // recent messages on join. Newest last.
   messages: ChatMessage[];
@@ -96,6 +99,16 @@ export function rememberSpatialAutoAll(roomName: string, enabled: boolean): void
   roomSpatialAutoAll.set(roomName, enabled);
   const room = rooms.get(roomName);
   if (room) room.spatialAutoAll = enabled;
+}
+
+// Room-wide acoustic ambience (reverb space) preset id. Room-wide like the
+// spatial flags: whoever picks it drops the whole room into that space.
+const roomAmbience = new Map<string, string>();
+
+export function rememberAmbience(roomName: string, id: string): void {
+  roomAmbience.set(roomName, id);
+  const room = rooms.get(roomName);
+  if (room) room.ambience = id;
 }
 
 export function rememberSpatialPosition(roomName: string, name: string, seat: SpatialSeat): void {
@@ -154,6 +167,7 @@ export async function getOrCreateRoom(roomName: string): Promise<Room> {
     spatialPositions: roomSpatial.get(roomName) ?? {},
     spatialEnabled: roomSpatialEnabled.get(roomName) ?? false,
     spatialAutoAll: roomSpatialAutoAll.get(roomName) ?? false,
+    ambience: roomAmbience.get(roomName) ?? "seco",
     messages: [],
   };
   rooms.set(roomName, room);

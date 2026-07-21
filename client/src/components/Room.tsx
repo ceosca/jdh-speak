@@ -11,6 +11,7 @@ import { FileStreamPlayer } from "./FileStreamPlayer";
 import { UrlDialog } from "./UrlDialog";
 import { TvDialog } from "./TvDialog";
 import { SpatialDialog } from "./SpatialDialog";
+import { AmbienceDialog } from "./AmbienceDialog";
 import { SerietecaDialog } from "./SerietecaDialog";
 import { Chat } from "./Chat";
 import { pickFolderAudioFiles } from "../lib/audioFolder";
@@ -96,6 +97,7 @@ export function Room() {
     toggleSpatialAudio,
     setSpatialPosition,
     setSpatialAutoAll,
+    setAmbience,
   } = useMediasoup();
 
   const [joinState, setJoinState] = useState<JoinState>("idle");
@@ -106,6 +108,8 @@ export function Room() {
   const [tvOpen, setTvOpen] = useState(false);
   // Hidden 3D-seating panel (Ctrl+Alt+U only — no button opens it).
   const [spatialOpen, setSpatialOpen] = useState(false);
+  // Hidden ambience (reverb space) panel (Ctrl+Alt+A only — no button opens it).
+  const [ambienceOpen, setAmbienceOpen] = useState(false);
   const [serietecaOpen, setSerietecaOpen] = useState(false);
   // Name prompt: shown once on first ever visit (no stored name), and reopened
   // by the "Change name" button under your own card.
@@ -312,6 +316,14 @@ export function Room() {
       if (e.altKey && e.ctrlKey && (e.code === "KeyU" || e.key === "u" || e.key === "U")) {
         e.preventDefault();
         setSpatialOpen(true);
+        return;
+      }
+
+      // Hidden ambience (reverb space) panel: Ctrl+Alt+A. Also button-less — sets
+      // the room's acoustics for everyone, so it's shortcut-gated too.
+      if (e.altKey && e.ctrlKey && (e.code === "KeyA" || e.key === "a" || e.key === "A")) {
+        e.preventDefault();
+        setAmbienceOpen(true);
         return;
       }
 
@@ -743,6 +755,10 @@ export function Room() {
           onSetPosition={setSpatialPosition}
           onSetAutoAll={setSpatialAutoAll}
         />
+      )}
+      {/* Hidden ambience (reverb space) panel — only Ctrl+Alt+A opens it. */}
+      {ambienceOpen && (
+        <AmbienceDialog onClose={() => setAmbienceOpen(false)} onSetAmbience={setAmbience} />
       )}
 
       <input

@@ -8,6 +8,7 @@ import { isIOS, getMicrophoneStream } from "../lib/microphone";
 import { playCue, preloadCueSamples, playTypingTick } from "../lib/sounds";
 import { getIceServers } from "../lib/ice";
 import { autoSeat, seatToPoint, type SpatialSeat } from "../lib/spatial";
+import { ambienceName, buildImpulseResponse, findAmbience } from "../lib/ambience";
 import { parseClearKey, type Channel } from "../lib/tv";
 import {
   flattenEpisodes,
@@ -239,6 +240,9 @@ function applySpatialLayout(
   // The even-spread seat for a display name — computed over the whole room's
   // participant list, so it's the same on every client.
   autoSeatOf: (name: string) => SpatialSeat,
+  // The shared ambience reverb send bus — every peer taps into it so their
+  // voice/music is heard "in" the room's space (dry until an ambience is picked).
+  reverbSend: AudioNode | null,
 ) {
   for (const [peerId, pa] of peerAudios) {
     const spatial = enabled && !isMusic(peerId);
@@ -250,8 +254,9 @@ function applySpatialLayout(
       pa.panner.positionY.value = y;
       pa.panner.positionZ.value = z;
     }
-    // Rewire: gain → [airFilter → panner] → destination. gain only ever feeds
-    // the output, so disconnecting it wholesale is safe.
+    // Rewire the DRY path: gain → [airFilter → panner] → destination. gain feeds
+    // only the output + the reverb send, both re-added here after the wholesale
+    // disconnect.
     pa.gainNode.disconnect();
     pa.panner.disconnect();
     pa.airFilter.disconnect();
@@ -262,6 +267,9 @@ function applySpatialLayout(
     } else {
       pa.gainNode.connect(sharedAudioContext.destination);
     }
+    // Wet send (survives the disconnect above): tapped post-volume/deafen, so a
+    // quieted or deafened peer contributes nothing to the reverb either.
+    if (reverbSend) pa.gainNode.connect(reverbSend);
   }
 }
 
@@ -336,6 +344,12 @@ export function useMediasoup() {
     secondarySource: MediaStreamAudioSourceNode | null;
     secondaryGain: GainNode | null;
     secondaryStream: MediaStream | null;
+    // Room ambience (reverb): everything speaker-bound sends into reverbInput →
+    // convolver → reverbWet → destination. reverbWet is 0 (dry) until an ambience
+    // is picked. See applyAmbience.
+    reverbInput: GainNode;
+    reverbConvolver: ConvolverNode;
+    reverbWet: GainNode;
   } | null>(null);
   // Audio share (system / tab audio mixed into the voice track via outDest)
   const displayStreamRef = useRef<MediaStream | null>(null);
@@ -529,8 +543,30 @@ export function useMediasoup() {
       (peerId) => state.peers.get(peerId)?.displayName ?? "",
       state.spatialPositions,
       spatialAutoSeatOf(),
+      outGraphRef.current?.reverbInput ?? null,
     );
   }, [store, spatialAutoSeatOf]);
+
+  // Load the room's chosen ambience into the shared reverb: build its impulse
+  // response and ramp the wet return. "seco" (or unknown) = fully dry.
+  const applyAmbience = useCallback(() => {
+    const g = outGraphRef.current;
+    if (!g) return;
+    const amb = findAmbience(store.getState().ambience);
+    const now = sharedAudioContext.currentTime;
+    if (!amb || amb.wet <= 0) {
+      g.reverbWet.gain.setTargetAtTime(0, now, 0.05);
+      return;
+    }
+    g.reverbConvolver.buffer = buildImpulseResponse(sharedAudioContext, amb);
+    g.reverbWet.gain.setTargetAtTime(amb.wet, now, 0.05);
+  }, [store]);
+
+  // Pick the room's ambience (Ctrl+Alt+A panel). Server-owned and broadcast:
+  // every client applies it from the `ambience` handler.
+  const setAmbience = useCallback((id: string) => {
+    socketRef.current?.emit("set-ambience", { id });
+  }, []);
 
   // Move a participant's seat in the room's 3D field. Room-wide: the server
   // stores it (by display name) and broadcasts to everyone, so a person sounds
@@ -594,6 +630,16 @@ export function useMediasoup() {
     const monitorPanner = ctx.createPanner();
     monitorPanner.panningModel = "HRTF";
     monitorPanner.rolloffFactor = 0; // direction only — never changes loudness
+    // Shared ambience reverb bus: every speaker-bound source sends into
+    // reverbInput; the wet return goes to the speakers. Dry until an ambience is
+    // picked (reverbWet 0). applyAmbience loads the impulse + sets the wet level.
+    const reverbInput = ctx.createGain();
+    const reverbConvolver = ctx.createConvolver();
+    const reverbWet = ctx.createGain();
+    reverbWet.gain.value = 0;
+    reverbInput.connect(reverbConvolver);
+    reverbConvolver.connect(reverbWet);
+    reverbWet.connect(ctx.destination);
     // The monitor edge is wired by applyMicMonitor (called right after this and
     // whenever the monitor / spatial settings change).
     outGraphRef.current = {
@@ -611,6 +657,9 @@ export function useMediasoup() {
       secondarySource: null,
       secondaryGain: null,
       secondaryStream: null,
+      reverbInput,
+      reverbConvolver,
+      reverbWet,
     };
     return outGraphRef.current;
   }, [store]);
@@ -1259,6 +1308,7 @@ export function useMediasoup() {
           spatialPositions?: Record<string, SpatialSeat>;
           spatialEnabled?: boolean;
           spatialAutoAll?: boolean;
+          ambience?: string;
           messages: ChatMessage[];
         };
         const joinPayload = {
@@ -1280,6 +1330,9 @@ export function useMediasoup() {
         // Spatial on/off is room state too — adopt the room's current mode.
         store.getState().setSpatialAudio(joinRes.spatialEnabled ?? false);
         store.getState().setSpatialAutoAll(joinRes.spatialAutoAll ?? false);
+        // Adopt the room's current ambience (reverb space) and load it.
+        store.getState().setAmbience(joinRes.ambience ?? "seco");
+        applyAmbience();
         // The out graph exists by now — wire the (possibly spatial) monitor.
         applyMicMonitor();
 
@@ -1423,6 +1476,13 @@ export function useMediasoup() {
           .announceEvent(
             enabled ? m.spatial_auto_on_by({ name: by }) : m.spatial_auto_off_by({ name: by }),
           );
+      });
+
+      // The room's acoustic ambience changed — load the new space and say who.
+      socket.on("ambience", ({ id, by }: { id: string; by: string }) => {
+        store.getState().setAmbience(id);
+        applyAmbience();
+        store.getState().announceEvent(m.ambience_set_by({ name: by, ambience: ambienceName(id) }));
       });
 
       // Someone moved a seat in the 3D field (room-wide) — re-apply for everyone.
@@ -1714,6 +1774,7 @@ export function useMediasoup() {
       flushPendingCandidates,
       applyMicMonitor,
       refreshSpatial,
+      applyAmbience,
 
       store,
     ],
@@ -1906,6 +1967,9 @@ export function useMediasoup() {
         // streamer too (and the crossfade is audible locally). One shared
         // connection on the volume node — no per-slot source → destination wires.
         g.fileVolumeGain.connect(sharedAudioContext.destination);
+        // Also feed the ambience reverb, so the music you play is heard "in" the
+        // room's space too (wet return handled by reverbWet; dry until picked).
+        g.fileVolumeGain.connect(g.reverbInput);
       }
       return g.fileVolumeGain;
     },
@@ -3032,6 +3096,7 @@ export function useMediasoup() {
     toggleSpatialAudio,
     setSpatialPosition,
     setSpatialAutoAll,
+    setAmbience,
     peerAudiosRef,
   };
 }

@@ -12,6 +12,7 @@ import {
   rememberRoomBitrate,
   rememberSpatialEnabled,
   rememberSpatialAutoAll,
+  rememberAmbience,
   rememberSpatialPosition,
   renameSpatialPosition,
   type Room,
@@ -294,6 +295,7 @@ export function createSignalingServer(
           spatialPositions: room.spatialPositions,
           spatialEnabled: room.spatialEnabled,
           spatialAutoAll: room.spatialAutoAll,
+          ambience: room.ambience,
           // Recent chat so a late joiner can read/announce the last messages.
           messages: room.messages,
         });
@@ -673,6 +675,21 @@ export function createSignalingServer(
       rememberSpatialAutoAll(currentRoom.name, parsed.data.enabled);
       io.to(currentRoom.name).emit("spatial-auto", {
         enabled: parsed.data.enabled,
+        by: currentPeer.displayName,
+      });
+      cb?.({ ok: true });
+    });
+
+    // Acoustic ambience (reverb space) for the WHOLE room. Whoever picks it
+    // drops everyone into that space (like the spatial flags). Just an id — the
+    // reverb itself is generated client-side.
+    socket.on("set-ambience", (data: unknown, cb?: (res: unknown) => void) => {
+      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
+      const parsed = z.object({ id: z.string().min(1).max(32) }).safeParse(data);
+      if (!parsed.success) return cb?.({ ok: false, error: "Invalid ambience" });
+      rememberAmbience(currentRoom.name, parsed.data.id);
+      io.to(currentRoom.name).emit("ambience", {
+        id: parsed.data.id,
         by: currentPeer.displayName,
       });
       cb?.({ ok: true });

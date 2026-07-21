@@ -200,6 +200,10 @@ interface RoomState {
   // on, every client seats ALL participants on the even spread, ignoring the
   // configured seats (which stay, so turning it off restores them).
   spatialAutoAll: boolean;
+  // Acoustic ambience (reverb space) for the whole room, by preset id ("seco" =
+  // dry/off). ROOM state (server-owned, broadcast): whoever picks it drops
+  // EVERYONE into that space, so the scene is shared. See lib/ambience.
+  ambience: string;
   // Play shared tab/system audio out your selected playback device too (so you
   // hear it where you listen). Off by default; persisted. May echo if the shared
   // tab already plays on that same device.
@@ -278,6 +282,7 @@ interface RoomState {
   setSpatialAudio: (enabled: boolean) => void;
   setSpatialPositions: (positions: Record<string, SpatialSeat>) => void;
   setSpatialAutoAll: (enabled: boolean) => void;
+  setAmbience: (id: string) => void;
   setSecondaryEnabled: (enabled: boolean) => void;
   setSecondaryDeviceId: (deviceId: string) => void;
   setSecondaryMonitor: (monitor: boolean) => void;
@@ -331,6 +336,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   spatialAudio: false,
   spatialPositions: {},
   spatialAutoAll: false,
+  ambience: "seco",
   shareMonitor: loadString(SHARE_MONITOR_KEY) === "true",
   secondaryEnabled: loadString(SECONDARY_ENABLED_KEY) === "true",
   secondaryDeviceId: loadString(SECONDARY_DEVICE_KEY),
@@ -425,6 +431,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   },
   setSpatialPositions: (spatialPositions) => set({ spatialPositions }),
   setSpatialAutoAll: (spatialAutoAll) => set({ spatialAutoAll }),
+  setAmbience: (ambience) => set({ ambience }),
   setSpatialAudio: (spatialAudio) => {
     set({ spatialAudio });
   },
