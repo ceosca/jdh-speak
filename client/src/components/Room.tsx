@@ -92,6 +92,7 @@ export function Room() {
     serieSelectSeason,
     typingTick,
     sendNudge,
+    toggleSpatialAudio,
   } = useMediasoup();
 
   const [joinState, setJoinState] = useState<JoinState>("idle");
@@ -300,6 +301,14 @@ export function Room() {
         }
       }
 
+      // Spatial audio toggle: Ctrl+Alt+E. Receive-side and local, so it applies
+      // instantly with no reconnect and doesn't touch anyone else's audio.
+      if (e.altKey && e.ctrlKey && (e.code === "KeyE" || e.key === "e" || e.key === "E")) {
+        e.preventDefault();
+        toggleSpatialAudio();
+        return;
+      }
+
       // Nudge the room ("zumbido"): Alt+Z, works regardless of focus so you
       // don't have to open the chat to send one.
       if (e.altKey && !e.ctrlKey && !e.metaKey && (e.code === "KeyZ" || e.key === "z" || e.key === "Z")) {
@@ -420,6 +429,7 @@ export function Room() {
     seriePrevEpisode,
     serieRestartEpisode,
     sendNudge,
+    toggleSpatialAudio,
   ]);
 
   // Name prompt overlay (first visit or "Change name"). Rendered above whatever

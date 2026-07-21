@@ -46,6 +46,10 @@ interface PeerAudio {
   audioEl: HTMLAudioElement;
   gainNode: GainNode;
   sourceNode: MediaStreamAudioSourceNode;
+  // Spatial audio: seats this peer at its own direction around the listener.
+  // Always created, but only inserted into the chain while spatial audio is on
+  // (see applySpatialLayout) — so toggling is a rewire, never a rebuild.
+  panner: PannerNode;
   // SFU-only
   consumer?: Consumer;
 }
@@ -173,9 +177,19 @@ function createAudioPipeline(track: MediaStreamTrack): Omit<PeerAudio, "consumer
   const gainNode = sharedAudioContext.createGain();
   gainNode.gain.value = 1;
   sourceNode.connect(gainNode);
+
+  const panner = sharedAudioContext.createPanner();
+  panner.panningModel = "HRTF";
+  // Direction only — never let distance change how loud someone is. (Every peer
+  // sits at the same radius anyway, but rolloff 0 makes that explicit and keeps
+  // the perceived level identical to the non-spatial path.)
+  panner.rolloffFactor = 0;
+  panner.refDistance = SPATIAL_RADIUS;
+
+  // Start non-spatial; applySpatialLayout inserts the panner when it's enabled.
   gainNode.connect(sharedAudioContext.destination);
 
-  return { audioEl, gainNode, sourceNode };
+  return { audioEl, gainNode, sourceNode, panner };
 }
 
 function destroyAudioPipeline(pa: PeerAudio) {
@@ -184,6 +198,59 @@ function destroyAudioPipeline(pa: PeerAudio) {
   pa.audioEl.pause();
   pa.sourceNode.disconnect();
   pa.gainNode.disconnect();
+  pa.panner.disconnect();
+}
+
+// --- Spatial audio ----------------------------------------------------------
+// Seats each participant at their own direction on an arc in front of you, so
+// you can tell WHO is talking by WHERE they sound — and two people talking at
+// once stay separable (the cocktail-party effect) instead of mushing together.
+// It's a receive-side effect: purely local, so the toggle is instant and each
+// listener decides for themselves. Nothing to coordinate with the room.
+const SPATIAL_ARC_DEG = 140; // total spread, centred straight ahead
+const SPATIAL_RADIUS = 1.6; // metres from the listener
+
+// Web Audio's listener faces -Z, so "ahead" is negative Z.
+function seatPosition(index: number, total: number) {
+  const t = total <= 1 ? 0.5 : index / (total - 1);
+  const rad = ((-SPATIAL_ARC_DEG / 2 + t * SPATIAL_ARC_DEG) * Math.PI) / 180;
+  return { x: Math.sin(rad) * SPATIAL_RADIUS, z: -Math.cos(rad) * SPATIAL_RADIUS };
+}
+
+// (Re)wire every peer for the current setting and re-spread the seats. Called
+// whenever the toggle flips or the participant set changes.
+//
+// Music casters are deliberately EXCLUDED: HRTF collapses its input to a single
+// point, which would destroy the stereo image of hi-fi music. They stay centred
+// and full-stereo, which is the whole point of the music path.
+function applySpatialLayout(
+  peerAudios: Map<string, PeerAudio>,
+  enabled: boolean,
+  isMusic: (peerId: string) => boolean,
+) {
+  // Sorted so a given peer keeps its seat as others come and go (no shuffling
+  // voices around mid-conversation just because someone else joined).
+  const seated = [...peerAudios.keys()].filter((id) => !isMusic(id)).sort();
+
+  for (const [peerId, pa] of peerAudios) {
+    const spatial = enabled && !isMusic(peerId);
+    if (spatial) {
+      const { x, z } = seatPosition(seated.indexOf(peerId), seated.length);
+      pa.panner.positionX.value = x;
+      pa.panner.positionY.value = 0;
+      pa.panner.positionZ.value = z;
+    }
+    // Rewire: gain → [panner] → destination. gain only ever feeds the output,
+    // so disconnecting it wholesale is safe.
+    pa.gainNode.disconnect();
+    pa.panner.disconnect();
+    if (spatial) {
+      pa.gainNode.connect(pa.panner);
+      pa.panner.connect(sharedAudioContext.destination);
+    } else {
+      pa.gainNode.connect(sharedAudioContext.destination);
+    }
+  }
 }
 
 export function useMediasoup() {
@@ -421,6 +488,26 @@ export function useMediasoup() {
     }, TOGGLE_DEDUP_MS);
     map.set(key, s);
   }, []);
+
+  // Re-seat everyone for the current spatial setting. Called when the toggle
+  // flips and whenever the participant set changes (so seats stay spread out).
+  const refreshSpatial = useCallback(() => {
+    const state = store.getState();
+    applySpatialLayout(
+      peerAudiosRef.current,
+      state.spatialAudio,
+      (peerId) => !!state.peers.get(peerId)?.isMusic,
+    );
+  }, [store]);
+
+  // Toggle spatial audio (Ctrl+Alt+E). Receive-side and local, so it applies
+  // instantly with no reconnect and without affecting anyone else.
+  const toggleSpatialAudio = useCallback(() => {
+    const next = !store.getState().spatialAudio;
+    store.getState().setSpatialAudio(next);
+    refreshSpatial();
+    store.getState().announce(next ? m.spatial_on() : m.spatial_off());
+  }, [refreshSpatial, store]);
 
   // --- Shared: clean up all peer audio ---
   const cleanupAllPeerAudio = useCallback(() => {
@@ -756,6 +843,7 @@ export function useMediasoup() {
         // deafened listener starts hearing audio again.
         pipeline.gainNode.gain.value = effectiveGain(peerId);
         peerAudiosRef.current.set(peerId, pipeline);
+        refreshSpatial();
       };
 
       p2pConnectionsRef.current.set(peerId, pc);
@@ -775,7 +863,7 @@ export function useMediasoup() {
 
       return pc;
     },
-    [ensureLocalStream, connectMicToGraph, ensureOutGraph, effectiveGain],
+    [ensureLocalStream, connectMicToGraph, ensureOutGraph, effectiveGain, refreshSpatial],
   );
 
   // Apply candidates that were queued for a peer while its connection had no
@@ -855,6 +943,7 @@ export function useMediasoup() {
       const existingPeerAudio = peerAudiosRef.current.get(peerId);
       if (existingPeerAudio) destroyAudioPipeline(existingPeerAudio);
       peerAudiosRef.current.set(peerId, { ...pipeline, consumer });
+      refreshSpatial();
 
       // Flag a music-caster peer (e.g. Ecobox) so the UI shows it as a media
       // source. Stereo is preserved end-to-end by createAudioPipeline.
@@ -865,7 +954,7 @@ export function useMediasoup() {
       // Start at the correct gain (respects per-peer volume and deafen).
       pipeline.gainNode.gain.value = effectiveGain(peerId);
     },
-    [emit, store, effectiveGain],
+    [emit, store, effectiveGain, refreshSpatial],
   );
 
   // --- SFU: set up transports and produce ---
@@ -1235,6 +1324,7 @@ export function useMediasoup() {
         if (peerAudio) {
           destroyAudioPipeline(peerAudio);
           peerAudiosRef.current.delete(peerId);
+          refreshSpatial(); // re-spread the remaining seats
         }
         store.getState().removePeer(peerId);
         if (!wasMusic) {
@@ -1487,6 +1577,7 @@ export function useMediasoup() {
       surfaceToggle,
       runTransition,
       flushPendingCandidates,
+      refreshSpatial,
 
       store,
     ],
@@ -2800,6 +2891,7 @@ export function useMediasoup() {
     sendChatMessage,
     typingTick,
     sendNudge,
+    toggleSpatialAudio,
     peerAudiosRef,
   };
 }

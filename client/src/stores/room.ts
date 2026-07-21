@@ -31,6 +31,7 @@ const SECONDARY_ENABLED_KEY = "jdh-speak:secondaryEnabled";
 const SECONDARY_DEVICE_KEY = "jdh-speak:secondaryDeviceId";
 const SECONDARY_MONITOR_KEY = "jdh-speak:secondaryMonitor";
 const MIC_MONITOR_KEY = "jdh-speak:micMonitor";
+const SPATIAL_AUDIO_KEY = "jdh-speak:spatialAudio";
 const SHARE_MONITOR_KEY = "jdh-speak:shareMonitor";
 const FILE_VOLUME_KEY = "jdh-speak:fileVolume";
 const PLAYER_REPEAT_KEY = "jdh-speak:playerRepeat";
@@ -188,6 +189,10 @@ interface RoomState {
   // Monitor your own primary mic locally (hear yourself through your speakers).
   // Off by default; for-you only (like the secondary monitor). Persisted.
   micMonitor: boolean;
+  // Spatial audio: seat each participant at their own direction around you, so
+  // you can tell who is talking by where they sound. Receive-side and purely
+  // local (each listener chooses), toggled live with Ctrl+Alt+E. Persisted.
+  spatialAudio: boolean;
   // Play shared tab/system audio out your selected playback device too (so you
   // hear it where you listen). Off by default; persisted. May echo if the shared
   // tab already plays on that same device.
@@ -263,6 +268,7 @@ interface RoomState {
   setSpeakerDeviceId: (deviceId: string) => void;
   setVoiceProcessingEnabled: (enabled: boolean) => void;
   setMicMonitor: (monitor: boolean) => void;
+  setSpatialAudio: (enabled: boolean) => void;
   setSecondaryEnabled: (enabled: boolean) => void;
   setSecondaryDeviceId: (deviceId: string) => void;
   setSecondaryMonitor: (monitor: boolean) => void;
@@ -313,6 +319,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   speakerDeviceId: loadString(SPEAKER_DEVICE_KEY),
   voiceProcessingEnabled: loadVoiceProcessing(),
   micMonitor: loadString(MIC_MONITOR_KEY) === "true",
+  spatialAudio: loadString(SPATIAL_AUDIO_KEY) === "true",
   shareMonitor: loadString(SHARE_MONITOR_KEY) === "true",
   secondaryEnabled: loadString(SECONDARY_ENABLED_KEY) === "true",
   secondaryDeviceId: loadString(SECONDARY_DEVICE_KEY),
@@ -404,6 +411,10 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setMicMonitor: (micMonitor) => {
     saveString(MIC_MONITOR_KEY, String(micMonitor));
     set({ micMonitor });
+  },
+  setSpatialAudio: (spatialAudio) => {
+    saveString(SPATIAL_AUDIO_KEY, String(spatialAudio));
+    set({ spatialAudio });
   },
   setShareMonitor: (shareMonitor) => {
     saveString(SHARE_MONITOR_KEY, String(shareMonitor));
