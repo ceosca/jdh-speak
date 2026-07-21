@@ -16,6 +16,16 @@ export interface Peer {
 
 export type RoomMode = "p2p" | "sfu";
 
+// Where a participant sits in the room's 3D field:
+//   az   -180…180 degrees — 0 = straight ahead, + = right, ±180 = behind
+//   el    -90…90 degrees  — 0 = ear level, + = above
+//   dist  metres from the listener
+export interface SpatialSeat {
+  az: number;
+  el: number;
+  dist: number;
+}
+
 export interface Room {
   name: string;
   router: Router;
@@ -33,9 +43,9 @@ export interface Room {
   // own outgoing voice sender. Persists for the room's lifetime so late joiners
   // match the current quality.
   audioBitrate: number;
-  // Spatial audio seats for this room, by displayName → azimuth degrees
-  // (-90 left … 0 ahead … +90 right). Shared by everyone; see roomSpatial.
-  spatialPositions: Record<string, number>;
+  // Spatial audio seats for this room, by displayName → SpatialSeat
+  // (azimuth / elevation / distance). Shared by everyone; see roomSpatial.
+  spatialPositions: Record<string, SpatialSeat>;
   // Whether spatial audio is on for the whole room (see roomSpatialEnabled).
   spatialEnabled: boolean;
   // Rolling chat history (bounded to CHAT_HISTORY_MAX) so late joiners receive
@@ -62,7 +72,7 @@ const roomBitrates = new Map<string, number>();
 //
 // Kept BY ROOM NAME (surviving room destruction) for the same reason as the
 // bitrate: the seating shouldn't be lost just because the room briefly emptied.
-const roomSpatial = new Map<string, Record<string, number>>();
+const roomSpatial = new Map<string, Record<string, SpatialSeat>>();
 
 // Whether spatial audio is ON for the room. Room-wide like the bitrate: whoever
 // flips it (Ctrl+Alt+E) flips it for EVERYONE, so the whole room shares one
@@ -75,8 +85,8 @@ export function rememberSpatialEnabled(roomName: string, enabled: boolean): void
   if (room) room.spatialEnabled = enabled;
 }
 
-export function rememberSpatialPosition(roomName: string, name: string, degrees: number): void {
-  const positions = { ...(roomSpatial.get(roomName) ?? {}), [name]: degrees };
+export function rememberSpatialPosition(roomName: string, name: string, seat: SpatialSeat): void {
+  const positions = { ...(roomSpatial.get(roomName) ?? {}), [name]: seat };
   roomSpatial.set(roomName, positions);
   const room = rooms.get(roomName);
   if (room) room.spatialPositions = positions;

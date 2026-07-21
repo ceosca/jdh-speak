@@ -7,6 +7,13 @@ import { applySpeakerToContext } from "../lib/audio-devices";
 import { isIOS, getMicrophoneStream } from "../lib/microphone";
 import { playCue, preloadCueSamples, playTypingTick } from "../lib/sounds";
 import { getIceServers } from "../lib/ice";
+import {
+  autoSeat,
+  airAbsorptionHz,
+  seatToPoint,
+  SPATIAL_RADIUS,
+  type SpatialSeat,
+} from "../lib/spatial";
 import { parseClearKey, type Channel } from "../lib/tv";
 import {
   flattenEpisodes,
@@ -50,6 +57,9 @@ interface PeerAudio {
   // Always created, but only inserted into the chain while spatial audio is on
   // (see applySpatialLayout) — so toggling is a rewire, never a rebuild.
   panner: PannerNode;
+  // Low-pass that dulls distant voices (air absorption) — in the chain only
+  // while spatial audio is on, like the panner.
+  airFilter: BiquadFilterNode;
   // SFU-only
   consumer?: Consumer;
 }
@@ -180,16 +190,23 @@ function createAudioPipeline(track: MediaStreamTrack): Omit<PeerAudio, "consumer
 
   const panner = sharedAudioContext.createPanner();
   panner.panningModel = "HRTF";
-  // Direction only — never let distance change how loud someone is. (Every peer
-  // sits at the same radius anyway, but rolloff 0 makes that explicit and keeps
-  // the perceived level identical to the non-spatial path.)
-  panner.rolloffFactor = 0;
+  // Distance now matters (it's an axis you can set), so let the panner attenuate
+  // — gently, so someone placed far away is still perfectly intelligible.
+  panner.distanceModel = "inverse";
   panner.refDistance = SPATIAL_RADIUS;
+  panner.rolloffFactor = 0.5;
+  panner.maxDistance = 20;
+
+  // Air absorption, paired with the panner's attenuation (see airAbsorptionHz).
+  const airFilter = sharedAudioContext.createBiquadFilter();
+  airFilter.type = "lowpass";
+  airFilter.frequency.value = 18000;
+  airFilter.Q.value = 0.7;
 
   // Start non-spatial; applySpatialLayout inserts the panner when it's enabled.
   gainNode.connect(sharedAudioContext.destination);
 
-  return { audioEl, gainNode, sourceNode, panner };
+  return { audioEl, gainNode, sourceNode, panner, airFilter };
 }
 
 function destroyAudioPipeline(pa: PeerAudio) {
@@ -199,33 +216,18 @@ function destroyAudioPipeline(pa: PeerAudio) {
   pa.sourceNode.disconnect();
   pa.gainNode.disconnect();
   pa.panner.disconnect();
+  pa.airFilter.disconnect();
 }
 
 // --- Spatial audio ----------------------------------------------------------
-// Seats each participant at their own direction on an arc in front of you, so
-// you can tell WHO is talking by WHERE they sound — and two people talking at
-// once stay separable (the cocktail-party effect) instead of mushing together.
-// It's a receive-side effect: purely local, so the toggle is instant and each
-// listener decides for themselves. Nothing to coordinate with the room.
-const SPATIAL_ARC_DEG = 140; // total spread, centred straight ahead
-const SPATIAL_RADIUS = 1.6; // metres from the listener
-
-// Web Audio's listener faces -Z, so "ahead" is negative Z.
-// degrees: -90 = hard left, 0 = straight ahead, +90 = hard right.
-function degreesToPoint(degrees: number) {
-  const rad = (degrees * Math.PI) / 180;
-  return { x: Math.sin(rad) * SPATIAL_RADIUS, z: -Math.cos(rad) * SPATIAL_RADIUS };
-}
-
-// Automatic seat for a peer with no explicit position: spread evenly across the
-// arc, so voices are separated out of the box.
-function seatPosition(index: number, total: number) {
-  const t = total <= 1 ? 0.5 : index / (total - 1);
-  return degreesToPoint(-SPATIAL_ARC_DEG / 2 + t * SPATIAL_ARC_DEG);
-}
-
-// (Re)wire every peer for the current setting and re-spread the seats. Called
-// whenever the toggle flips or the participant set changes.
+// Seats each participant somewhere on the sphere around you (left/right,
+// front/back, up/down, near/far), so you can tell WHO is talking by WHERE they
+// sound — and two people talking at once stay separable (the cocktail-party
+// effect) instead of mushing together. Seats are ROOM-WIDE: everyone hears a
+// given person from the same place. Geometry lives in lib/spatial.ts.
+//
+// (Re)wire every peer for the current setting and re-apply the seats. Called
+// whenever the toggle flips, a seat moves, or the participant set changes.
 //
 // Music casters are deliberately EXCLUDED: HRTF collapses its input to a single
 // point, which would destroy the stereo image of hi-fi music. They stay centred
@@ -238,7 +240,7 @@ function applySpatialLayout(
   // An explicit seat (set from the Ctrl+Alt+U panel, shared by everyone) always
   // wins; peers without one fall back to the automatic even spread.
   nameOf: (peerId: string) => string,
-  positions: Record<string, number>,
+  positions: Record<string, SpatialSeat>,
 ) {
   // Sorted so a given peer keeps its seat as others come and go (no shuffling
   // voices around mid-conversation just because someone else joined).
@@ -247,19 +249,22 @@ function applySpatialLayout(
   for (const [peerId, pa] of peerAudios) {
     const spatial = enabled && !isMusic(peerId);
     if (spatial) {
-      const override = positions[nameOf(peerId)];
-      const { x, z } =
-        typeof override === "number" ? degreesToPoint(override) : seatPosition(seated.indexOf(peerId), seated.length);
+      const seat =
+        positions[nameOf(peerId)] ?? autoSeat(seated.indexOf(peerId), seated.length);
+      const { x, y, z } = seatToPoint(seat);
       pa.panner.positionX.value = x;
-      pa.panner.positionY.value = 0;
+      pa.panner.positionY.value = y;
       pa.panner.positionZ.value = z;
+      pa.airFilter.frequency.value = airAbsorptionHz(seat.dist);
     }
-    // Rewire: gain → [panner] → destination. gain only ever feeds the output,
-    // so disconnecting it wholesale is safe.
+    // Rewire: gain → [airFilter → panner] → destination. gain only ever feeds
+    // the output, so disconnecting it wholesale is safe.
     pa.gainNode.disconnect();
     pa.panner.disconnect();
+    pa.airFilter.disconnect();
     if (spatial) {
-      pa.gainNode.connect(pa.panner);
+      pa.gainNode.connect(pa.airFilter);
+      pa.airFilter.connect(pa.panner);
       pa.panner.connect(sharedAudioContext.destination);
     } else {
       pa.gainNode.connect(sharedAudioContext.destination);
@@ -520,12 +525,9 @@ export function useMediasoup() {
   // stores it (by display name) and broadcasts to everyone, so a person sounds
   // like they're in the same place for ALL listeners. Called live while dragging
   // the slider in the hidden Ctrl+Alt+U panel.
-  const setSpatialPosition = useCallback(
-    (name: string, degrees: number) => {
-      socketRef.current?.emit("set-spatial-position", { name, degrees });
-    },
-    [],
-  );
+  const setSpatialPosition = useCallback((name: string, seat: SpatialSeat) => {
+    socketRef.current?.emit("set-spatial-position", { name, ...seat });
+  }, []);
 
   // Toggle spatial audio (Ctrl+Alt+E) for the WHOLE room. Like the bitrate
   // shortcut, whoever presses it flips it for everyone: the server stores it and
@@ -1189,7 +1191,7 @@ export function useMediasoup() {
           mode: RoomMode;
           recording: { recordingId: string } | null;
           audioBitrate?: number;
-          spatialPositions?: Record<string, number>;
+          spatialPositions?: Record<string, SpatialSeat>;
           spatialEnabled?: boolean;
           messages: ChatMessage[];
         };
@@ -1341,7 +1343,7 @@ export function useMediasoup() {
       });
 
       // Someone moved a seat in the 3D field (room-wide) — re-apply for everyone.
-      socket.on("spatial-positions", (positions: Record<string, number>) => {
+      socket.on("spatial-positions", (positions: Record<string, SpatialSeat>) => {
         store.getState().setSpatialPositions(positions ?? {});
         refreshSpatial();
       });

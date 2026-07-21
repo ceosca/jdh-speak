@@ -663,12 +663,23 @@ export function createSignalingServer(
     socket.on("set-spatial-position", (data: unknown, cb?: (res: unknown) => void) => {
       if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
       const parsed = z
-        .object({ name: z.string().min(1).max(256), degrees: z.number().min(-90).max(90) })
+        .object({
+          name: z.string().min(1).max(256),
+          // Full sphere: azimuth all the way around (±180 = behind), elevation
+          // up/down, and distance in metres.
+          az: z.number().min(-180).max(180),
+          el: z.number().min(-90).max(90),
+          dist: z.number().min(0.3).max(10),
+        })
         .safeParse(data);
       if (!parsed.success) return cb?.({ ok: false, error: "Invalid position" });
-      // Round to the slider's step so tiny float drift can't churn the map.
-      const degrees = Math.round(parsed.data.degrees / 5) * 5;
-      rememberSpatialPosition(currentRoom.name, parsed.data.name, degrees);
+      // Snap to the sliders' steps so float drift can't churn the map.
+      const seat = {
+        az: Math.round(parsed.data.az / 5) * 5,
+        el: Math.round(parsed.data.el / 5) * 5,
+        dist: Math.round(parsed.data.dist * 2) / 2,
+      };
+      rememberSpatialPosition(currentRoom.name, parsed.data.name, seat);
       io.to(currentRoom.name).emit("spatial-positions", currentRoom.spatialPositions);
       cb?.({ ok: true });
     });

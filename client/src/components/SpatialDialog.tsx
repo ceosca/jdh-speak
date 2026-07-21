@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Move3d, X } from "lucide-react";
 import { useRoomStore } from "../stores/room";
+import {
+  AZ_MIN, AZ_MAX, AZ_STEP,
+  EL_MIN, EL_MAX, EL_STEP,
+  DIST_MIN, DIST_MAX, DIST_STEP,
+  DEFAULT_SEAT,
+  type SpatialSeat,
+} from "../lib/spatial";
 import { m } from "../paraglide/messages.js";
 
 interface SpatialDialogProps {
@@ -8,22 +15,31 @@ interface SpatialDialogProps {
   // Moves a participant's seat. Room-wide — the server broadcasts it, so every
   // listener hears that person from the new direction. Called live while the
   // slider moves (there's no Save button; changes apply as you go).
-  onSetPosition: (name: string, degrees: number) => void;
+  onSetPosition: (name: string, seat: SpatialSeat) => void;
 }
 
-// Slider range/step. 5° steps keep arrow-key nudges meaningful without being
-// so fine that they're inaudible, and match the server's rounding.
-const MIN_DEG = -90;
-const MAX_DEG = 90;
-const STEP_DEG = 5;
+// Spoken descriptions — a bare number ("-135") means nothing when you can't see
+// the slider, so the screen reader gets words instead.
 
-// Spoken description of a position — a bare number ("-45") means nothing when
-// you can't see the slider, so the screen reader gets words instead.
-function describeDegrees(deg: number): string {
-  if (deg === 0) return m.spatial_pos_center();
+// Azimuth around the full circle: 0 = ahead, ±180 = behind, - = left, + = right.
+function describeAzimuth(deg: number): string {
+  if (deg === 0) return m.spatial_az_front();
+  if (Math.abs(deg) === 180) return m.spatial_az_back();
   const amount = Math.abs(deg);
-  if (amount >= 85) return deg < 0 ? m.spatial_pos_full_left() : m.spatial_pos_full_right();
-  return deg < 0 ? m.spatial_pos_left({ deg: amount }) : m.spatial_pos_right({ deg: amount });
+  const side = deg < 0 ? m.spatial_side_left() : m.spatial_side_right();
+  if (amount === 90) return m.spatial_az_side({ side, deg: amount });
+  const zone = amount < 90 ? m.spatial_zone_front() : m.spatial_zone_back();
+  return m.spatial_az_full({ side, deg: amount, zone });
+}
+
+function describeElevation(deg: number): string {
+  if (deg === 0) return m.spatial_el_level();
+  const amount = Math.abs(deg);
+  return deg > 0 ? m.spatial_el_up({ deg: amount }) : m.spatial_el_down({ deg: amount });
+}
+
+function describeDistance(metres: number): string {
+  return m.spatial_dist_value({ m: metres.toFixed(1).replace(".", ",") });
 }
 
 // Hidden 3D-seating panel (Ctrl+Alt+U). Deliberately not reachable from any
@@ -73,13 +89,14 @@ export function SpatialDialog({ onClose, onSetPosition }: SpatialDialogProps) {
     });
   }, [seatable]);
 
-  // The seat currently in effect for the selected person (0 = centre when they
-  // have no explicit seat yet).
-  const current = selected ? (positions[selected] ?? 0) : 0;
+  // The seat currently in effect for the selected person (the default when they
+  // haven't been placed yet).
+  const current = (selected ? positions[selected] : undefined) ?? DEFAULT_SEAT;
 
-  const move = (deg: number) => {
+  // Every slider sends the WHOLE seat, so moving one axis never resets another.
+  const move = (patch: Partial<SpatialSeat>) => {
     if (!selected) return;
-    onSetPosition(selected, deg);
+    onSetPosition(selected, { ...current, ...patch });
   };
 
   return (
@@ -131,27 +148,66 @@ export function SpatialDialog({ onClose, onSetPosition }: SpatialDialogProps) {
             </select>
           </div>
 
+          {/* Three axes, in the order they matter audibly: direction all the way
+              around, then distance (the strongest depth cue), then height. */}
           <div>
-            <label
-              htmlFor="spatial-position"
-              className="mb-1 block text-xs font-medium text-sonic-300"
-            >
-              {m.spatial_position_label()}
+            <label htmlFor="spatial-az" className="mb-1 block text-xs font-medium text-sonic-300">
+              {m.spatial_az_label()}
             </label>
             <input
-              id="spatial-position"
+              id="spatial-az"
               type="range"
-              min={MIN_DEG}
-              max={MAX_DEG}
-              step={STEP_DEG}
-              value={current}
-              onChange={(e) => move(parseInt(e.target.value, 10))}
-              // The value is spoken as a direction, not a raw number.
-              aria-valuetext={describeDegrees(current)}
-              aria-describedby="spatial-help"
+              min={AZ_MIN}
+              max={AZ_MAX}
+              step={AZ_STEP}
+              value={current.az}
+              onChange={(e) => move({ az: parseInt(e.target.value, 10) })}
+              aria-valuetext={describeAzimuth(current.az)}
               className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-sonic-600 accent-sonic-accent"
             />
-            <p className="mt-1 text-xs text-sonic-400">{describeDegrees(current)}</p>
+            <p className="mt-1 text-xs text-sonic-400">{describeAzimuth(current.az)}</p>
+          </div>
+
+          <div>
+            <label htmlFor="spatial-dist" className="mb-1 block text-xs font-medium text-sonic-300">
+              {m.spatial_dist_label()}
+            </label>
+            <input
+              id="spatial-dist"
+              type="range"
+              min={DIST_MIN}
+              max={DIST_MAX}
+              step={DIST_STEP}
+              value={current.dist}
+              onChange={(e) => move({ dist: parseFloat(e.target.value) })}
+              aria-valuetext={describeDistance(current.dist)}
+              className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-sonic-600 accent-sonic-accent"
+            />
+            <p className="mt-1 text-xs text-sonic-400">{describeDistance(current.dist)}</p>
+          </div>
+
+          <div>
+            <label htmlFor="spatial-el" className="mb-1 block text-xs font-medium text-sonic-300">
+              {m.spatial_el_label()}
+            </label>
+            <input
+              id="spatial-el"
+              type="range"
+              min={EL_MIN}
+              max={EL_MAX}
+              step={EL_STEP}
+              value={current.el}
+              onChange={(e) => move({ el: parseInt(e.target.value, 10) })}
+              aria-valuetext={describeElevation(current.el)}
+              aria-describedby="spatial-el-note"
+              className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-sonic-600 accent-sonic-accent"
+            />
+            <p className="mt-1 text-xs text-sonic-400">{describeElevation(current.el)}</p>
+            {/* Set expectations: generic HRTFs render height weakly, so this is
+                the subtlest axis by far. Saying so beats "is it even working?". */}
+            <p id="spatial-el-note" className="mt-0.5 text-xs text-sonic-500">
+              {m.spatial_el_note()}
+            </p>
           </div>
 
           <p id="spatial-help" className="text-xs text-sonic-400">

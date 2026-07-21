@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { ChatMessage } from "../lib/chat";
 import { isIOS } from "../lib/microphone";
 import type { Episode, SeasonInfo } from "../lib/serieteca";
+import type { SpatialSeat } from "../lib/spatial";
 import { speak } from "../lib/tts";
 
 // Keep the in-memory chat bounded; the server caps history too. Newest last.
@@ -194,7 +195,7 @@ interface RoomState {
   // Room-wide spatial seats, by displayName → azimuth degrees (-90 left, 0
   // ahead, +90 right). Server-owned and broadcast, so everyone hears a given
   // person from the same direction. Empty = use the automatic spread.
-  spatialPositions: Record<string, number>;
+  spatialPositions: Record<string, SpatialSeat>;
   // Play shared tab/system audio out your selected playback device too (so you
   // hear it where you listen). Off by default; persisted. May echo if the shared
   // tab already plays on that same device.
@@ -271,7 +272,7 @@ interface RoomState {
   setVoiceProcessingEnabled: (enabled: boolean) => void;
   setMicMonitor: (monitor: boolean) => void;
   setSpatialAudio: (enabled: boolean) => void;
-  setSpatialPositions: (positions: Record<string, number>) => void;
+  setSpatialPositions: (positions: Record<string, SpatialSeat>) => void;
   setSecondaryEnabled: (enabled: boolean) => void;
   setSecondaryDeviceId: (deviceId: string) => void;
   setSecondaryMonitor: (monitor: boolean) => void;
