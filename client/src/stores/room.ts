@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { ChatMessage } from "../lib/chat";
 import { isIOS } from "../lib/microphone";
+import type { Episode, SeasonInfo } from "../lib/serieteca";
 import { speak } from "../lib/tts";
 
 // Keep the in-memory chat bounded; the server caps history too. Newest last.
@@ -144,6 +145,14 @@ interface RoomState {
   // True while the current source is a URL stream (m3u8/mp3 radio): the player
   // shows only the volume (no transport/playlist/open buttons) until it closes.
   playerIsUrl: boolean;
+  // Serieteca: the currently loaded series (null = none), its full episode
+  // list and season index, the index of the episode currently playing within
+  // `serieEpisodes`, and the season number currently selected for browsing.
+  serieName: string | null;
+  serieEpisodes: Episode[];
+  serieSeasons: SeasonInfo[];
+  serieEpisodeIndex: number;
+  serieCurrentSeason: number;
   // Source-side volume for the file stream (0–1, default 1). Applied on the
   // SENT path (and the local monitor) so lowering it quiets the file for all
   // listeners and for the streamer. Persisted to localStorage.
@@ -227,6 +236,15 @@ interface RoomState {
   setFileStream: (name: string | null) => void;
   setFileStreamPlaying: (playing: boolean) => void;
   setPlayerIsUrl: (isUrl: boolean) => void;
+  setSerie: (p: {
+    name: string;
+    episodes: Episode[];
+    seasons: SeasonInfo[];
+    index: number;
+    season: number;
+  }) => void;
+  setSerieEpisode: (index: number, season: number) => void;
+  clearSerie: () => void;
   setShareMonitor: (monitor: boolean) => void;
   setFileVolume: (volume: number) => void;
   setPlaylist: (playlist: { name: string; objectUrl: string }[]) => void;
@@ -273,6 +291,11 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   fileStreamName: null,
   fileStreamPlaying: false,
   playerIsUrl: false,
+  serieName: null,
+  serieEpisodes: [],
+  serieSeasons: [],
+  serieEpisodeIndex: 0,
+  serieCurrentSeason: 1,
   fileVolume: loadFileVolume(),
   playlist: [],
   playlistIndex: 0,
@@ -315,6 +338,18 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setFileStream: (fileStreamName) => set({ fileStreamName }),
   setFileStreamPlaying: (fileStreamPlaying) => set({ fileStreamPlaying }),
   setPlayerIsUrl: (playerIsUrl) => set({ playerIsUrl }),
+  setSerie: ({ name, episodes, seasons, index, season }) =>
+    set({
+      serieName: name,
+      serieEpisodes: episodes,
+      serieSeasons: seasons,
+      serieEpisodeIndex: index,
+      serieCurrentSeason: season,
+    }),
+  setSerieEpisode: (serieEpisodeIndex, serieCurrentSeason) =>
+    set({ serieEpisodeIndex, serieCurrentSeason }),
+  clearSerie: () =>
+    set({ serieName: null, serieEpisodes: [], serieSeasons: [], serieEpisodeIndex: 0 }),
   setFileVolume: (fileVolume) => {
     try {
       localStorage.setItem(FILE_VOLUME_KEY, String(fileVolume));
@@ -529,6 +564,11 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       fileStreamName: null,
       fileStreamPlaying: false,
       playerIsUrl: false,
+      serieName: null,
+      serieEpisodes: [],
+      serieSeasons: [],
+      serieEpisodeIndex: 0,
+      serieCurrentSeason: 1,
       playlist: [],
       playlistIndex: 0,
       playerTime: 0,
