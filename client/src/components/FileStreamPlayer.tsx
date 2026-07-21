@@ -45,9 +45,11 @@ interface FileStreamPlayerProps {
   isUrlStream: boolean;
 }
 
-// Volume step: 1 % of the 0–1 gain range, per the "lower it one by one" design.
+// Volume step: 1 % per Up/Down. The range runs 0–200 % (gain 0–2): above 100 %
+// the fileVolumeGain node amplifies, to rescue quiet sources (e.g. low series).
 const VOLUME_STEP = 0.01;
-const clampVolume = (v: number) => Math.min(1, Math.max(0, Math.round(v * 100) / 100));
+const VOLUME_MAX = 2;
+const clampVolume = (v: number) => Math.min(VOLUME_MAX, Math.max(0, Math.round(v * 100) / 100));
 
 // Format a duration in seconds to "m:ss".
 function formatTime(sec: number): string {
@@ -422,7 +424,7 @@ export function FileStreamPlayer({
               id="file-player-volume"
               type="range"
               min={0}
-              max={100}
+              max={200}
               step={1}
               value={volumePct}
               aria-label={m.player_volume_label()}
@@ -431,7 +433,7 @@ export function FileStreamPlayer({
               className="min-w-0 flex-1 accent-sonic-accent"
             />
             <span
-              className="w-9 shrink-0 text-right text-xs tabular-nums text-sonic-300"
+              className="w-12 shrink-0 text-right text-xs tabular-nums text-sonic-300"
               aria-hidden="true"
             >
               {volumePct} %

@@ -46,8 +46,10 @@ function loadPlayerRepeat(): PlayerRepeat {
 
 function loadFileVolume(): number {
   try {
+    // Range is 0–2 (up to 200 %): above unity the fileVolumeGain amplifies, to
+    // rescue quiet sources. Keep the persisted value in that range.
     const v = parseFloat(localStorage.getItem(FILE_VOLUME_KEY) ?? "");
-    if (Number.isFinite(v)) return Math.min(1, Math.max(0, v));
+    if (Number.isFinite(v)) return Math.min(2, Math.max(0, v));
   } catch {
     // localStorage unavailable — fall back to unity.
   }
