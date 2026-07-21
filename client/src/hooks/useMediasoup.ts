@@ -872,6 +872,7 @@ export function useMediasoup() {
     const ctx = sharedAudioContext;
     try { g.micGain.disconnect(ctx.destination); } catch { /* not connected */ }
     try { g.micGain.disconnect(g.monitorAir); } catch { /* not connected */ }
+    try { g.micGain.disconnect(g.reverbInput); } catch { /* not connected */ }
     g.monitorAir.disconnect();
     g.monitorPanner.disconnect();
 
@@ -895,6 +896,9 @@ export function useMediasoup() {
     } else {
       g.micGain.connect(ctx.destination);
     }
+    // Wet send: hear your OWN monitored voice in the room's ambience too (only
+    // while monitoring, so you don't hear a reverb tail without the dry tap).
+    g.micGain.connect(g.reverbInput);
   }, [store, spatialAutoSeatOf]);
 
   useEffect(() => {
