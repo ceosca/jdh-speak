@@ -30,6 +30,12 @@ Combina con el espacial (cada uno posicionado, todos en la misma sala).
   elegir. Panel `AmbienceDialog.tsx` (Ctrl+Alt+A), sin botón (como grabación/3D).
 - **Deploy:** tocó server + cliente → en la Pi, `git pull` + **`pnpm build`** +
   **`systemctl restart jdh-speak`**.
+- **Reverbs rehechos por geometría** (después, solo cliente): los primeros salían
+  flojos. Ahora cada espacio se define por las **distancias a sus 6 paredes**
+  (modeladas sobre salas de referencia conocidas: auto, living, baño, sótano,
+  estudio, escenario, sala de concierto, iglesia, estadio, catedral, calle), y de
+  ahí se derivan **reflexiones tempranas** (un tap por pared, a su retardo real) y
+  la **cola** según el tamaño. Wet fuerte a propósito. `lib/ambience.ts`.
 
 ---
 
