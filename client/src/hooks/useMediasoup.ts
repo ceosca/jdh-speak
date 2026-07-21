@@ -2473,12 +2473,14 @@ export function useMediasoup() {
   }, [store]);
 
   // Set the source-side file volume for ALL listeners. Persists the value and
-  // ramps the fileVolumeGain node live (smooth, 50 ms time-constant).
+  // ramps the fileVolumeGain node live. A short 5 ms time-constant makes it feel
+  // immediate — like a radio-console fader — while still being click-safe (a raw
+  // setValueAtTime jump would pop, especially on a big Ctrl+arrow step).
   const setPlayerVolume = useCallback(
     (v: number) => {
       store.getState().setFileVolume(v);
       const gain = outGraphRef.current?.fileVolumeGain;
-      if (gain) gain.gain.setTargetAtTime(v, sharedAudioContext.currentTime, 0.05);
+      if (gain) gain.gain.setTargetAtTime(v, sharedAudioContext.currentTime, 0.005);
     },
     [store],
   );

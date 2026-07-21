@@ -45,9 +45,12 @@ interface FileStreamPlayerProps {
   isUrlStream: boolean;
 }
 
-// Volume step: 1 % per Up/Down. The range runs 0–200 % (gain 0–2): above 100 %
-// the fileVolumeGain node amplifies, to rescue quiet sources (e.g. low series).
-const VOLUME_STEP = 0.01;
+// Volume steps: fine (2 %) per Up/Down, coarse (10 %) per Ctrl+Up/Down — a big
+// fader sweep. The range runs 0–200 % (gain 0–2): above 100 % the fileVolumeGain
+// node amplifies, to rescue quiet sources (e.g. low series). The gain ramp is
+// near-instant (see setPlayerVolume) so it feels like a radio-console fader.
+const VOLUME_STEP = 0.02;
+const VOLUME_STEP_COARSE = 0.1;
 const VOLUME_MAX = 2;
 const clampVolume = (v: number) => Math.min(VOLUME_MAX, Math.max(0, Math.round(v * 100) / 100));
 
@@ -174,13 +177,15 @@ export function FileStreamPlayer({
       return;
     }
 
-    // Up / Down → volume +/- 1 % (for all listeners). The playlist listbox stops
-    // propagation of these keys, so this only fires when focus is on the player
-    // container or its buttons — not while navigating the track list.
+    // Up / Down → volume for all listeners: fine 2 % step, or a coarse 10 % sweep
+    // with Ctrl. The playlist listbox stops propagation of these keys, so this
+    // only fires when focus is on the player container or its buttons — not while
+    // navigating the track list.
     if (e.key === "ArrowUp" || e.key === "ArrowDown") {
       e.preventDefault();
       e.stopPropagation();
-      const delta = e.key === "ArrowUp" ? VOLUME_STEP : -VOLUME_STEP;
+      const step = e.ctrlKey ? VOLUME_STEP_COARSE : VOLUME_STEP;
+      const delta = e.key === "ArrowUp" ? step : -step;
       onVolumeChange(clampVolume(fileVolume + delta));
       return;
     }
@@ -440,6 +445,13 @@ export function FileStreamPlayer({
                 } else if (e.key === "End") {
                   e.preventDefault();
                   onVolumeChange(1);
+                } else if (e.key === "ArrowUp" || e.key === "ArrowRight") {
+                  // Override the native ±1 %: fine 2 %, or a coarse 10 % with Ctrl.
+                  e.preventDefault();
+                  onVolumeChange(clampVolume(fileVolume + (e.ctrlKey ? VOLUME_STEP_COARSE : VOLUME_STEP)));
+                } else if (e.key === "ArrowDown" || e.key === "ArrowLeft") {
+                  e.preventDefault();
+                  onVolumeChange(clampVolume(fileVolume - (e.ctrlKey ? VOLUME_STEP_COARSE : VOLUME_STEP)));
                 }
               }}
               className="min-w-0 flex-1 accent-sonic-accent"
