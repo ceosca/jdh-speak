@@ -1,14 +1,22 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Send, X } from "lucide-react";
 import { useRoomStore, type ChatAnnounceMode } from "../stores/room";
 import { relativeTime, messageContent, META_SEP } from "../lib/chat";
 import { warmUpTts } from "../lib/tts";
 import { m } from "../paraglide/messages.js";
 
+// How long after the last keystroke we consider you've stopped typing (ms).
+// The audible loop runs until then, so a natural pause mid-sentence doesn't
+// chop the sound on and off.
+const TYPING_IDLE_MS = 1200;
+
 interface ChatProps {
   // Returns ok:false with a reason when nothing was sent, so we keep the text
   // in the box (the hook already played the "thunk" cue for rate_limited).
   onSend: (text: string) => Promise<{ ok: boolean; reason?: "empty" | "rate_limited" }>;
+  // Reports that we started/stopped composing — drives the room-wide typing
+  // sound. Safe to call on every keystroke (it only acts on transitions).
+  onTyping: (typing: boolean) => void;
   onClose: () => void;
   // Changes whenever the caller wants the composer (re)focused even though the
   // panel is already open — e.g. handing focus back after the join modal closes.
@@ -19,7 +27,7 @@ interface ChatProps {
 // you arrow through) comes BEFORE the composer, so screen-reader users land on
 // history first. New messages are announced and chimed elsewhere (the hook);
 // this panel is just the visible list + editor.
-export function Chat({ onSend, onClose, focusSignal }: ChatProps) {
+export function Chat({ onSend, onTyping, onClose, focusSignal }: ChatProps) {
   const messages = useRoomStore((s) => s.messages);
   const announce = useRoomStore((s) => s.announce);
   const chatAnnounceMode = useRoomStore((s) => s.chatAnnounceMode);
@@ -100,7 +108,36 @@ export function Chat({ onSend, onClose, focusSignal }: ChatProps) {
     }
   };
 
+  // --- Typing indicator (audible, room-wide) ---
+  // Kept in a ref so the idle timer and the unmount cleanup always see the
+  // current callback without re-arming the timer on every render.
+  const onTypingRef = useRef(onTyping);
+  onTypingRef.current = onTyping;
+  const typingTimerRef = useRef<number | null>(null);
+
+  const stopTyping = useCallback(() => {
+    if (typingTimerRef.current !== null) {
+      clearTimeout(typingTimerRef.current);
+      typingTimerRef.current = null;
+    }
+    onTypingRef.current(false);
+  }, []);
+
+  // Called on each keystroke: report typing and (re)arm the idle timer.
+  const noteTyping = useCallback(() => {
+    onTypingRef.current(true);
+    if (typingTimerRef.current !== null) clearTimeout(typingTimerRef.current);
+    typingTimerRef.current = window.setTimeout(() => {
+      typingTimerRef.current = null;
+      onTypingRef.current(false);
+    }, TYPING_IDLE_MS);
+  }, []);
+
+  // Closing the panel / leaving must never leave the loop running for everyone.
+  useEffect(() => stopTyping, [stopTyping]);
+
   const submit = async () => {
+    stopTyping(); // sending ends composing immediately
     const res = await onSend(text);
     if (res.ok) setText(""); // keep the text on empty / rate_limited
   };
@@ -234,8 +271,14 @@ export function Chat({ onSend, onClose, focusSignal }: ChatProps) {
           ref={textareaRef}
           rows={2}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            // Emptying the box (or deleting everything) ends composing at once.
+            if (e.target.value.length === 0) stopTyping();
+            else noteTyping();
+          }}
           onKeyDown={onComposerKeyDown}
+          onBlur={stopTyping}
           aria-describedby="chat-input-help"
           placeholder={m.chat_placeholder()}
           className="flex-1 resize-none rounded-lg border border-sonic-600 bg-sonic-900 px-3 py-2 text-sm text-sonic-100 placeholder:text-sonic-500 focus:border-sonic-accent focus:outline-none"

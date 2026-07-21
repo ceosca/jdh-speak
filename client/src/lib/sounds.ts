@@ -44,9 +44,16 @@ const ALL_CUES: Cue[] = [
 const SAMPLE_EXTS = ["mp3", "wav", "ogg"] as const;
 // Cache: AudioBuffer = a file exists and is decoded; null = probed, none found;
 // undefined (absent key) = not probed yet.
-const sampleCache = new Map<Cue, AudioBuffer | null>();
+const sampleCache = new Map<string, AudioBuffer | null>();
 
-async function loadCueSample(ctx: BaseAudioContext, cue: Cue): Promise<AudioBuffer | null> {
+// Looping cues: played continuously while a state holds (rather than one-shot on
+// an event) and stopped when it ends — currently "someone is typing in chat".
+// These are sample-ONLY: with no /sounds/<cue>.<ext> file they stay silent, since
+// there's no sensible synthesised fallback for a loop.
+const LOOP_CUES = ["typing"] as const;
+export type LoopCue = (typeof LOOP_CUES)[number];
+
+async function loadCueSample(ctx: BaseAudioContext, cue: string): Promise<AudioBuffer | null> {
   for (const ext of SAMPLE_EXTS) {
     try {
       // no-cache (revalidate), NOT force-cache: files change per deployment, and
@@ -70,9 +77,72 @@ async function loadCueSample(ctx: BaseAudioContext, cue: Cue): Promise<AudioBuff
 // call while the context is suspended — fetch + decodeAudioData don't need it
 // running. Call it once when the shared AudioContext is created.
 export function preloadCueSamples(ctx: BaseAudioContext) {
-  for (const cue of ALL_CUES) {
+  for (const cue of [...ALL_CUES, ...LOOP_CUES]) {
     if (!sampleCache.has(cue)) void loadCueSample(ctx, cue);
   }
+}
+
+// --- Looping cues -----------------------------------------------------------
+// Currently running loops, and which loops are *wanted* (so a start that arrives
+// before the sample finished decoding still starts once it lands, and a stop in
+// the meantime cancels it). Short fades avoid clicks on start/stop.
+const runningLoops = new Map<string, { src: AudioBufferSourceNode; gain: GainNode }>();
+const wantedLoops = new Set<string>();
+const LOOP_FADE = 0.06;
+
+function startLoopNow(ctx: AudioContext, cue: LoopCue, buffer: AudioBuffer) {
+  if (runningLoops.has(cue)) return;
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  src.loop = true;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(1, ctx.currentTime + LOOP_FADE);
+  src.connect(gain);
+  gain.connect(ctx.destination);
+  src.start();
+  runningLoops.set(cue, { src, gain });
+}
+
+// Start a looping cue (idempotent). No-op when the operator hasn't provided a
+// file for it. Local playback only, like every other cue — never routed into the
+// mic, so it isn't sent through the call; each client plays its own copy.
+export function startCueLoop(ctx: AudioContext, cue: LoopCue) {
+  if (ctx.state === "suspended") void ctx.resume();
+  wantedLoops.add(cue);
+  const sample = sampleCache.get(cue);
+  if (sample) {
+    startLoopNow(ctx, cue, sample);
+    return;
+  }
+  if (sample === undefined) {
+    // Not probed yet — decode, then start only if still wanted.
+    void loadCueSample(ctx, cue).then((buf) => {
+      if (buf && wantedLoops.has(cue)) startLoopNow(ctx, cue, buf);
+    });
+  }
+}
+
+// Stop a looping cue (idempotent, safe if it never started).
+export function stopCueLoop(ctx: AudioContext, cue: LoopCue) {
+  wantedLoops.delete(cue);
+  const running = runningLoops.get(cue);
+  if (!running) return;
+  runningLoops.delete(cue);
+  const { src, gain } = running;
+  const end = ctx.currentTime + LOOP_FADE;
+  try {
+    gain.gain.cancelScheduledValues(ctx.currentTime);
+    gain.gain.setValueAtTime(Math.max(gain.gain.value, 0.0001), ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, end);
+    src.stop(end + 0.02);
+  } catch {
+    // Already stopped/disposed — nothing to do.
+  }
+  src.onended = () => {
+    src.disconnect();
+    gain.disconnect();
+  };
 }
 
 function playSample(ctx: AudioContext, buffer: AudioBuffer) {
