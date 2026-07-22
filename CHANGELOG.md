@@ -33,15 +33,17 @@ callejón, cañón, ciudad, bosque, montaña, cantera, pueblo, etc.).
   `ambienceIrUrl(id)` decide de dónde cargar el impulso (`/ir/<id>.ogg` incluido,
   o `/api/ambiences/file?id=…` del servidor). Store: `serverAmbiences`. El id del
   ambiente que se transmite subió de 32 a 128 chars (los slugs son más largos).
-- **Pack Fields & Spaces**: son **123 WAV estéreo 24-bit/48kHz (303 MB)**,
-  exteriores (con variantes de distancia; ~32 lugares distintos). Demasiado para
-  el repo → van **hospedados**. Cristian ya los puso en la Raspberry en
-  `client/public/ir/`, así que con este cambio **aparecen solos** en el menú
-  (nombres = nombre de archivo, en inglés). **Para Cristian**: `git pull` +
-  **reiniciar `jdh-speak`** (es cambio de servidor). Caveat: dejar los `.wav`
-  crudos en `client/public/` hace que `pnpm build` los copie a `client/dist`
-  (303 MB, build lento en la Pi) — si molesta, pasarlos a **ogg** (mucho más
-  livianos) o moverlos fuera de `public/` y apuntar `AMBIENCE_IR_DIR` ahí.
+- **Pack Fields & Spaces → 32 exteriores incluidos (en español)**: el pack son
+  **123 WAV estéreo 24-bit/48kHz (303 MB)**, con variantes de distancia. En vez de
+  servir los 123 crudos (menú larguísimo, nombres en inglés, y 303 MB copiándose
+  a `client/dist` en cada `pnpm build`), **curé 32 espacios distintos** (uno por
+  lugar), pasados a **ogg estéreo (~2 MB total)** con **nombres en español**
+  (Callejón, Cañón, Ciudad, Bosque, Montaña, Cantera, Pueblo, Represa, Colinas…),
+  y los sumé como **ambientes incluidos** en `client/public/ir/` +
+  `lib/ambience.ts`. Reemplacé los 2 "bosque" viejos de OpenAIR (mono) por los del
+  pack (estéreo). Total del menú: **~62** (Seco + 29 interiores + 32 exteriores).
+  **Para Cristian**: `git pull` + `pnpm build` + reiniciar `jdh-speak`, y **borrá
+  el pack crudo** de `client/public/ir/` (los `.wav`), que ya no hace falta.
 
 ---
 

@@ -3,8 +3,10 @@
 // on demand from `/ir/<id>.ogg`. No synthetic/procedural reverb: it either sounds
 // like the real room or it isn't here.
 //
-// The impulses are recordings from OpenAIR (openairlib.net), licensed CC-BY — see
-// the credit shown in the ambience panel.
+// Two families: INTERIORES from OpenAIR (openairlib.net, CC-BY) and EXTERIORES
+// from the "Fields & Spaces" pack (stereo) that Cristian added. Operators can
+// also drop extra impulses next to these in client/public/ir/ and they show up
+// via the server (see server loadAmbiences / AMBIENCE_IR_DIR) without a rebuild.
 
 export interface Ambience {
   id: string;
@@ -14,6 +16,8 @@ export interface Ambience {
 // "seco" (dry) is off; every other id has a matching /ir/<id>.ogg impulse.
 export const AMBIENCES: Ambience[] = [
   { id: "seco", name: "Seco (sin efecto)" },
+
+  // Interiores — OpenAIR (openairlib.net, CC-BY).
   { id: "catedral", name: "Catedral" },
   { id: "capilla", name: "Capilla" },
   { id: "iglesia", name: "Iglesia" },
@@ -43,8 +47,40 @@ export const AMBIENCES: Ambience[] = [
   { id: "mazmorra", name: "Mazmorra" },
   { id: "cancha", name: "Cancha techada" },
   { id: "horno", name: "Horno de cal" },
-  { id: "bosque", name: "Bosque (verano)" },
-  { id: "bosquenieve", name: "Bosque (nieve)" },
+
+  // Exteriores — pack "Fields & Spaces" (impulsos estéreo) que aportó Cristian.
+  { id: "callejon", name: "Callejón" },
+  { id: "puente", name: "Puente" },
+  { id: "canon-eco", name: "Cañón (eco)" },
+  { id: "canon-suave", name: "Cañón (suave)" },
+  { id: "ciudad", name: "Ciudad" },
+  { id: "puerto-contenedores", name: "Puerto de contenedores" },
+  { id: "patio", name: "Patio" },
+  { id: "represa", name: "Represa" },
+  { id: "pueblo-desierto", name: "Pueblo del desierto" },
+  { id: "bosque", name: "Bosque" },
+  { id: "bosque-denso", name: "Bosque denso" },
+  { id: "bosque-abierto", name: "Bosque abierto" },
+  { id: "camino-bosque", name: "Camino del bosque" },
+  { id: "bosque-nevado", name: "Bosque nevado" },
+  { id: "fortaleza", name: "Fortaleza" },
+  { id: "colinas", name: "Colinas" },
+  { id: "colinas-nevadas", name: "Colinas nevadas" },
+  { id: "ladera", name: "Ladera" },
+  { id: "zona-industrial", name: "Zona industrial" },
+  { id: "metropolis", name: "Metrópolis" },
+  { id: "montana", name: "Montaña" },
+  { id: "montana-retumbo", name: "Montaña (retumbo)" },
+  { id: "pradera", name: "Pradera" },
+  { id: "llanura-arena", name: "Llanura de arena" },
+  { id: "llanura-nevada", name: "Llanura nevada" },
+  { id: "llanura-piedra", name: "Llanura de piedra" },
+  { id: "orilla-rio", name: "Orilla del río" },
+  { id: "cantera", name: "Cantera" },
+  { id: "pueblo", name: "Pueblo" },
+  { id: "pueblo-nevado", name: "Pueblo nevado" },
+  { id: "paso-bajo-nivel", name: "Paso bajo nivel" },
+  { id: "rio-pueblo", name: "Río del pueblo" },
 ];
 
 export const DEFAULT_AMBIENCE = "seco";
