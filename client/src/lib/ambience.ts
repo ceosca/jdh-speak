@@ -17,7 +17,12 @@ export interface Ambience {
   // 0 = open (outdoors) → no reflection from that side.
   walls: number[];
   // High-frequency damping 0–1: 0 = bright/live (tile, stone), 1 = dark/soft.
+  // Only used for the procedural spaces (see buildImpulseResponse).
   damp: number;
+  // When true, a REAL recorded impulse response is loaded from `/ir/<id>.ogg`
+  // instead of the procedural one — genuine convolution of a real space. These
+  // are CC-BY recordings from OpenAIR (openairlib.net); see the panel credit.
+  real?: boolean;
 }
 
 // "seco" (dry) is off. The rest are the reference plugin's rooms, small → huge.
@@ -38,16 +43,16 @@ export const AMBIENCES: Ambience[] = [
   { id: "oficina1", name: "Oficina 1", walls: [3.2, 1.9, 3.9, 4.5, 2.8, 1.8], damp: 0.52 },
   { id: "oficina2", name: "Oficina 2", walls: [6.7, 2.4, 6.9, 5.3, 3.3, 1.8], damp: 0.52 },
   { id: "sotano", name: "Sótano", walls: [2.5, 2.8, 3.0, 3.2, 2.1, 1.8], damp: 0.56 },
-  { id: "escalera", name: "Escalera", walls: [4.7, 3.5, 4.9, 8.0, 3.3, 1.8], damp: 0.47 },
+  { id: "escalera", name: "Escalera", walls: [4.7, 3.5, 4.9, 8.0, 3.3, 1.8], damp: 0.47, real: true },
   { id: "pasillo", name: "Pasillo", walls: [2.7, 2.0, 2.6, 8.8, 4.5, 1.8], damp: 0.65 },
   { id: "cine", name: "Cine", walls: [8.0, 7.0, 9.0, 14.0, 9.0, 1.3], damp: 0.54 },
   { id: "conferencias", name: "Sala de conferencias", walls: [6.7, 3.4, 6.9, 7.0, 3.3, 1.8], damp: 0.55 },
   { id: "deposito", name: "Depósito", walls: [12.0, 10.0, 8.0, 20.0, 15.0, 1.8], damp: 0.4 },
-  { id: "capilla", name: "Capilla", walls: [14.7, 12.4, 14.1, 23.0, 16.3, 1.8], damp: 0.48 },
+  { id: "capilla", name: "Capilla", walls: [14.7, 12.4, 14.1, 23.0, 16.3, 1.8], damp: 0.48, real: true },
   { id: "iglesia", name: "Iglesia", walls: [13.9, 17.9, 11.5, 25.5, 22.1, 1.8], damp: 0.48 },
-  { id: "catedral", name: "Catedral", walls: [27.5, 24.2, 29.0, 30.0, 30.0, 1.8], damp: 0.47 },
-  { id: "salonreal", name: "Salón real", walls: [13.7, 10.4, 13.9, 20.3, 7.3, 1.8], damp: 0.43 },
-  { id: "concierto1", name: "Sala de concierto 1", walls: [12.9, 14.0, 10.5, 20.8, 25.1, 1.8], damp: 0.73 },
+  { id: "catedral", name: "Catedral", walls: [27.5, 24.2, 29.0, 30.0, 30.0, 1.8], damp: 0.47, real: true },
+  { id: "salonreal", name: "Salón real", walls: [13.7, 10.4, 13.9, 20.3, 7.3, 1.8], damp: 0.43, real: true },
+  { id: "concierto1", name: "Sala de concierto 1", walls: [12.9, 14.0, 10.5, 20.8, 25.1, 1.8], damp: 0.73, real: true },
   { id: "concierto2", name: "Sala de concierto 2", walls: [14.1, 16.6, 13.3, 21.5, 28.3, 1.8], damp: 0.27 },
   { id: "salaacustica", name: "Sala acústica", walls: [20.2, 15.0, 21.5, 25.0, 12.7, 1.8], damp: 0.05 },
   { id: "grabaciongrande", name: "Grabación grande", walls: [15.7, 12.1, 15.9, 22.2, 19.3, 1.8], damp: 0.27 },

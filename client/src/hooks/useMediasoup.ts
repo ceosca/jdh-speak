@@ -552,20 +552,46 @@ export function useMediasoup() {
     );
   }, [store, spatialAutoSeatOf]);
 
-  // Load the room's chosen ambience into the shared reverb: build its impulse
-  // response and ramp the wet return. "seco" (or unknown) = fully dry.
-  const applyAmbience = useCallback(() => {
+  // Decoded real-space impulse responses, cached by preset id after the first
+  // fetch. `null` marks a load that failed, so we don't retry it every time.
+  const irCacheRef = useRef<Map<string, AudioBuffer | null>>(new Map());
+  const loadIr = useCallback(async (id: string): Promise<AudioBuffer | null> => {
+    const cache = irCacheRef.current;
+    if (cache.has(id)) return cache.get(id) ?? null;
+    try {
+      const res = await fetch(`/ir/${id}.ogg`);
+      const buf = await sharedAudioContext.decodeAudioData(await res.arrayBuffer());
+      cache.set(id, buf);
+      return buf;
+    } catch {
+      cache.set(id, null);
+      return null;
+    }
+  }, []);
+
+  // Load the room's chosen ambience into the shared reverb and ramp the wet
+  // return. A "real" preset loads a recorded impulse (genuine convolution of a
+  // real space); the rest build one from geometry. "seco"/unknown = fully dry.
+  const applyAmbience = useCallback(async () => {
     const g = outGraphRef.current;
     if (!g) return;
-    const amb = findAmbience(store.getState().ambience);
+    const id = store.getState().ambience;
+    const amb = findAmbience(id);
     const now = sharedAudioContext.currentTime;
     if (!amb || amb.id === "seco") {
       g.reverbWet.gain.setTargetAtTime(0, now, 0.05);
       return;
     }
-    g.reverbConvolver.buffer = buildImpulseResponse(sharedAudioContext, amb);
-    g.reverbWet.gain.setTargetAtTime(AMBIENCE_WET, now, 0.05);
-  }, [store]);
+    let buffer: AudioBuffer | null = null;
+    if (amb.real) buffer = await loadIr(amb.id);
+    // Fall back to the procedural impulse if there's no real IR (or it failed).
+    if (!buffer) buffer = buildImpulseResponse(sharedAudioContext, amb);
+    // The room may have changed ambience while the IR was loading — only apply
+    // if this is still the current one.
+    if (store.getState().ambience !== id) return;
+    g.reverbConvolver.buffer = buffer;
+    g.reverbWet.gain.setTargetAtTime(AMBIENCE_WET, sharedAudioContext.currentTime, 0.05);
+  }, [store, loadIr]);
 
   // Pick the room's ambience (Ctrl+Alt+A panel). Server-owned and broadcast:
   // every client applies it from the `ambience` handler.

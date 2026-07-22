@@ -45,6 +45,25 @@ Combina con el espacial (cada uno posicionado, todos en la misma sala).
 
 ---
 
+## 2026-07-21 (6)
+
+### `ambience` — impulsos REALES (convolución de espacios grabados) + fin de la saturación
+
+- **Saturación arreglada:** el "energía cruda" (convolver `normalize=false`) hacía
+  que las colas largas acumularan energía y **clipearan**. Volví a **normalizar** y
+  bajé el wet a 0.3 — limpio en vez de reventado.
+- **Impulsos reales:** 5 espacios ahora usan **IRs reales grabados** (convolución
+  de verdad, no sintético): **Catedral** (St Paul's), **Capilla** (Lady Chapel, St
+  Albans), **Sala de concierto 1** (Jack Lyons), **Salón real** (Central Hall),
+  **Escalera** (todos de **OpenAIR**, CC-BY, con crédito en el panel). Van
+  bundleados en `client/public/ir/*.ogg` (17–123 KB) y se cargan on-demand al
+  elegir el ambiente (con caché). Los demás siguen procedurales (los espacios
+  chicos/secos como auto/oficina no existen como IR real). Marcador `real` en
+  `lib/ambience.ts`; carga en `applyAmbience` (`useMediasoup.ts`).
+- **Deploy:** solo cliente → `git pull` + **`pnpm build`**.
+
+---
+
 ## 2026-07-21 (4)
 
 ### `feat/music-centered` — la música no sigue el 3D: queda centrada

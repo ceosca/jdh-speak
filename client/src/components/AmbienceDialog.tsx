@@ -73,6 +73,7 @@ export function AmbienceDialog({ onClose, onSetAmbience }: AmbienceDialogProps) 
       </select>
 
       <p className="mt-3 text-xs text-sonic-400">{m.ambience_dialog_help()}</p>
+      <p className="mt-1 text-xs text-sonic-500">{m.ambience_credit()}</p>
     </dialog>
   );
 }
