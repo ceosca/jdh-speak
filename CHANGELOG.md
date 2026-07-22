@@ -8,6 +8,43 @@
 
 ---
 
+## 2026-07-21 (8)
+
+### Ambientes desde el servidor + pack "Fields & Spaces" (exteriores)
+
+Ahora el menú de **Ambiente** (Ctrl+Alt+A) puede crecer **sin recompilar el
+cliente**: además de los espacios que vienen incluidos (los de OpenAIR en
+`client/public/ir/`), el servidor sirve **impulsos extra** que se dejan en una
+carpeta. Así sumamos el pack **Fields & Spaces** que pasó Cristian (exteriores:
+callejón, cañón, ciudad, bosque, montaña, cantera, pueblo, etc.).
+
+- **Carpeta del servidor** (`AMBIENCE_IR_DIR`, por defecto **`client/public/ir/`**
+  — la MISMA donde ya están los impulsos incluidos): se dejan ahí archivos de
+  audio (wav/ogg/flac/…) **al lado de los incluidos** y **el nombre del archivo es
+  el nombre que aparece en el menú**. `GET /api/ambiences` lista `{id,name}` (id =
+  slug del nombre, mtime-cache como `tv/db.json`); `GET /api/ambiences/file?id=…`
+  sirve el archivo **por id** (solo ids listados → sin traversal de rutas). Los
+  incluidos aparecen en esa lista pero el cliente los **de-duplica** (ya están en
+  el menú por `lib/ambience.ts`). Server: `server/src/index.ts`. Los `.wav`/`.flac`
+  crudos en esa carpeta están **gitignored** (para no commitear un pack pesado).
+- **Cliente**: cada uno hace `fetch('/api/ambiences')` al entrar (así **todos**
+  pueden resolver un ambiente del servidor aunque nunca abran el panel, cuando
+  otro lo elige). `AmbienceDialog` muestra **incluidos + del servidor**;
+  `ambienceIrUrl(id)` decide de dónde cargar el impulso (`/ir/<id>.ogg` incluido,
+  o `/api/ambiences/file?id=…` del servidor). Store: `serverAmbiences`. El id del
+  ambiente que se transmite subió de 32 a 128 chars (los slugs son más largos).
+- **Pack Fields & Spaces**: son **123 WAV estéreo 24-bit/48kHz (303 MB)**,
+  exteriores (con variantes de distancia; ~32 lugares distintos). Demasiado para
+  el repo → van **hospedados**. Cristian ya los puso en la Raspberry en
+  `client/public/ir/`, así que con este cambio **aparecen solos** en el menú
+  (nombres = nombre de archivo, en inglés). **Para Cristian**: `git pull` +
+  **reiniciar `jdh-speak`** (es cambio de servidor). Caveat: dejar los `.wav`
+  crudos en `client/public/` hace que `pnpm build` los copie a `client/dist`
+  (303 MB, build lento en la Pi) — si molesta, pasarlos a **ogg** (mucho más
+  livianos) o moverlos fuera de `public/` y apuntar `AMBIENCE_IR_DIR` ahí.
+
+---
+
 ## 2026-07-21 (3)
 
 ### `feat/ambience` — Ambientes: efecto de espacio (reverb) para toda la sala

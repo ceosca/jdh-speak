@@ -268,6 +268,25 @@ export function Room() {
     if (joinState === "joined") postToHost("videoConferenceJoined");
   }, [joinState]);
 
+  // Fetch the operator's extra ambiences (server IR folder) once, so every
+  // client can resolve a server-hosted ambience id — even one they never opened
+  // the picker to see — when someone else drops the room into it.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/ambiences")
+      .then((r) => (r.ok ? r.json() : { ambiences: [] }))
+      .then((data: { ambiences?: { id: string; name: string }[] }) => {
+        if (!cancelled && Array.isArray(data.ambiences))
+          useRoomStore.getState().setServerAmbiences(data.ambiences);
+      })
+      .catch(() => {
+        /* extras are optional */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     if (joinState !== "joined") return;
     const known = knownPeersRef.current;

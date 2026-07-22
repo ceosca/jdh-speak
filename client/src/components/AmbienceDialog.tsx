@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { AudioWaveform, X } from "lucide-react";
 import { useRoomStore } from "../stores/room";
 import { AMBIENCES, ambienceName } from "../lib/ambience";
@@ -21,6 +21,14 @@ export function AmbienceDialog({ onClose, onSetAmbience }: AmbienceDialogProps) 
   const dialogRef = useRef<HTMLDialogElement>(null);
   const selectRef = useRef<HTMLSelectElement>(null);
   const ambience = useRoomStore((s) => s.ambience);
+  const serverAmbiences = useRoomStore((s) => s.serverAmbiences);
+
+  // Built-in spaces first, then the operator's extra IRs (from the server).
+  // Drop any server entry whose id collides with a built-in so it can't shadow it.
+  const options = useMemo(() => {
+    const builtinIds = new Set(AMBIENCES.map((a) => a.id));
+    return [...AMBIENCES, ...serverAmbiences.filter((a) => !builtinIds.has(a.id))];
+  }, [serverAmbiences]);
 
   useEffect(() => {
     const dlg = dialogRef.current;
@@ -65,9 +73,9 @@ export function AmbienceDialog({ onClose, onSetAmbience }: AmbienceDialogProps) 
         onChange={(e) => onSetAmbience(e.target.value)}
         className="w-full rounded-lg border border-sonic-600 bg-sonic-700 px-2.5 py-1.5 text-sm text-sonic-100 focus:border-sonic-accent focus:outline-none"
       >
-        {AMBIENCES.map((a) => (
+        {options.map((a) => (
           <option key={a.id} value={a.id}>
-            {ambienceName(a.id)}
+            {ambienceName(a.id, serverAmbiences)}
           </option>
         ))}
       </select>

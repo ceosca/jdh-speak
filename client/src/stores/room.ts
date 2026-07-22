@@ -207,6 +207,10 @@ interface RoomState {
   // dry/off). ROOM state (server-owned, broadcast): whoever picks it drops
   // EVERYONE into that space, so the scene is shared. See lib/ambience.
   ambience: string;
+  // Extra ambiences hosted by the server (operator's IR folder, AMBIENCE_IR_DIR)
+  // fetched once from /api/ambiences and merged into the menu on top of the
+  // built-ins. Each has its file at /api/ambiences/file?id=<id>. See lib/ambience.
+  serverAmbiences: { id: string; name: string }[];
   // Play shared tab/system audio out your selected playback device too (so you
   // hear it where you listen). Off by default; persisted. May echo if the shared
   // tab already plays on that same device.
@@ -286,6 +290,7 @@ interface RoomState {
   setSpatialPositions: (positions: Record<string, SpatialSeat>) => void;
   setSpatialAutoAll: (enabled: boolean) => void;
   setAmbience: (id: string) => void;
+  setServerAmbiences: (list: { id: string; name: string }[]) => void;
   setSecondaryEnabled: (enabled: boolean) => void;
   setSecondaryDeviceId: (deviceId: string) => void;
   setSecondaryMonitor: (monitor: boolean) => void;
@@ -341,6 +346,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   spatialPositions: {},
   spatialAutoAll: false,
   ambience: "seco",
+  serverAmbiences: [],
   shareMonitor: loadString(SHARE_MONITOR_KEY) === "true",
   secondaryEnabled: loadString(SECONDARY_ENABLED_KEY) === "true",
   secondaryDeviceId: loadString(SECONDARY_DEVICE_KEY),
@@ -436,6 +442,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setSpatialPositions: (spatialPositions) => set({ spatialPositions }),
   setSpatialAutoAll: (spatialAutoAll) => set({ spatialAutoAll }),
   setAmbience: (ambience) => set({ ambience }),
+  setServerAmbiences: (serverAmbiences) => set({ serverAmbiences }),
   setSpatialAudio: (spatialAudio) => {
     set({ spatialAudio });
   },

@@ -8,7 +8,7 @@ import { isIOS, getMicrophoneStream } from "../lib/microphone";
 import { playCue, preloadCueSamples, playTypingTick } from "../lib/sounds";
 import { getIceServers } from "../lib/ice";
 import { autoSeat, seatToPoint, type SpatialSeat } from "../lib/spatial";
-import { AMBIENCE_WET, ambienceName, findAmbience } from "../lib/ambience";
+import { AMBIENCE_WET, ambienceName, ambienceIrUrl } from "../lib/ambience";
 import { parseClearKey, type Channel } from "../lib/tv";
 import {
   flattenEpisodes,
@@ -555,11 +555,11 @@ export function useMediasoup() {
   // Decoded real-space impulse responses, cached by preset id after the first
   // fetch. `null` marks a load that failed, so we don't retry it every time.
   const irCacheRef = useRef<Map<string, AudioBuffer | null>>(new Map());
-  const loadIr = useCallback(async (id: string): Promise<AudioBuffer | null> => {
+  const loadIr = useCallback(async (id: string, url: string): Promise<AudioBuffer | null> => {
     const cache = irCacheRef.current;
     if (cache.has(id)) return cache.get(id) ?? null;
     try {
-      const res = await fetch(`/ir/${id}.ogg`);
+      const res = await fetch(url);
       const buf = await sharedAudioContext.decodeAudioData(await res.arrayBuffer());
       cache.set(id, buf);
       return buf;
@@ -570,19 +570,20 @@ export function useMediasoup() {
   }, []);
 
   // Load the room's chosen ambience into the shared reverb and ramp the wet
-  // return. A "real" preset loads a recorded impulse (genuine convolution of a
-  // real space); the rest build one from geometry. "seco"/unknown = fully dry.
+  // return. Every ambience is a recorded impulse (genuine convolution of a real
+  // space): built-ins bundled at /ir/<id>.ogg, extras streamed from the server's
+  // IR folder (see ambienceIrUrl). "seco"/unknown = fully dry.
   const applyAmbience = useCallback(async () => {
     const g = outGraphRef.current;
     if (!g) return;
     const id = store.getState().ambience;
-    const amb = findAmbience(id);
+    const url = ambienceIrUrl(id, store.getState().serverAmbiences);
     const now = sharedAudioContext.currentTime;
-    if (!amb || amb.id === "seco") {
+    if (!url) {
       g.reverbWet.gain.setTargetAtTime(0, now, 0.05);
       return;
     }
-    const buffer = await loadIr(amb.id);
+    const buffer = await loadIr(id, url);
     // The room may have changed ambience while the IR was loading — only apply
     // if this is still the current one.
     if (store.getState().ambience !== id) return;
@@ -1536,7 +1537,14 @@ export function useMediasoup() {
       socket.on("ambience", ({ id, by }: { id: string; by: string }) => {
         store.getState().setAmbience(id);
         applyAmbience();
-        store.getState().announceEvent(m.ambience_set_by({ name: by, ambience: ambienceName(id) }));
+        store
+          .getState()
+          .announceEvent(
+            m.ambience_set_by({
+              name: by,
+              ambience: ambienceName(id, store.getState().serverAmbiences),
+            }),
+          );
       });
 
       // Someone moved a seat in the 3D field (room-wide) — re-apply for everyone.

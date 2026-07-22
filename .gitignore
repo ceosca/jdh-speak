@@ -62,3 +62,12 @@ sounds/*
 
 # Serieteca reference material (series.json is fetched from archive.org at runtime)
 /serieteca/
+
+# Extra ambience impulse responses live next to the built-ins in
+# client/public/ir/ (AMBIENCE_IR_DIR). The built-in .ogg impulses are tracked;
+# ignore heavy raw packs an operator drops there so they can't be committed by
+# accident (they'd bloat the repo and client/dist). See server loadAmbiences.
+client/public/ir/*.wav
+client/public/ir/*.flac
+client/public/ir/*.aac
+client/public/ir/*.m4a

@@ -1,7 +1,7 @@
 import express from "express";
 import { createServer } from "node:http";
 import { createReadStream, readFileSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createWorker } from "mediasoup";
@@ -90,6 +90,68 @@ async function loadTvChannels(): Promise<Channel[]> {
     return channels;
   } catch {
     return []; // absent/unreadable — TV is optional
+  }
+}
+
+// Extra acoustic ambiences (reverb impulse responses) the operator drops into a
+// folder, so the ambience menu can grow WITHOUT touching the code — the same
+// "operator file" model as tv/db.json and sounds/. The folder is the SAME one
+// that holds the bundled built-ins, `client/public/ir/` (override with
+// AMBIENCE_IR_DIR), so an operator can just drop impulse files next to them and
+// they appear. Any browser-decodable audio file counts (wav/ogg/flac/…); the
+// file's own name becomes the menu name. Built-ins (whose ids match a name in
+// client/src/lib/ambience.ts) are de-duplicated client-side, so listing them
+// here too is harmless. NOTE: raw multi-hundred-MB packs left in public/ also
+// get copied into client/dist on `pnpm build` — prefer compact ogg here.
+const AMBIENCE_IR_DIR =
+  process.env.AMBIENCE_IR_DIR?.trim() || path.resolve(__dirname, "../../client/public/ir");
+const AMBIENCE_EXTS = new Set([".wav", ".ogg", ".oga", ".opus", ".flac", ".mp3", ".m4a", ".aac"]);
+
+// slug(name) → a stable, URL/broadcast-safe id derived from the filename.
+function ambienceSlug(base: string): string {
+  return (
+    base
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "") // strip accents
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 120) || "ir"
+  );
+}
+
+type AmbienceEntry = { id: string; name: string };
+let ambienceCache: { mtimeMs: number; list: AmbienceEntry[]; byId: Map<string, string> } | null =
+  null;
+
+// List the extra IR files, cached by the directory's mtime (a new file bumps it).
+// Returns the menu entries plus an id→filename map used to serve each file.
+async function loadAmbiences(): Promise<{ list: AmbienceEntry[]; byId: Map<string, string> }> {
+  try {
+    const s = await stat(AMBIENCE_IR_DIR);
+    if (ambienceCache && ambienceCache.mtimeMs === s.mtimeMs) return ambienceCache;
+    const names = await readdir(AMBIENCE_IR_DIR, { withFileTypes: true });
+    const byId = new Map<string, string>();
+    const list: AmbienceEntry[] = [];
+    for (const dirent of names) {
+      if (!dirent.isFile()) continue;
+      const file = dirent.name;
+      if (file.startsWith(".")) continue;
+      const ext = path.extname(file).toLowerCase();
+      if (!AMBIENCE_EXTS.has(ext)) continue;
+      const base = file.slice(0, file.length - ext.length);
+      let id = ambienceSlug(base);
+      // De-collide slugs that map to the same id (e.g. same name, diff ext).
+      let n = 2;
+      while (byId.has(id)) id = `${ambienceSlug(base)}-${n++}`;
+      byId.set(id, file);
+      list.push({ id, name: base });
+    }
+    list.sort((a, b) => a.name.localeCompare(b.name, "es"));
+    ambienceCache = { mtimeMs: s.mtimeMs, list, byId };
+    return ambienceCache;
+  } catch {
+    return { list: [], byId: new Map() }; // absent/unreadable — extras are optional
   }
 }
 
@@ -228,6 +290,29 @@ async function main() {
   // Operator-managed live-TV channel list (see docs/superpowers/specs/...tv...).
   app.get("/api/tv-channels", async (_req, res) => {
     res.json(await loadTvChannels());
+  });
+
+  // Extra acoustic ambiences (operator-hosted reverb IRs, see AMBIENCE_IR_DIR).
+  // The client merges these into the ambience menu on top of the built-ins.
+  app.get("/api/ambiences", async (_req, res) => {
+    const { list } = await loadAmbiences();
+    res.json({ ambiences: list });
+  });
+
+  // Serve one extra IR file by its id. The id must be one we listed (looked up
+  // in the cached map), so there's no path-traversal surface — the client never
+  // names a raw path, only an id from /api/ambiences.
+  app.get("/api/ambiences/file", async (req, res) => {
+    const id = typeof req.query.id === "string" ? req.query.id : "";
+    const { byId } = await loadAmbiences();
+    const file = byId.get(id);
+    if (!file) {
+      res.status(404).json({ error: "No such ambience" });
+      return;
+    }
+    res.sendFile(file, { root: AMBIENCE_IR_DIR, dotfiles: "deny" }, (err) => {
+      if (err && !res.headersSent) res.status(404).end();
+    });
   });
 
   // Recording download — mixes all participants' captured audio into a single

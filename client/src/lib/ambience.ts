@@ -55,6 +55,22 @@ export function findAmbience(id: string): Ambience | undefined {
   return AMBIENCES.find((a) => a.id === id);
 }
 
-export function ambienceName(id: string): string {
-  return findAmbience(id)?.name ?? "Seco";
+// Name to show for an ambience id. Built-ins have curated Spanish names; extras
+// hosted by the server (see `serverAmbiences` in the store) fall back to the
+// name the server sent (their filename), then the raw id.
+export function ambienceName(id: string, serverAmbiences: Ambience[] = []): string {
+  if (id === "seco") return "Seco";
+  return (
+    findAmbience(id)?.name ?? serverAmbiences.find((a) => a.id === id)?.name ?? id
+  );
+}
+
+// Where to fetch the impulse response for an id, or null if it's dry/unknown.
+// Built-ins are bundled at /ir/<id>.ogg; server extras stream from the API.
+export function ambienceIrUrl(id: string, serverAmbiences: Ambience[] = []): string | null {
+  if (!id || id === "seco") return null;
+  if (findAmbience(id)) return `/ir/${id}.ogg`;
+  if (serverAmbiences.some((a) => a.id === id))
+    return `/api/ambiences/file?id=${encodeURIComponent(id)}`;
+  return null;
 }
