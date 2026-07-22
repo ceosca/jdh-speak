@@ -8,7 +8,7 @@ import { isIOS, getMicrophoneStream } from "../lib/microphone";
 import { playCue, preloadCueSamples, playTypingTick } from "../lib/sounds";
 import { getIceServers } from "../lib/ice";
 import { autoSeat, seatToPoint, type SpatialSeat } from "../lib/spatial";
-import { AMBIENCE_WET, ambienceName, buildImpulseResponse, findAmbience } from "../lib/ambience";
+import { AMBIENCE_WET, ambienceName, findAmbience } from "../lib/ambience";
 import { parseClearKey, type Channel } from "../lib/tv";
 import {
   flattenEpisodes,
@@ -582,13 +582,15 @@ export function useMediasoup() {
       g.reverbWet.gain.setTargetAtTime(0, now, 0.05);
       return;
     }
-    let buffer: AudioBuffer | null = null;
-    if (amb.real) buffer = await loadIr(amb.id);
-    // Fall back to the procedural impulse if there's no real IR (or it failed).
-    if (!buffer) buffer = buildImpulseResponse(sharedAudioContext, amb);
+    const buffer = await loadIr(amb.id);
     // The room may have changed ambience while the IR was loading — only apply
     // if this is still the current one.
     if (store.getState().ambience !== id) return;
+    if (!buffer) {
+      // Impulse missing/failed to load → stay dry (no synthetic fallback).
+      g.reverbWet.gain.setTargetAtTime(0, sharedAudioContext.currentTime, 0.05);
+      return;
+    }
     g.reverbConvolver.buffer = buffer;
     g.reverbWet.gain.setTargetAtTime(AMBIENCE_WET, sharedAudioContext.currentTime, 0.05);
   }, [store, loadIr]);

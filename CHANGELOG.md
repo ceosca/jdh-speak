@@ -45,6 +45,23 @@ Combina con el espacial (cada uno posicionado, todos en la misma sala).
 
 ---
 
+## 2026-07-21 (7)
+
+### `ambience` — banco 100% REAL: 31 espacios grabados, fuera todo lo procedural
+
+El motor procedural no daba realismo. Ahora **todos** los ambientes son
+**impulsos reales grabados** (convolución de lugares de verdad) — se borró el
+generador sintético entero. 31 espacios de **OpenAIR** (CC-BY, crédito en el
+panel), bundleados en `client/public/ir/*.ogg` (~1,1 MB total, carga on-demand):
+Catedral, Capilla, Iglesia (x2), Sala de concierto, Auditorio, Teatro, Salón
+grande / de club / de mármol, Estudio, Sala, Aula, Atrio, Museo, Escalera, Túnel,
+Mina, Cueva, Tumba, Cámara neolítica, Torre, Mausoleo, Reactor nuclear, Depósito,
+Polideportivo, Mazmorra, Cancha techada, Horno de cal, Bosque (verano/nieve).
+`lib/ambience.ts` quedó reducido a la lista + carga en `applyAmbience`. Si un
+impulso no carga, queda seco (sin fallback sintético). Solo cliente → `pnpm build`.
+
+---
+
 ## 2026-07-21 (6)
 
 ### `ambience` — impulsos REALES (convolución de espacios grabados) + fin de la saturación
