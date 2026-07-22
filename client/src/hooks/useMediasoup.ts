@@ -640,10 +640,10 @@ export function useMediasoup() {
     // picked (reverbWet 0). applyAmbience loads the impulse + sets the wet level.
     const reverbInput = ctx.createGain();
     const reverbConvolver = ctx.createConvolver();
-    // Don't let the convolver renormalise: our impulses are peak-normalised in
-    // buildImpulseResponse, so bigger rooms keep more tail energy (louder, more
-    // present) — the "raw energy" feel — while the peak cap prevents clipping.
-    reverbConvolver.normalize = false;
+    // Normalise the impulse (the default): keeps reverb loudness consistent
+    // across rooms regardless of tail length. "Raw energy" (normalize=false) let
+    // long tails accumulate huge energy and SATURATE — this is the clean setting.
+    reverbConvolver.normalize = true;
     const reverbWet = ctx.createGain();
     reverbWet.gain.value = 0;
     reverbInput.connect(reverbConvolver);
