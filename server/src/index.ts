@@ -93,18 +93,15 @@ async function loadTvChannels(): Promise<Channel[]> {
   }
 }
 
-// Extra acoustic ambiences (reverb impulse responses) the operator drops into a
+// EXTRA acoustic ambiences (reverb impulse responses) an operator drops into a
 // folder, so the ambience menu can grow WITHOUT touching the code — the same
-// "operator file" model as tv/db.json and sounds/. The folder is the SAME one
-// that holds the bundled built-ins, `client/public/ir/` (override with
-// AMBIENCE_IR_DIR), so an operator can just drop impulse files next to them and
-// they appear. Any browser-decodable audio file counts (wav/ogg/flac/…); the
-// file's own name becomes the menu name. Built-ins (whose ids match a name in
-// client/src/lib/ambience.ts) are de-duplicated client-side, so listing them
-// here too is harmless. NOTE: raw multi-hundred-MB packs left in public/ also
-// get copied into client/dist on `pnpm build` — prefer compact ogg here.
-const AMBIENCE_IR_DIR =
-  process.env.AMBIENCE_IR_DIR?.trim() || path.resolve(__dirname, "../../client/public/ir");
+// "operator file" model as tv/db.json and sounds/. This is a DEDICATED folder,
+// separate from the bundled built-ins (client/public/ir/): a repo-root `ir/`
+// (gitignored, empty by default; override with AMBIENCE_IR_DIR). Keeping it
+// separate means these extras never collide with the built-ins and a leftover
+// pack in public/ can't leak into the menu. Any browser-decodable audio file
+// counts (wav/ogg/flac/…); the file's own name becomes the menu name.
+const AMBIENCE_IR_DIR = process.env.AMBIENCE_IR_DIR?.trim() || path.resolve(__dirname, "../../ir");
 const AMBIENCE_EXTS = new Set([".wav", ".ogg", ".oga", ".opus", ".flac", ".mp3", ".m4a", ".aac"]);
 
 // slug(name) → a stable, URL/broadcast-safe id derived from the filename.

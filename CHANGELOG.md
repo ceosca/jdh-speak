@@ -18,15 +18,15 @@ cliente**: además de los espacios que vienen incluidos (los de OpenAIR en
 carpeta. Así sumamos el pack **Fields & Spaces** que pasó Cristian (exteriores:
 callejón, cañón, ciudad, bosque, montaña, cantera, pueblo, etc.).
 
-- **Carpeta del servidor** (`AMBIENCE_IR_DIR`, por defecto **`client/public/ir/`**
-  — la MISMA donde ya están los impulsos incluidos): se dejan ahí archivos de
-  audio (wav/ogg/flac/…) **al lado de los incluidos** y **el nombre del archivo es
-  el nombre que aparece en el menú**. `GET /api/ambiences` lista `{id,name}` (id =
-  slug del nombre, mtime-cache como `tv/db.json`); `GET /api/ambiences/file?id=…`
-  sirve el archivo **por id** (solo ids listados → sin traversal de rutas). Los
-  incluidos aparecen en esa lista pero el cliente los **de-duplica** (ya están en
-  el menú por `lib/ambience.ts`). Server: `server/src/index.ts`. Los `.wav`/`.flac`
-  crudos en esa carpeta están **gitignored** (para no commitear un pack pesado).
+- **Carpeta del servidor** para extras (`AMBIENCE_IR_DIR`, por defecto una carpeta
+  **`ir/`** en la raíz del repo — gitignored, vacía; **separada** de los incluidos
+  para que no choquen): se dejan ahí archivos de audio (wav/ogg/flac/…) y **el
+  nombre del archivo es el nombre que aparece en el menú**. `GET /api/ambiences`
+  lista `{id,name}` (id = slug del nombre, mtime-cache como `tv/db.json`);
+  `GET /api/ambiences/file?id=…` sirve el archivo **por id** (solo ids listados →
+  sin traversal). El cliente los suma al menú arriba de los incluidos y **de-duplica**
+  por id. Server: `server/src/index.ts`. (Para el pack de Cristian **no** usamos
+  esto — lo curamos como incluidos, ver abajo.)
 - **Cliente**: cada uno hace `fetch('/api/ambiences')` al entrar (así **todos**
   pueden resolver un ambiente del servidor aunque nunca abran el panel, cuando
   otro lo elige). `AmbienceDialog` muestra **incluidos + del servidor**;
