@@ -85,7 +85,6 @@ export const AMBIENCES: Ambience[] = [
 
 export const DEFAULT_AMBIENCE = "seco";
 // Wet mix (how much reverb returns into the speakers). Clearly present.
-export const AMBIENCE_WET = 0.55;
 
 export function findAmbience(id: string): Ambience | undefined {
   return AMBIENCES.find((a) => a.id === id);

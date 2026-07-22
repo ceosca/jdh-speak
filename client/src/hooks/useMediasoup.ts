@@ -8,7 +8,8 @@ import { isIOS, getMicrophoneStream } from "../lib/microphone";
 import { playCue, preloadCueSamples, playTypingTick } from "../lib/sounds";
 import { getIceServers } from "../lib/ice";
 import { autoSeat, seatToPoint, type SpatialSeat } from "../lib/spatial";
-import { AMBIENCE_WET, ambienceName, ambienceIrUrl } from "../lib/ambience";
+import { ambienceName, ambienceIrUrl } from "../lib/ambience";
+import { analyseImpulse, buildReverbImpulse, wetGainFor } from "../lib/ir-analysis";
 import { parseClearKey, type Channel } from "../lib/tv";
 import {
   flattenEpisodes,
@@ -555,6 +556,9 @@ export function useMediasoup() {
   // Decoded real-space impulse responses, cached by preset id after the first
   // fetch. `null` marks a load that failed, so we don't retry it every time.
   const irCacheRef = useRef<Map<string, AudioBuffer | null>>(new Map());
+  // Prepared reverb impulses: direct removed + unit-energy normalised, with the
+  // wet gain derived from the file's own measurements (see lib/ir-analysis).
+  const irPreparedRef = useRef<Map<string, { buffer: AudioBuffer; gain: number }>>(new Map());
   const loadIr = useCallback(async (id: string, url: string): Promise<AudioBuffer | null> => {
     const cache = irCacheRef.current;
     if (cache.has(id)) return cache.get(id) ?? null;
@@ -592,8 +596,32 @@ export function useMediasoup() {
       g.reverbWet.gain.setTargetAtTime(0, sharedAudioContext.currentTime, 0.05);
       return;
     }
-    g.reverbConvolver.buffer = buffer;
-    g.reverbWet.gain.setTargetAtTime(AMBIENCE_WET, sharedAudioContext.currentTime, 0.05);
+    // Measure THIS impulse and derive its wet level from the file itself
+    // (ISO 3382-1 metrics — see lib/ir-analysis.ts). Replaces the single
+    // hand-tuned constant that every space used to share: across this library
+    // the measured DRR spans ~34 dB, i.e. spaces whose natural reverberation
+    // differs by ~50x were all getting the same dose, which is why small rooms
+    // sounded artificial. Cached per impulse, so it's computed once.
+    let prepared = irPreparedRef.current.get(id);
+    if (!prepared) {
+      const analysis = analyseImpulse(buffer);
+      const { gain, source } = wetGainFor(analysis);
+      prepared = { buffer: buildReverbImpulse(sharedAudioContext, buffer, analysis), gain };
+      irPreparedRef.current.set(id, prepared);
+      console.log(
+        `[ambience] ${id}: RT60=${analysis.rt60?.toFixed(2) ?? "—"}s ` +
+          `DRR=${analysis.drr?.toFixed(1) ?? "—"}dB C50=${analysis.c50?.toFixed(1) ?? "—"}dB ` +
+          `SNR=${analysis.snr.toFixed(0)}dB fit=${analysis.decayFit.toFixed(3)} ` +
+          `→ wet=${gain.toFixed(3)} (via ${source})`,
+      );
+    }
+    // normalize=false: the impulse is normalised to unit energy by
+    // buildReverbImpulse, which is what makes the derived gain exact. Leaving
+    // the browser's own normalisation on would rescale by an unknown factor and
+    // put the guesswork straight back in.
+    g.reverbConvolver.normalize = false;
+    g.reverbConvolver.buffer = prepared.buffer;
+    g.reverbWet.gain.setTargetAtTime(prepared.gain, sharedAudioContext.currentTime, 0.05);
   }, [store, loadIr]);
 
   // Pick the room's ambience (Ctrl+Alt+A panel). Server-owned and broadcast:
