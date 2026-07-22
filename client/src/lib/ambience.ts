@@ -78,7 +78,7 @@ export const AMBIENCES: Ambience[] = [
 
 export const DEFAULT_AMBIENCE = "seco";
 // Wet mix (how much reverb returns into the speakers). Bold — this is for a party.
-export const AMBIENCE_WET = 0.3;
+export const AMBIENCE_WET = 0.55;
 
 const SPEED_OF_SOUND = 343; // m/s
 const IR_PEAK = 0.7; // peak-normalise each impulse so the raw energy can't clip
