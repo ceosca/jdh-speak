@@ -31,6 +31,13 @@ export const AMBIENCES: Ambience[] = [
   { id: "estudio", name: "Estudio (live room)" },
   { id: "sala", name: "Sala" },
   { id: "aula", name: "Aula" },
+  // Vehículos / espacios cotidianos. El más íntimo de toda la colección
+  // (RT60 ≈ 0.09 s — el siguiente más seco es "estudio" con 0.21 s), que es
+  // justo lo que faltaba: casi todo aquí son espacios grandes.
+  // Interior de un Mini Convertible aparcado, grabado con una Zoom H1n.
+  // Fuente: freesound.org/s/555787 por jamespeacock4616 — Creative Commons 0
+  // (dominio público), así que se puede redistribuir desde el servidor.
+  { id: "coche", name: "Coche (interior)" },
   { id: "atrio", name: "Atrio" },
   { id: "museo", name: "Museo (hangar)" },
   { id: "escalera", name: "Escalera" },
