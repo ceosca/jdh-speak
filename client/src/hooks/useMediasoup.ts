@@ -141,6 +141,14 @@ const AUDIO_EXTENSIONS = new Set(["mp3", "m4a", "aac", "ogg", "opus", "wav", "fl
 // Cap a P2P sender's outgoing bitrate directly on the encoder via setParameters
 // (Chrome ignores SDP bitrate caps for the P2P audio sender). 128+ = original
 // (remove the cap).
+// Jitter-buffer floor (seconds) for received audio, via each track's
+// playoutDelayHint. Was 0 (minimum latency, but no cushion), which drops audio
+// on the slightest packet reordering / variable delay — the "choppy at times" on
+// an otherwise-working P2P link between two peers. A small floor lets the
+// browser's adaptive buffer (NetEQ) absorb those short jitter bursts. Receiver
+// side only, applied to BOTH P2P and SFU received tracks. Tunable.
+const JITTER_BUFFER_HINT = 0.05;
+
 async function setSenderMaxBitrate(
   sender: RTCRtpSender | null | undefined,
   kbps: number,
@@ -1058,7 +1066,7 @@ export function useMediasoup() {
       pc.ontrack = (e) => {
         const remoteTrack = e.track;
         if ("playoutDelayHint" in remoteTrack) {
-          (remoteTrack as unknown as Record<string, number>).playoutDelayHint = 0;
+          (remoteTrack as unknown as Record<string, number>).playoutDelayHint = JITTER_BUFFER_HINT;
         }
         const pipeline = createAudioPipeline(remoteTrack);
         // Respect deafen / per-peer volume on a (re)built P2P pipeline too —
@@ -1155,7 +1163,7 @@ export function useMediasoup() {
       });
 
       if ("playoutDelayHint" in consumer.track) {
-        (consumer.track as unknown as Record<string, number>).playoutDelayHint = 0;
+        (consumer.track as unknown as Record<string, number>).playoutDelayHint = JITTER_BUFFER_HINT;
       }
 
       const pipeline = createAudioPipeline(consumer.track);
