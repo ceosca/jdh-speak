@@ -3024,6 +3024,76 @@ export function useMediasoup() {
     void emit("set-bitrate", { kbps: next }).catch(() => {});
   }, [emit]);
 
+  // Diagnostic latency read-out (Ctrl+Alt+L). Measures the REAL numbers from
+  // WebRTC stats per participant and announces them on the SR live region, so a
+  // blind user gets the figures without the console. Read-only — changes nothing.
+  //   red    = network round-trip (candidate-pair currentRoundTripTime)
+  //   buffer = our receive jitter buffer (jitterBufferDelay / emittedCount) —
+  //            the tunable we set with JITTER_BUFFER_HINT
+  //   jitter = inbound-rtp jitter
+  //   pérdida = packetsLost / (lost + received)
+  // Not shown: the fixed codec + audio-device pipeline (~40–60 ms) that stats
+  // can't see; it's the browser floor we can't reduce.
+  const announceLatency = useCallback(async () => {
+    const peers = store.getState().peers;
+    const ms = (s: number | undefined) => (typeof s === "number" ? Math.round(s * 1000) : null);
+    const parts: string[] = [];
+
+    const gather = async (peerId: string, getStats: () => Promise<RTCStatsReport>) => {
+      const name = peers.get(peerId)?.displayName ?? "?";
+      let rtt: number | undefined;
+      let jbDelay = 0;
+      let jbCount = 0;
+      let jitter: number | undefined;
+      let lost = 0;
+      let recv = 0;
+      try {
+        const stats = await getStats();
+        stats.forEach((r: Record<string, unknown>) => {
+          if (
+            r.type === "candidate-pair" &&
+            r.nominated &&
+            typeof r.currentRoundTripTime === "number"
+          ) {
+            rtt = r.currentRoundTripTime;
+          }
+          if (r.type === "remote-inbound-rtp" && typeof r.roundTripTime === "number") {
+            rtt = rtt ?? r.roundTripTime;
+          }
+          if (r.type === "inbound-rtp" && r.kind === "audio") {
+            jbDelay = (r.jitterBufferDelay as number) ?? 0;
+            jbCount = (r.jitterBufferEmittedCount as number) ?? 0;
+            jitter = r.jitter as number;
+            lost = (r.packetsLost as number) ?? 0;
+            recv = (r.packetsReceived as number) ?? 0;
+          }
+        });
+      } catch {
+        return;
+      }
+      const buffer = jbCount > 0 ? jbDelay / jbCount : undefined;
+      const lossPct = lost + recv > 0 ? (lost / (lost + recv)) * 100 : 0;
+      parts.push(
+        `${name}: red ${ms(rtt) ?? "?"} ms, buffer ${ms(buffer) ?? "?"} ms, ` +
+          `jitter ${ms(jitter) ?? "?"} ms, pérdida ${lossPct.toFixed(1)}%`,
+      );
+    };
+
+    if (modeRef.current === "sfu") {
+      for (const [peerId, pa] of peerAudiosRef.current) {
+        if (pa.consumer) await gather(peerId, () => pa.consumer!.getStats());
+      }
+    } else {
+      for (const [peerId, pc] of p2pConnectionsRef.current) {
+        await gather(peerId, () => pc.getStats());
+      }
+    }
+
+    store
+      .getState()
+      .announce(parts.length ? `Latencia. ${parts.join(". ")}` : "No hay conexiones que medir");
+  }, [store]);
+
   // Live mic-gain control: persists the value and ramps the outgoing gain node.
   const setMicGain = useCallback(
     (gain: number) => {
@@ -3193,6 +3263,7 @@ export function useMediasoup() {
     stopRecording,
     rename,
     cycleRoomBitrate,
+    announceLatency,
     setPeerVolume,
     setMicGain,
     sendChatMessage,

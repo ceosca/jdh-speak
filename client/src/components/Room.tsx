@@ -84,6 +84,7 @@ export function Room() {
     toggleRecording,
     rename,
     cycleRoomBitrate,
+    announceLatency,
     setPeerVolume,
     setMicGain,
     sendChatMessage,
@@ -425,6 +426,14 @@ export function Room() {
         return;
       }
 
+      // Latency read-out: Ctrl+Alt+L announces the real per-peer figures (network
+      // RTT, jitter buffer, jitter, loss) on the live region. Diagnostic only.
+      if (e.altKey && e.ctrlKey && (e.code === "KeyL" || e.key === "l" || e.key === "L")) {
+        e.preventDefault();
+        void announceLatency();
+        return;
+      }
+
       // Player focus: Ctrl+Alt+P moves keyboard focus to the player container if
       // it's showing (open or streaming); otherwise announces nothing's playing.
       if (e.altKey && e.ctrlKey && (e.code === "KeyP" || e.key === "p" || e.key === "P")) {
@@ -468,6 +477,7 @@ export function Room() {
     toggleAudioShare,
     toggleRecording,
     cycleRoomBitrate,
+    announceLatency,
     playerTogglePlay,
     playerSeekBy,
     serieNextEpisode,
