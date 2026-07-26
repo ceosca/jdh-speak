@@ -141,6 +141,14 @@ const AUDIO_EXTENSIONS = new Set(["mp3", "m4a", "aac", "ogg", "opus", "wav", "fl
 // Cap a P2P sender's outgoing bitrate directly on the encoder via setParameters
 // (Chrome ignores SDP bitrate caps for the P2P audio sender). 128+ = original
 // (remove the cap).
+// Adaptive-uplink tiers/thresholds (module scope: pure constants, so they don't
+// re-create per render). See the controller in useMediasoup for the rationale.
+const UPLINK_TIERS = [128, 64, 32] as const; // kbps for tier 0 / 1 / 2
+const LOSS_DOWN = [0.04, 0.1]; // drop 0→1 above 4 %, 1→2 above 10 %
+const LOSS_UP = [0, 0.015, 0.05]; // recover when below (indexed by current tier)
+const UPLINK_UP_HOLD = 6; // consecutive good samples before recovering (~15 s)
+const UPLINK_INTERVAL_MS = 2500;
+
 async function setSenderMaxBitrate(
   sender: RTCRtpSender | null | undefined,
   kbps: number,
@@ -308,6 +316,103 @@ export function useMediasoup() {
   // queued candidates and build a dead connection.
   const offerSeqRef = useRef<Map<string, number>>(new Map());
   const modeRef = useRef<RoomMode>("p2p");
+
+  // --- Adaptive uplink quality -------------------------------------------------
+  // Drop OUR OWN outgoing voice bitrate when OUR upload is losing packets, so a
+  // weak link (typically mobile data with a much weaker, flakier uplink than
+  // downlink) doesn't make everyone hear us break up — while what WE hear is
+  // untouched. It reads the receivers' RTCP loss reports for our stream
+  // (remote-inbound-rtp.fractionLost) — i.e. "how much of what I send doesn't
+  // arrive" — and steps the bitrate down three tiers, recovering when it clears.
+  //
+  // Bitrate only (no channel switch): our phone mic is mono, so Opus mid/side
+  // coding makes low-bitrate "stereo" cost ~the same as mono. So the bottom tier
+  // is effectively mono WITHOUT a re-produce/renegotiation gap — the whole thing
+  // stays seamless via setParameters. The effective cap is always the lower of
+  // this and the room bitrate, so it composes with the Ctrl+Alt+C setting.
+  const uplinkTierRef = useRef(0);
+  const uplinkLossRef = useRef(0); // EWMA of send-side fractionLost
+  const uplinkGoodRef = useRef(0); // consecutive good samples (for recovery)
+
+  const effectiveUplinkKbps = useCallback(
+    () => Math.min(roomBitrateRef.current, UPLINK_TIERS[uplinkTierRef.current]),
+    [],
+  );
+
+  // Push the current effective cap onto whatever sender(s) are live right now.
+  const applyUplinkCap = useCallback(() => {
+    const kbps = effectiveUplinkKbps();
+    if (modeRef.current === "sfu") {
+      void setSenderMaxBitrate(producerRef.current?.rtpSender, kbps);
+    } else {
+      for (const pc of p2pConnectionsRef.current.values()) {
+        void setSenderMaxBitrate(
+          pc.getSenders().find((s) => s.track?.kind === "audio"),
+          kbps,
+        );
+      }
+    }
+  }, [effectiveUplinkKbps]);
+
+  // Read our send-side loss, smooth it, and move a tier if the hysteresis says so.
+  const sampleUplink = useCallback(async () => {
+    // Worst loss across the paths our audio takes (in P2P the phone's uplink is
+    // the shared bottleneck, so the worst peer reflects it).
+    let loss: number | null = null;
+    const consider = (report: { type?: string; kind?: string; fractionLost?: number }) => {
+      if (report.type === "remote-inbound-rtp" && typeof report.fractionLost === "number") {
+        loss = loss == null ? report.fractionLost : Math.max(loss, report.fractionLost);
+      }
+    };
+    try {
+      if (modeRef.current === "sfu") {
+        const stats = await producerRef.current?.getStats();
+        stats?.forEach((r) => consider(r as never));
+      } else {
+        for (const pc of p2pConnectionsRef.current.values()) {
+          const stats = await pc.getStats();
+          stats.forEach((r) => consider(r as never));
+        }
+      }
+    } catch {
+      return; // stats unavailable this tick — try again next time
+    }
+    if (loss == null) return; // nothing sending yet
+
+    // EWMA so a single spike can't move us, but a real drop still shows fast.
+    const ewma = uplinkLossRef.current * 0.5 + loss * 0.5;
+    uplinkLossRef.current = ewma;
+
+    const tier = uplinkTierRef.current;
+    let next = tier;
+    if (tier < 2 && ewma > LOSS_DOWN[tier]) {
+      next = tier + 1;
+      uplinkGoodRef.current = 0;
+    } else if (tier > 0 && ewma < LOSS_UP[tier]) {
+      uplinkGoodRef.current += 1;
+      if (uplinkGoodRef.current >= UPLINK_UP_HOLD) {
+        next = tier - 1;
+        uplinkGoodRef.current = 0;
+      }
+    } else {
+      uplinkGoodRef.current = 0; // in-between: hold, don't accrue recovery
+    }
+
+    if (next !== tier) {
+      uplinkTierRef.current = next;
+      applyUplinkCap();
+      console.log(
+        `[uplink] loss=${(loss * 100).toFixed(1)}% ewma=${(ewma * 100).toFixed(1)}% ` +
+          `tier ${tier}→${next} → ${effectiveUplinkKbps()}kbps`,
+      );
+    }
+  }, [applyUplinkCap, effectiveUplinkKbps]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => void sampleUplink(), UPLINK_INTERVAL_MS);
+    return () => window.clearInterval(id);
+  }, [sampleUplink]);
+
   // Producers announced while the SFU transports were still being built —
   // consumed at the end of setupSfu instead of being silently dropped.
   const pendingProducersRef = useRef<Array<{ peerId: string; producerId: string; source: string }>>(
@@ -1040,8 +1145,9 @@ export function useMediasoup() {
       // not the raw mic.
       const g = ensureOutGraph();
       const voiceSender = pc.addTrack(g.outDest.stream.getAudioTracks()[0], g.outDest.stream);
-      // Apply the current room bitrate to this new P2P sender's encoder.
-      void setSenderMaxBitrate(voiceSender, roomBitrateRef.current);
+      // Cap this new sender at the effective uplink bitrate (room setting, or
+      // lower if adaptive uplink has stepped us down on a weak link).
+      void setSenderMaxBitrate(voiceSender, effectiveUplinkKbps());
 
       // ICE candidates → relay via server
       pc.onicecandidate = (e) => {
@@ -1086,7 +1192,7 @@ export function useMediasoup() {
 
       return pc;
     },
-    [ensureLocalStream, connectMicToGraph, ensureOutGraph, effectiveGain, refreshSpatial],
+    [ensureLocalStream, connectMicToGraph, ensureOutGraph, effectiveGain, refreshSpatial, effectiveUplinkKbps],
   );
 
   // Apply candidates that were queued for a peer while its connection had no
@@ -1285,6 +1391,9 @@ export function useMediasoup() {
         stopTracks: false,
       });
       producerRef.current = producer;
+      // Re-assert the adaptive uplink cap on the fresh producer (a reconnect /
+      // mode switch rebuilds it, but a weak link is still weak).
+      applyUplinkCap();
 
       // Share audio and file audio both mix directly into outDest (no separate
       // producer for either — no rebuild needed on SFU setup).
@@ -1304,6 +1413,7 @@ export function useMediasoup() {
       ensureLocalStream,
       ensureOutGraph,
       consumeProducer,
+      applyUplinkCap,
     ],
   );
 
@@ -1663,10 +1773,9 @@ export function useMediasoup() {
         } else {
           // P2P: cap each sender's encoder directly (SDP caps are ignored by
           // Chrome for P2P audio; setParameters talks to the encoder).
-          for (const pc of p2pConnectionsRef.current.values()) {
-            const sender = pc.getSenders().find((s) => s.track?.kind === "audio");
-            void setSenderMaxBitrate(sender, kbps);
-          }
+          // Compose with adaptive uplink: never send above the new room cap,
+          // but keep any lower adaptive step already in effect.
+          applyUplinkCap();
         }
       });
 
@@ -1872,6 +1981,7 @@ export function useMediasoup() {
       applyMicMonitor,
       refreshSpatial,
       applyAmbience,
+      applyUplinkCap,
 
       store,
     ],
