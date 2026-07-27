@@ -758,12 +758,6 @@ export function useMediasoup() {
   const micDeviceId = useRoomStore((s) => s.micDeviceId);
   const speakerDeviceId = useRoomStore((s) => s.speakerDeviceId);
   const voiceProcessingEnabled = useRoomStore((s) => s.voiceProcessingEnabled);
-  // Room-wide 3D on/off. Reactive here so the mic re-acquires when it flips:
-  // echo cancellation collapses stereo and must drop while the room is in 3D
-  // (see microphoneConstraints). `micEchoCancel` is the effective echo-cancel
-  // state — used to re-acquire the mic only when it actually changes.
-  const spatialAudio = useRoomStore((s) => s.spatialAudio);
-  const micEchoCancel = voiceProcessingEnabled && !spatialAudio;
   const secondaryEnabled = useRoomStore((s) => s.secondaryEnabled);
   const secondaryDeviceId = useRoomStore((s) => s.secondaryDeviceId);
   const secondaryMonitor = useRoomStore((s) => s.secondaryMonitor);
@@ -791,26 +785,21 @@ export function useMediasoup() {
   // and voice-processing preference, then reroute it into the outgoing graph.
   // Senders/producers never see the swap because they always carry outDest's
   // track. Before a call (no local stream), join() picks the settings up.
-  // Re-acquire when the device, the voice-processing toggle, OR the effective
-  // echo-cancel changes. Tracking micEchoCancel (not spatialAudio directly) means
-  // a 3D toggle only re-acquires the mic when voice processing is on — with it
-  // off, echo cancel is already off, so nothing changes and we skip the glitch.
-  const prevMicSettingsRef = useRef({ micDeviceId, voiceProcessingEnabled, micEchoCancel });
+  const prevMicSettingsRef = useRef({ micDeviceId, voiceProcessingEnabled });
   useEffect(() => {
     const previous = prevMicSettingsRef.current;
     if (
       previous.micDeviceId === micDeviceId &&
-      previous.voiceProcessingEnabled === voiceProcessingEnabled &&
-      previous.micEchoCancel === micEchoCancel
+      previous.voiceProcessingEnabled === voiceProcessingEnabled
     )
       return;
-    prevMicSettingsRef.current = { micDeviceId, voiceProcessingEnabled, micEchoCancel };
+    prevMicSettingsRef.current = { micDeviceId, voiceProcessingEnabled };
     if (!localStreamRef.current) return;
     let cancelled = false;
     void (async () => {
       let stream: MediaStream;
       try {
-        stream = await getMicrophoneStream(micDeviceId, voiceProcessingEnabled, spatialAudio);
+        stream = await getMicrophoneStream(micDeviceId, voiceProcessingEnabled);
       } catch (err) {
         console.error("[mic] device switch failed:", err);
         return;
@@ -830,7 +819,7 @@ export function useMediasoup() {
     return () => {
       cancelled = true;
     };
-  }, [micDeviceId, voiceProcessingEnabled, micEchoCancel, spatialAudio, connectMicToGraph, store]);
+  }, [micDeviceId, voiceProcessingEnabled, connectMicToGraph, store]);
 
   // Track previously-applied secondary settings so a monitor-only change can
   // skip the getUserMedia round-trip (mirrors prevMicSettingsRef pattern).
@@ -1026,7 +1015,6 @@ export function useMediasoup() {
     const stream = await getMicrophoneStream(
       useRoomStore.getState().micDeviceId,
       useRoomStore.getState().voiceProcessingEnabled,
-      useRoomStore.getState().spatialAudio,
     );
     localStreamRef.current = stream;
     connectMicToGraph(stream);
@@ -1365,7 +1353,6 @@ export function useMediasoup() {
           stream = await getMicrophoneStream(
             store.getState().micDeviceId,
             store.getState().voiceProcessingEnabled,
-            store.getState().spatialAudio,
           );
         } catch (err) {
           console.warn("[mic] no microphone — joining in listen/chat-only mode:", err);

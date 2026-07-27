@@ -16,23 +16,14 @@ export const isIOS =
 // current/default device, so picking another mic appeared to do nothing.
 // Callers use getMicrophoneStream(), which falls back to the default device if
 // the chosen one is gone (OverconstrainedError).
-//
-// `spatialActive`: echo cancellation runs in MONO and (on Windows) can force the
-// audio output onto the mono "communications" device — either way it collapses
-// stereo, which kills HRTF 3D (the 3D lives entirely in the L/R difference). So
-// when the room is in 3D we drop JUST echo cancellation; noise suppression and
-// auto gain (which only touch the mic input, not playback) stay on. That lets a
-// user keep noise suppression AND still hear the 3D. (Echo cancellation isn't
-// needed in 3D anyway — 3D means everyone's on headphones, so no speaker bleed.)
 export function microphoneConstraints(
   deviceId: string,
   voiceProcessingEnabled: boolean,
-  spatialActive = false,
 ): MediaTrackConstraints {
   return {
     channelCount: 2,
     ...(isIOS ? {} : { sampleRate: 48000 }),
-    echoCancellation: voiceProcessingEnabled && !spatialActive,
+    echoCancellation: voiceProcessingEnabled,
     noiseSuppression: voiceProcessingEnabled,
     autoGainControl: voiceProcessingEnabled,
     ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
@@ -47,16 +38,15 @@ export function microphoneConstraints(
 export async function getMicrophoneStream(
   deviceId: string,
   voiceProcessingEnabled: boolean,
-  spatialActive = false,
 ): Promise<MediaStream> {
   try {
     return await navigator.mediaDevices.getUserMedia({
-      audio: microphoneConstraints(deviceId, voiceProcessingEnabled, spatialActive),
+      audio: microphoneConstraints(deviceId, voiceProcessingEnabled),
     });
   } catch (err) {
     if (deviceId && err instanceof DOMException && err.name === "OverconstrainedError") {
       return navigator.mediaDevices.getUserMedia({
-        audio: microphoneConstraints("", voiceProcessingEnabled, spatialActive),
+        audio: microphoneConstraints("", voiceProcessingEnabled),
       });
     }
     throw err;
