@@ -8,6 +8,31 @@
 
 ---
 
+## 2026-07-22 (1)
+
+### Supresión de ruidos que NO tapa el 3D
+
+Antes, activar la **supresión de ruidos** (un solo botón que prende cancelación
+de eco + supresión de ruido + ganancia automática en el micrófono) **aplastaba el
+3D**: la cancelación de eco del navegador trabaja en **mono** (y en Windows llega
+a mover la salida al "dispositivo de comunicaciones" mono), y el 3D (HRTF) vive en
+la diferencia izquierda/derecha — al colapsar a mono, se pierde la ubicación.
+
+- **Fix**: cuando la sala está en **3D**, la supresión de ruidos **suelta solo la
+  cancelación de eco** y mantiene supresión de ruido + ganancia automática (que
+  solo tocan la entrada del mic, no la escucha). Así podés tener el mic limpio **y
+  seguir escuchando el 3D**. Con el 3D apagado, funciona como antes (las tres,
+  para quien use parlantes). La cancelación de eco no hace falta en 3D igual:
+  estar en 3D implica auriculares, así que no hay eco de parlantes que cancelar.
+- **Cómo**: `microphoneConstraints(deviceId, voiceProcessing, spatialActive)` pone
+  `echoCancellation = voiceProcessing && !spatialActive`. El hook re-toma el mic
+  cuando cambia el 3D (solo si la supresión estaba activa — si no, el eco ya
+  estaba apagado y no hay glitch). Archivos: `lib/microphone.ts`,
+  `hooks/useMediasoup.ts`, `components/MicPreview.tsx`. **Solo cliente**: alcanza
+  `git pull` + `pnpm build` (sin reiniciar el server).
+
+---
+
 ## 2026-07-21 (8)
 
 ### Ambientes desde el servidor + pack "Fields & Spaces" (exteriores)
