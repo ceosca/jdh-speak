@@ -3047,15 +3047,26 @@ export function useMediasoup() {
       let jitter: number | undefined;
       let lost = 0;
       let recv = 0;
+      // Candidate types, to tell a DIRECT path from one relayed through TURN:
+      // a relayed pair (either end "relay") roughly doubles the RTT, so it's the
+      // first thing to check when the network figure looks too high for direct.
+      const candType = new Map<string, string>();
+      let pairLocalId: string | undefined;
+      let pairRemoteId: string | undefined;
       try {
         const stats = await getStats();
         stats.forEach((r: Record<string, unknown>) => {
+          if (r.type === "local-candidate" || r.type === "remote-candidate") {
+            candType.set(r.id as string, r.candidateType as string);
+          }
           if (
             r.type === "candidate-pair" &&
             r.nominated &&
             typeof r.currentRoundTripTime === "number"
           ) {
             rtt = r.currentRoundTripTime;
+            pairLocalId = r.localCandidateId as string;
+            pairRemoteId = r.remoteCandidateId as string;
           }
           if (r.type === "remote-inbound-rtp" && typeof r.roundTripTime === "number") {
             rtt = rtt ?? r.roundTripTime;
@@ -3073,8 +3084,17 @@ export function useMediasoup() {
       }
       const buffer = jbCount > 0 ? jbDelay / jbCount : undefined;
       const lossPct = lost + recv > 0 ? (lost / (lost + recv)) * 100 : 0;
+      const localT = pairLocalId ? candType.get(pairLocalId) : undefined;
+      const remoteT = pairRemoteId ? candType.get(pairRemoteId) : undefined;
+      // In P2P the candidate pair tells us direct vs relay. In SFU the media
+      // always goes via the server by design, so the label would be misleading —
+      // only report it when we actually have a pair (P2P).
+      let path = "";
+      if (localT || remoteT) {
+        path = localT === "relay" || remoteT === "relay" ? " (relay)" : " (directo)";
+      }
       parts.push(
-        `${name}: red ${ms(rtt) ?? "?"} ms, buffer ${ms(buffer) ?? "?"} ms, ` +
+        `${name}: red ${ms(rtt) ?? "?"} ms${path}, buffer ${ms(buffer) ?? "?"} ms, ` +
           `jitter ${ms(jitter) ?? "?"} ms, pérdida ${lossPct.toFixed(1)}%`,
       );
     };
