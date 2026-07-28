@@ -1,6 +1,5 @@
 import { create } from "zustand";
 import type { ChatMessage } from "../lib/chat";
-import { isIOS } from "../lib/microphone";
 import type { Episode, SeasonInfo } from "../lib/serieteca";
 import type { SpatialSeat } from "../lib/spatial";
 import { speak } from "../lib/tts";
@@ -73,12 +72,16 @@ function saveString(key: string, value: string) {
   }
 }
 
+// Voice processing (echo cancel / noise suppress / auto gain) defaults OFF for
+// everyone, iPhone/iPad included. iOS mics are mono and the iPhone should send a
+// clean, unprocessed mono signal (see microphoneConstraints) — not a suppressed
+// one. A user can still turn it on if their environment needs it.
 function loadVoiceProcessing(): boolean {
   try {
     const value = localStorage.getItem(VOICE_PROCESSING_KEY);
-    return value == null ? isIOS : value === "true";
+    return value == null ? false : value === "true";
   } catch {
-    return isIOS;
+    return false;
   }
 }
 
@@ -187,7 +190,8 @@ interface RoomState {
   micDeviceId: string;
   speakerDeviceId: string;
   // Browser voice processing (echo cancellation, noise suppression and
-  // automatic gain). Defaults on for iOS/iPadOS and off elsewhere.
+  // automatic gain). Defaults OFF everywhere (iPhone/iPad included — they send a
+  // clean mono signal instead; see loadVoiceProcessing / microphoneConstraints).
   voiceProcessingEnabled: boolean;
   // Monitor your own primary mic locally (hear yourself through your speakers).
   // Off by default; for-you only (like the secondary monitor). Persisted.

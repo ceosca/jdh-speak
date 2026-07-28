@@ -8,12 +8,16 @@ export const isIOS =
 
 // Mic capture constraints. One per-user choice:
 //   - voiceProcessingEnabled: echo cancel / noise suppress / auto gain.
-// Voice is always captured as stereo 2 channels (128 kbps on the wire).
-// On iOS we drop the sample-rate hint so WebKit can use the device-native rate
-// (forcing a rate a route can't honour garbles capture); WebRTC/Opus negotiates
-// its own rate regardless. The device is pinned with `exact` so the browser
-// actually switches to the chosen mic — with `ideal` it may silently keep the
-// current/default device, so picking another mic appeared to do nothing.
+// Voice is captured as stereo (2 channels) — EXCEPT on iPhone/iPad, which capture
+// MONO (1 channel). iOS mics are mono anyway, so a "stereo" capture there is just
+// a fake dual-mono that can garble; a real single channel is cleaner. The iPhone
+// then sends a clean mono signal (and iOS defaults voice processing OFF — see the
+// store — so it's mono, not suppressed).
+// On iOS we also drop the sample-rate hint so WebKit can use the device-native
+// rate (forcing a rate a route can't honour garbles capture); WebRTC/Opus
+// negotiates its own rate regardless. The device is pinned with `exact` so the
+// browser actually switches to the chosen mic — with `ideal` it may silently keep
+// the current/default device, so picking another mic appeared to do nothing.
 // Callers use getMicrophoneStream(), which falls back to the default device if
 // the chosen one is gone (OverconstrainedError).
 export function microphoneConstraints(
@@ -21,7 +25,7 @@ export function microphoneConstraints(
   voiceProcessingEnabled: boolean,
 ): MediaTrackConstraints {
   return {
-    channelCount: 2,
+    channelCount: isIOS ? 1 : 2,
     ...(isIOS ? {} : { sampleRate: 48000 }),
     echoCancellation: voiceProcessingEnabled,
     noiseSuppression: voiceProcessingEnabled,

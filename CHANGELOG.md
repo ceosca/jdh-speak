@@ -8,6 +8,26 @@
 
 ---
 
+## 2026-07-22 (1)
+
+### iPhone/iPad: capturan en MONO (sin supresión)
+
+Los iPhone (y iPad) tienen micrófono **mono**, así que capturar en "estéreo"
+genera un dual-mono falso que puede ensuciar. Ahora **cada iPhone se detecta a sí
+mismo** (`isIOS`, en el cliente — no toca al server ni a los demás) y **captura en
+1 canal (mono)**. Manda una señal mono limpia.
+
+- **No supresado**: además, la supresión de ruidos (cancelación de eco / ruido /
+  ganancia automática) pasa a venir **apagada por defecto también en iOS** (antes
+  venía prendida en iPhone/iPad). Así el iPhone manda **mono, crudo** — no
+  procesado. Igual se puede prender a mano si el entorno lo necesita.
+- **Solo el iPhone**: el resto de los dispositivos siguen en estéreo, sin cambios.
+- **Cómo**: `channelCount: isIOS ? 1 : 2` en `microphoneConstraints`
+  (`lib/microphone.ts`) + `loadVoiceProcessing` default `false`
+  (`stores/room.ts`). **Solo cliente**: `git pull` + `pnpm build`.
+
+---
+
 ## 2026-07-21 (8)
 
 ### Ambientes desde el servidor + pack "Fields & Spaces" (exteriores)
