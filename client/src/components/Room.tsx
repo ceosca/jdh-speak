@@ -99,6 +99,7 @@ export function Room() {
     setSpatialPosition,
     setSpatialAutoAll,
     setAmbience,
+    toggleForceSfu,
   } = useMediasoup();
 
   const [joinState, setJoinState] = useState<JoinState>("idle");
@@ -355,6 +356,15 @@ export function Room() {
         return;
       }
 
+      // Force SFU (route through the server) toggle: Ctrl+Alt+S. Room-wide, silent
+      // (only you hear a local confirmation). Handy on a bad connection — on the
+      // SFU you upload your audio once instead of a copy to every peer.
+      if (e.altKey && e.ctrlKey && (e.code === "KeyS" || e.key === "s" || e.key === "S")) {
+        e.preventDefault();
+        void toggleForceSfu();
+        return;
+      }
+
       // Nudge the room ("zumbido"): Alt+Z, works regardless of focus so you
       // don't have to open the chat to send one.
       if (e.altKey && !e.ctrlKey && !e.metaKey && (e.code === "KeyZ" || e.key === "z" || e.key === "Z")) {
@@ -486,6 +496,7 @@ export function Room() {
     sendNudge,
     toggleSpatialAudio,
     setSpatialPosition,
+    toggleForceSfu,
   ]);
 
   // Name prompt overlay (first visit or "Change name"). Rendered above whatever

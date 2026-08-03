@@ -36,9 +36,14 @@ export interface Room {
   peers: Map<string, Peer>;
   mode: RoomMode;
   // P2P explicitly disabled for this room (via the `?p2p=off` room URL param).
-  // Pins the room to the SFU even with <=2 peers; sticky for the room's
+  // Pins the room to the SFU even with <=5 peers; sticky for the room's
   // lifetime once any joiner sets it (see decideMode's forceSfu).
   disableP2p: boolean;
+  // Manual "force SFU" toggle, flipped live via a keyboard shortcut (Ctrl+Alt+S).
+  // Like disableP2p it pins the room to the SFU, but it's TOGGLEABLE (turning it
+  // off returns the room to automatic P2P/SFU by size). Handy on a bad
+  // connection: on the SFU each client uploads once instead of a full P2P mesh.
+  forceSfu: boolean;
   // Peer ids of send-only "music caster" peers (e.g. Ecobox). While any are
   // present the room is forced to SFU (see decideMode's forceSfu).
   casters: Set<string>;
@@ -167,6 +172,7 @@ export async function getOrCreateRoom(roomName: string): Promise<Room> {
     peers: new Map(),
     mode: "p2p",
     disableP2p: false,
+    forceSfu: false,
     casters: new Set(),
     audioBitrate: roomBitrates.get(roomName) ?? 128,
     spatialPositions: roomSpatial.get(roomName) ?? {},

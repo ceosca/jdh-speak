@@ -283,6 +283,8 @@
 
   "announce_recording_on": "Grabación iniciada",
   "announce_recording_off": "Grabación detenida (se puede descargar)",
+  "announce_force_sfu_on": "Servidor forzado (SFU)",
+  "announce_force_sfu_off": "Modo automático",
 
   "announce_bitrate": "{name} ajustó la calidad de la sala a {kbps} kbps",
   "announce_bitrate_original": "{name} restauró la calidad original (128 kbps)",

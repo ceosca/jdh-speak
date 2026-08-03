@@ -98,9 +98,9 @@ Only the server has tests (the client has none). They cover the pure helpers (`r
 
 A room dynamically switches transport based on size and needs. **`decideMode(peerCount, currentMode, forceSfu)` in `server/src/recording-util.ts` is the single, pure source of truth** — both the join and leave handlers in `signaling.ts` re-evaluate through it:
 
-- ≤2 peers → **P2P mesh**: clients connect WebRTC directly; the server only relays signaling (`p2p-signal`). Media never touches the server.
-- 3+ peers → **mediasoup SFU**.
-- `forceSfu` pins the SFU even with ≤2 peers when the server _must_ see the media: while **recording** (P2P media is invisible to the server), when a **music caster** is present, or when **`?p2p=off`** was set (`shouldForceSfu` in `signaling.ts`).
+- ≤5 peers → **P2P mesh**: clients connect WebRTC directly; the server only relays signaling (`p2p-signal`). Media never touches the server.
+- 6+ peers → **mediasoup SFU**.
+- `forceSfu` pins the SFU even with ≤5 peers when the server _must_ see/route the media: while **recording** (P2P media is invisible to the server), when a **music caster** is present, when **`?p2p=off`** was set, or when someone toggled **force-SFU** (`Ctrl+Alt+S`) — a live, room-wide toggle useful on a bad connection (on the SFU each client uploads once instead of a full mesh). All via `shouldForceSfu` in `signaling.ts`.
 
 On transitions the server emits `switch-to-sfu` / `switch-to-p2p`; the client (`useMediasoup.ts`) tears down one transport stack and builds the other. The outgoing audio graph (below) survives the switch — only senders/producers are rebuilt.
 

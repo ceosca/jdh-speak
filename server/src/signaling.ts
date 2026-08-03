@@ -148,7 +148,8 @@ export function createSignalingServer(
     return (
       recordingManager.isRecording(room.name) ||
       room.casters.size > 0 ||
-      room.disableP2p
+      room.disableP2p ||
+      room.forceSfu
     );
   }
 
@@ -297,6 +298,9 @@ export function createSignalingServer(
           spatialEnabled: room.spatialEnabled,
           spatialAutoAll: room.spatialAutoAll,
           ambience: room.ambience,
+          // Manual force-SFU toggle state, so a late joiner's client can toggle
+          // it correctly (and knows the room is currently pinned to the SFU).
+          forceSfu: room.forceSfu,
           // Recent chat so a late joiner can read/announce the last messages.
           messages: room.messages,
         });
@@ -693,6 +697,22 @@ export function createSignalingServer(
         enabled: parsed.data.enabled,
         by: currentPeer.displayName,
       });
+      cb?.({ ok: true });
+    });
+
+    // Manual "force SFU" toggle for the WHOLE room (Ctrl+Alt+S). Pins the room to
+    // the SFU (or releases it back to automatic P2P/SFU-by-size). Useful on a bad
+    // connection — on the SFU each client uploads once instead of a full P2P mesh.
+    // NOT announced to the room (silent, like recording): the presser gets a
+    // local confirmation client-side; others just get the state so they can
+    // toggle it too, plus the transport switch from applyModeDecision.
+    socket.on("set-force-sfu", (data: unknown, cb?: (res: unknown) => void) => {
+      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
+      const parsed = z.object({ force: z.boolean() }).safeParse(data);
+      if (!parsed.success) return cb?.({ ok: false, error: "Invalid value" });
+      currentRoom.forceSfu = parsed.data.force;
+      socket.to(currentRoom.name).emit("force-sfu", { force: parsed.data.force });
+      applyModeDecision(currentRoom);
       cb?.({ ok: true });
     });
 

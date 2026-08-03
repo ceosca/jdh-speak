@@ -8,6 +8,31 @@
 
 ---
 
+## 2026-07-22 (2)
+
+### Comando para forzar SFU (servidor) — `Ctrl+Alt+S`
+
+Un comando para **pasar la sala al servidor (SFU) en cualquier momento**. Sirve
+cuando la conexión anda mal: en P2P (malla, hasta 5 personas) cada uno **sube su
+audio a todos los demás** (con 5 = 4 copias); en SFU **subís una sola vez** al
+servidor y él reparte.
+
+- **`Ctrl+Alt+S`** = interruptor "forzar SFU" (S de Servidor/SFU). Prendido fuerza
+  el SFU; apagado vuelve al **automático** (P2P si son ≤5, SFU con 6+).
+- **De sala**: el transporte es de toda la sala, así que cambia para todos (el
+  server flipa el flag y re-evalúa el modo → todos hacen el switch).
+- **Silencioso, como la grabación**: **no** se anuncia a la sala ni al chat —
+  solo quien lo pulsa escucha una confirmación local ("Servidor forzado (SFU)" /
+  "Modo automático"). Los demás adoptan el estado sin ruido.
+- **Cómo**: flag `room.forceSfu` (toggleable, a diferencia de `?p2p=off` que es
+  pegajoso) sumado a `shouldForceSfu`; evento `set-force-sfu`/`force-sfu`; estado
+  en el join para late joiners. Server + cliente → `git pull` + `pnpm build` +
+  **reiniciar `jdh-speak`**.
+- (De paso corregí el `CLAUDE.md`: el umbral real es **≤5 P2P / 6+ SFU**, estaba
+  escrito viejo como ≤2 / 3+.)
+
+---
+
 ## 2026-07-22 (1)
 
 ### iPhone/iPad: capturan en MONO (sin supresión)

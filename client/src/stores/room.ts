@@ -199,6 +199,10 @@ interface RoomState {
   // Spatial audio on/off. ROOM state (server-owned, broadcast): whoever presses
   // Ctrl+Alt+E flips it for everyone. Not persisted locally — the room decides.
   spatialAudio: boolean;
+  // Manual "force SFU" on/off. ROOM state (server-owned): whoever presses
+  // Ctrl+Alt+S pins the room to the SFU (or releases it). Mirrored here so the
+  // toggle knows the current state; not persisted — the room decides.
+  forceSfu: boolean;
   // Room-wide spatial seats, by displayName → floor position + height. Server-
   // owned and broadcast, so everyone hears a given person from the same
   // direction. A name with no seat uses the automatic spread.
@@ -291,6 +295,7 @@ interface RoomState {
   setVoiceProcessingEnabled: (enabled: boolean) => void;
   setMicMonitor: (monitor: boolean) => void;
   setSpatialAudio: (enabled: boolean) => void;
+  setForceSfu: (force: boolean) => void;
   setSpatialPositions: (positions: Record<string, SpatialSeat>) => void;
   setSpatialAutoAll: (enabled: boolean) => void;
   setAmbience: (id: string) => void;
@@ -347,6 +352,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   voiceProcessingEnabled: loadVoiceProcessing(),
   micMonitor: loadString(MIC_MONITOR_KEY) === "true",
   spatialAudio: false,
+  forceSfu: false,
   spatialPositions: {},
   spatialAutoAll: false,
   ambience: "seco",
@@ -449,6 +455,9 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setServerAmbiences: (serverAmbiences) => set({ serverAmbiences }),
   setSpatialAudio: (spatialAudio) => {
     set({ spatialAudio });
+  },
+  setForceSfu: (forceSfu) => {
+    set({ forceSfu });
   },
   setShareMonitor: (shareMonitor) => {
     saveString(SHARE_MONITOR_KEY, String(shareMonitor));

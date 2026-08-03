@@ -30,6 +30,8 @@ import {
   announce_recording_off,
   announce_recording_unavailable,
   announce_recording_failed,
+  announce_force_sfu_on,
+  announce_force_sfu_off,
   announce_bitrate,
   announce_bitrate_original,
 } from "../paraglide/messages.js";
@@ -1399,6 +1401,7 @@ export function useMediasoup() {
           spatialEnabled?: boolean;
           spatialAutoAll?: boolean;
           ambience?: string;
+          forceSfu?: boolean;
           messages: ChatMessage[];
         };
         const joinPayload = {
@@ -1423,6 +1426,8 @@ export function useMediasoup() {
         // Adopt the room's current ambience (reverb space) and load it.
         store.getState().setAmbience(joinRes.ambience ?? "seco");
         applyAmbience();
+        // Adopt the room's manual force-SFU state (so the toggle is correct).
+        store.getState().setForceSfu(joinRes.forceSfu ?? false);
         // The out graph exists by now — wire the (possibly spatial) monitor.
         applyMicMonitor();
 
@@ -1554,6 +1559,13 @@ export function useMediasoup() {
         store
           .getState()
           .announceEvent(enabled ? m.spatial_on_by({ name: by }) : m.spatial_off_by({ name: by }));
+      });
+
+      // Someone toggled force-SFU for the room. Adopt the state silently (no
+      // announcement — only the presser hears a local confirmation). The actual
+      // transport switch arrives separately via switch-to-sfu / switch-to-p2p.
+      socket.on("force-sfu", ({ force }: { force: boolean }) => {
+        store.getState().setForceSfu(force);
       });
 
       // "Auto-position everyone" was toggled for the room — re-seat all and
@@ -2997,6 +3009,23 @@ export function useMediasoup() {
     else await startRecording();
   }, [startRecording, stopRecording, store]);
 
+  // --- Force SFU (Ctrl+Alt+S) ---
+  // Pin the room to the SFU (or release it back to automatic P2P/SFU-by-size).
+  // Room-wide; the server flips its flag and re-evaluates the transport (so
+  // everyone switches). Silent to the room, like recording: only the presser
+  // gets a local confirmation; others just adopt the state (see the "force-sfu"
+  // handler) so any of them can toggle it too.
+  const toggleForceSfu = useCallback(async () => {
+    const next = !store.getState().forceSfu;
+    try {
+      await emit("set-force-sfu", { force: next });
+      store.getState().setForceSfu(next);
+      store.getState().announce(next ? announce_force_sfu_on() : announce_force_sfu_off());
+    } catch (err) {
+      console.error("[force-sfu] failed:", err);
+    }
+  }, [emit, store]);
+
   // Change your display name live: persist it, tell the server (which broadcasts
   // peer-renamed to other peers), and reflect it locally.
   const rename = useCallback(
@@ -3293,6 +3322,7 @@ export function useMediasoup() {
     setSpatialPosition,
     setSpatialAutoAll,
     setAmbience,
+    toggleForceSfu,
     peerAudiosRef,
   };
 }
