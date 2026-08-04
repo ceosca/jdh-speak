@@ -44,6 +44,16 @@ export interface Room {
   // off returns the room to automatic P2P/SFU by size). Handy on a bad
   // connection: on the SFU each client uploads once instead of a full P2P mesh.
   forceSfu: boolean;
+  // "Closed" (private) room, toggled live via Ctrl+Alt+B. While closed, a NEW
+  // joiner (no member token) is routed to a separate "ghost" room instead — they
+  // see an empty room (or each other), never the real group, with NO message. A
+  // returning member (token in `memberTokens`) is still let in, so a reconnect
+  // isn't locked out. See the join handler's ghost routing in signaling.ts.
+  closed: boolean;
+  // Tokens handed to everyone who joined this room (persisted client-side per
+  // room). Used to recognise a returning member while the room is closed. Lives
+  // for the room's lifetime (dropped when the room empties).
+  memberTokens: Set<string>;
   // Peer ids of send-only "music caster" peers (e.g. Ecobox). While any are
   // present the room is forced to SFU (see decideMode's forceSfu).
   casters: Set<string>;
@@ -173,6 +183,8 @@ export async function getOrCreateRoom(roomName: string): Promise<Room> {
     mode: "p2p",
     disableP2p: false,
     forceSfu: false,
+    closed: false,
+    memberTokens: new Set(),
     casters: new Set(),
     audioBitrate: roomBitrates.get(roomName) ?? 128,
     spatialPositions: roomSpatial.get(roomName) ?? {},

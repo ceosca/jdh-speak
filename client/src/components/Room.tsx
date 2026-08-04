@@ -100,6 +100,7 @@ export function Room() {
     setSpatialAutoAll,
     setAmbience,
     toggleForceSfu,
+    toggleRoomClosed,
   } = useMediasoup();
 
   const [joinState, setJoinState] = useState<JoinState>("idle");
@@ -365,6 +366,15 @@ export function Room() {
         return;
       }
 
+      // Close/open the room: Ctrl+Alt+B. While closed, newcomers are ghosted (see
+      // an empty room, no message). Room-wide, silent — only you hear a local
+      // "Sala cerrada" / "Sala abierta" confirmation.
+      if (e.altKey && e.ctrlKey && (e.code === "KeyB" || e.key === "b" || e.key === "B")) {
+        e.preventDefault();
+        void toggleRoomClosed();
+        return;
+      }
+
       // Nudge the room ("zumbido"): Alt+Z, works regardless of focus so you
       // don't have to open the chat to send one.
       if (e.altKey && !e.ctrlKey && !e.metaKey && (e.code === "KeyZ" || e.key === "z" || e.key === "Z")) {
@@ -497,6 +507,7 @@ export function Room() {
     toggleSpatialAudio,
     setSpatialPosition,
     toggleForceSfu,
+    toggleRoomClosed,
   ]);
 
   // Name prompt overlay (first visit or "Change name"). Rendered above whatever

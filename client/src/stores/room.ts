@@ -203,6 +203,10 @@ interface RoomState {
   // Ctrl+Alt+S pins the room to the SFU (or releases it). Mirrored here so the
   // toggle knows the current state; not persisted — the room decides.
   forceSfu: boolean;
+  // "Closed" (private) room on/off. ROOM state (server-owned): whoever presses
+  // Ctrl+Alt+B closes it so newcomers are ghosted (see the join ghost routing).
+  // Mirrored here so the toggle knows the current state; not persisted.
+  roomClosed: boolean;
   // Room-wide spatial seats, by displayName → floor position + height. Server-
   // owned and broadcast, so everyone hears a given person from the same
   // direction. A name with no seat uses the automatic spread.
@@ -296,6 +300,7 @@ interface RoomState {
   setMicMonitor: (monitor: boolean) => void;
   setSpatialAudio: (enabled: boolean) => void;
   setForceSfu: (force: boolean) => void;
+  setRoomClosed: (closed: boolean) => void;
   setSpatialPositions: (positions: Record<string, SpatialSeat>) => void;
   setSpatialAutoAll: (enabled: boolean) => void;
   setAmbience: (id: string) => void;
@@ -353,6 +358,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   micMonitor: loadString(MIC_MONITOR_KEY) === "true",
   spatialAudio: false,
   forceSfu: false,
+  roomClosed: false,
   spatialPositions: {},
   spatialAutoAll: false,
   ambience: "seco",
@@ -458,6 +464,9 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   },
   setForceSfu: (forceSfu) => {
     set({ forceSfu });
+  },
+  setRoomClosed: (roomClosed) => {
+    set({ roomClosed });
   },
   setShareMonitor: (shareMonitor) => {
     saveString(SHARE_MONITOR_KEY, String(shareMonitor));

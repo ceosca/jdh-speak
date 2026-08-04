@@ -64,7 +64,17 @@ const joinSchema = z.object({
   // Explicitly disable P2P for this room (the `?p2p=off` room URL param). Pins
   // the room to the SFU even with <=2 peers; sticky once any joiner sets it.
   disableP2p: z.boolean().optional(),
+  // Per-room membership token (persisted client-side). Presented on rejoin so a
+  // returning member is let into a CLOSED room instead of being ghosted.
+  token: z.string().max(100).optional(),
 });
+
+// Internal room key for the "ghost" room that closed-out joiners land in. It's
+// keyed off the real name but contains characters roomNameSchema forbids, so it
+// can never collide with a real room reachable from a URL.
+function ghostRoomKey(roomName: string): string {
+  return `#ghost:${roomName}`;
+}
 
 function closeSfuResources(peer: Peer) {
   peer.sendTransport?.close();
@@ -238,12 +248,26 @@ export function createSignalingServer(
 
     socket.on("join", async (data: unknown, cb: (res: unknown) => void) => {
       try {
-        const { roomName, displayName, role, disableP2p } =
+        const { roomName, displayName, role, disableP2p, token } =
           joinSchema.parse(data);
-        const room = await getOrCreateRoom(roomName);
+        const realRoom = await getOrCreateRoom(roomName);
+
+        // Closed-room routing: a newcomer (no known member token) joining a closed
+        // room is sent to a separate "ghost" room — they see an empty room / only
+        // other ghosts, never the real group, with no message. Members (recognised
+        // by their token) and casters always reach the real room, so a reconnect
+        // isn't locked out. When the room is open, everyone reaches the real room.
+        const isMember = !!token && realRoom.memberTokens.has(token);
+        const ghosted = realRoom.closed && role !== "caster" && !isMember;
+        const room = ghosted ? await getOrCreateRoom(ghostRoomKey(roomName)) : realRoom;
+
+        // Issue/keep this client's membership token. Only real-room joins are
+        // recorded as members; a ghost gets a token too but it never grants entry.
+        const myToken = isMember ? token! : randomUUID();
+        if (!ghosted) realRoom.memberTokens.add(myToken);
 
         console.log(
-          `[ws] ${socket.id} joined ${roomName} as "${displayName}" [${clientIp(socket)}]${role ? ` (${role})` : ""}${disableP2p ? " (p2p disabled)" : ""}`,
+          `[ws] ${socket.id} joined ${roomName} as "${displayName}" [${clientIp(socket)}]${role ? ` (${role})` : ""}${disableP2p ? " (p2p disabled)" : ""}${ghosted ? " (ghosted — room closed)" : ""}`,
         );
 
         const peer = createPeer(room, socket.id, displayName);
@@ -256,10 +280,12 @@ export function createSignalingServer(
         currentRoom = room;
         currentPeer = peer;
 
-        await socket.join(roomName);
+        // Join the effective room's socket.io room (real or ghost), so every
+        // broadcast (peer-joined, chat, mode switches…) stays within that group.
+        await socket.join(room.name);
 
         // Notify existing peers
-        socket.to(roomName).emit("peer-joined", {
+        socket.to(room.name).emit("peer-joined", {
           peerId: socket.id,
           displayName,
         });
@@ -301,6 +327,11 @@ export function createSignalingServer(
           // Manual force-SFU toggle state, so a late joiner's client can toggle
           // it correctly (and knows the room is currently pinned to the SFU).
           forceSfu: room.forceSfu,
+          // Membership token to persist and present on rejoin (see ghost routing).
+          token: myToken,
+          // Whether THIS (effective) room is closed. A ghost sees its own ghost
+          // room, which is open — so it never learns the real room is closed.
+          closed: room.closed,
           // Recent chat so a late joiner can read/announce the last messages.
           messages: room.messages,
         });
@@ -713,6 +744,19 @@ export function createSignalingServer(
       currentRoom.forceSfu = parsed.data.force;
       socket.to(currentRoom.name).emit("force-sfu", { force: parsed.data.force });
       applyModeDecision(currentRoom);
+      cb?.({ ok: true });
+    });
+
+    // Close/open the room (Ctrl+Alt+B). While closed, newcomers are ghosted (see
+    // the join handler). Room-wide among members, and SILENT — no announcement to
+    // anyone; the presser gets a local confirmation client-side. Just flips the
+    // flag + syncs the state to the other members so any of them can toggle too.
+    socket.on("set-room-closed", (data: unknown, cb?: (res: unknown) => void) => {
+      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
+      const parsed = z.object({ closed: z.boolean() }).safeParse(data);
+      if (!parsed.success) return cb?.({ ok: false, error: "Invalid value" });
+      currentRoom.closed = parsed.data.closed;
+      socket.to(currentRoom.name).emit("room-closed", { closed: parsed.data.closed });
       cb?.({ ok: true });
     });
 

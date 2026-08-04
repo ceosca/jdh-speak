@@ -32,6 +32,8 @@ import {
   announce_recording_failed,
   announce_force_sfu_on,
   announce_force_sfu_off,
+  announce_room_closed,
+  announce_room_open,
   announce_bitrate,
   announce_bitrate_original,
 } from "../paraglide/messages.js";
@@ -1402,12 +1404,25 @@ export function useMediasoup() {
           spatialAutoAll?: boolean;
           ambience?: string;
           forceSfu?: boolean;
+          token?: string;
+          closed?: boolean;
           messages: ChatMessage[];
         };
+        // Per-room membership token (see closed-room ghost routing). Persisted so
+        // a reconnect is recognised as a member and not ghosted out of a closed
+        // room. sessionStorage: per-tab, cleared when the tab closes.
+        const roomTokenKey = `jdh-speak:roomToken:${roomName}`;
+        let storedToken: string | undefined;
+        try {
+          storedToken = sessionStorage.getItem(roomTokenKey) ?? undefined;
+        } catch {
+          /* storage blocked — token is best-effort */
+        }
         const joinPayload = {
           roomName,
           displayName,
           disableP2p: opts?.disableP2p,
+          token: storedToken,
         };
 
         const joinRes = await emit<JoinResponse>("join", joinPayload);
@@ -1428,6 +1443,15 @@ export function useMediasoup() {
         applyAmbience();
         // Adopt the room's manual force-SFU state (so the toggle is correct).
         store.getState().setForceSfu(joinRes.forceSfu ?? false);
+        // Persist our membership token and adopt the room's closed state.
+        if (joinRes.token) {
+          try {
+            sessionStorage.setItem(roomTokenKey, joinRes.token);
+          } catch {
+            /* storage blocked — reconnect into a closed room may be ghosted */
+          }
+        }
+        store.getState().setRoomClosed(joinRes.closed ?? false);
         // The out graph exists by now — wire the (possibly spatial) monitor.
         applyMicMonitor();
 
@@ -1566,6 +1590,12 @@ export function useMediasoup() {
       // transport switch arrives separately via switch-to-sfu / switch-to-p2p.
       socket.on("force-sfu", ({ force }: { force: boolean }) => {
         store.getState().setForceSfu(force);
+      });
+
+      // Someone closed/opened the room. Adopt the state silently (no
+      // announcement — only the presser hears a local confirmation).
+      socket.on("room-closed", ({ closed }: { closed: boolean }) => {
+        store.getState().setRoomClosed(closed);
       });
 
       // "Auto-position everyone" was toggled for the room — re-seat all and
@@ -3026,6 +3056,21 @@ export function useMediasoup() {
     }
   }, [emit, store]);
 
+  // --- Close/open the room (Ctrl+Alt+B) ---
+  // Close it so newcomers are ghosted (see the server's join routing): they land
+  // in an empty ghost room, never see the real group, and get no message. Silent
+  // to the room — only the presser hears a local confirmation. Toggle to reopen.
+  const toggleRoomClosed = useCallback(async () => {
+    const next = !store.getState().roomClosed;
+    try {
+      await emit("set-room-closed", { closed: next });
+      store.getState().setRoomClosed(next);
+      store.getState().announce(next ? announce_room_closed() : announce_room_open());
+    } catch (err) {
+      console.error("[room-closed] failed:", err);
+    }
+  }, [emit, store]);
+
   // Change your display name live: persist it, tell the server (which broadcasts
   // peer-renamed to other peers), and reflect it locally.
   const rename = useCallback(
@@ -3323,6 +3368,7 @@ export function useMediasoup() {
     setSpatialAutoAll,
     setAmbience,
     toggleForceSfu,
+    toggleRoomClosed,
     peerAudiosRef,
   };
 }

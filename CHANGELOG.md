@@ -8,6 +8,34 @@
 
 ---
 
+## 2026-07-22 (3)
+
+### Cerrar la sala (privada) sin cartel — `Ctrl+Alt+B`
+
+Para tener privacidad cuando ya están los que querés: `Ctrl+Alt+B` **cierra** la
+sala. Con la sala cerrada, el que entra nuevo **no ve un cartel de "cerrada"** ni
+nada — ve una **sala vacía**, como si fuera el primero y todavía no llegó nadie.
+Así nadie se siente rechazado ni ustedes tienen que dar explicaciones.
+
+- **Sala "fantasma"**: el recién llegado (sin token de miembro) se enruta a una
+  sala aparte (`#ghost:<sala>`), invisible para el grupo real. Si entran **dos
+  desconocidos**, se ven **entre ellos** (no a ustedes). Los de adentro **no
+  reciben ningún aviso** de que alguien rebotó.
+- **Reconexión protegida**: al entrar, cada uno guarda un **token** de la sala
+  (sessionStorage). Si a un miembro se le corta el internet y vuelve, el token lo
+  reconoce y **entra igual** aunque esté cerrada — no queda afuera por un corte.
+- **Silencioso**: no se anuncia a la sala ni al chat. Solo quien pulsa escucha
+  una confirmación local ("Sala cerrada" / "Sala abierta"). Es toggle: se reabre
+  con la misma tecla. Estado de sala (cualquiera adentro puede cerrar/abrir).
+- **Cómo**: `room.closed` + `memberTokens` (`room-manager.ts`); enrutado fantasma
+  + emisión de token en el join (`signaling.ts`, evento `set-room-closed`/
+  `room-closed`); estado en el store + token en sessionStorage. Probado con un
+  test de integración por sockets (12/12: ghosting, reconexión por token,
+  fantasmas que se ven entre sí, reapertura). Server + cliente → `git pull` +
+  `pnpm build` + **reiniciar `jdh-speak`**.
+
+---
+
 ## 2026-07-22 (2)
 
 ### Comando para forzar SFU (servidor) — `Ctrl+Alt+S`
