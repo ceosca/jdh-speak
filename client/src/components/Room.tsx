@@ -101,6 +101,7 @@ export function Room() {
     setAmbience,
     toggleForceSfu,
     toggleRoomClosed,
+    admitToRealRoom,
   } = useMediasoup();
 
   const [joinState, setJoinState] = useState<JoinState>("idle");
@@ -366,12 +367,15 @@ export function Room() {
         return;
       }
 
-      // Close/open the room: Ctrl+Alt+B. While closed, newcomers are ghosted (see
-      // an empty room, no message). Room-wide, silent — only you hear a local
-      // "Sala cerrada" / "Sala abierta" confirmation.
+      // Ctrl+Alt+B is contextual. If we were GHOSTED (the real room is closed and
+      // we landed in a ghost room), it ADMITS us into the real room — whoever
+      // knows the shortcut lets themselves through; the room stays closed for
+      // everyone else. Otherwise (we're in the real room) it toggles closed/open
+      // as before. Room-wide + silent either way; only we hear a local confirm.
       if (e.altKey && e.ctrlKey && (e.code === "KeyB" || e.key === "b" || e.key === "B")) {
         e.preventDefault();
-        void toggleRoomClosed();
+        if (useRoomStore.getState().ghosted) void admitToRealRoom();
+        else void toggleRoomClosed();
         return;
       }
 
@@ -508,6 +512,7 @@ export function Room() {
     setSpatialPosition,
     toggleForceSfu,
     toggleRoomClosed,
+    admitToRealRoom,
   ]);
 
   // Name prompt overlay (first visit or "Change name"). Rendered above whatever

@@ -287,6 +287,8 @@
   "announce_force_sfu_off": "Modo automático",
   "announce_room_closed": "Sala cerrada",
   "announce_room_open": "Sala abierta",
+  "announce_room_entering": "Entrando a la sala…",
+  "announce_room_no_admit": "No se pudo entrar a la sala",
 
   "announce_bitrate": "{name} ajustó la calidad de la sala a {kbps} kbps",
   "announce_bitrate_original": "{name} restauró la calidad original (128 kbps)",

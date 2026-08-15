@@ -207,6 +207,10 @@ interface RoomState {
   // Ctrl+Alt+B closes it so newcomers are ghosted (see the join ghost routing).
   // Mirrored here so the toggle knows the current state; not persisted.
   roomClosed: boolean;
+  // Whether WE were ghosted into a separate room because the real one is closed
+  // and we're not a member. Ctrl+Alt+B reads this to admit us to the real room
+  // (vs. toggling closed). Set from the join response; not persisted.
+  ghosted: boolean;
   // Room-wide spatial seats, by displayName → floor position + height. Server-
   // owned and broadcast, so everyone hears a given person from the same
   // direction. A name with no seat uses the automatic spread.
@@ -301,6 +305,7 @@ interface RoomState {
   setSpatialAudio: (enabled: boolean) => void;
   setForceSfu: (force: boolean) => void;
   setRoomClosed: (closed: boolean) => void;
+  setGhosted: (ghosted: boolean) => void;
   setSpatialPositions: (positions: Record<string, SpatialSeat>) => void;
   setSpatialAutoAll: (enabled: boolean) => void;
   setAmbience: (id: string) => void;
@@ -359,6 +364,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   spatialAudio: false,
   forceSfu: false,
   roomClosed: false,
+  ghosted: false,
   spatialPositions: {},
   spatialAutoAll: false,
   ambience: "seco",
@@ -468,6 +474,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setRoomClosed: (roomClosed) => {
     set({ roomClosed });
   },
+  setGhosted: (ghosted) => set({ ghosted }),
   setShareMonitor: (shareMonitor) => {
     saveString(SHARE_MONITOR_KEY, String(shareMonitor));
     set({ shareMonitor });

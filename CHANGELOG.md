@@ -8,6 +8,28 @@
 
 ---
 
+## 2026-08-05
+
+### Auto-colarse desde la fantasma a la sala cerrada — `Ctrl+Alt+B`
+
+- **Qué:** amplía la sala cerrada de Edu. Si te fantasmearon (entraste a una sala
+  cerrada sin ser miembro y caíste en `#ghost:<sala>`), pulsar **Ctrl+Alt+B** ahora
+  **te mete en la sala real** — quien conoce el atajo se cuela solo. La sala
+  **sigue cerrada** para el resto: los que no conocen el atajo quedan fantasmeados
+  como hasta ahora. Dentro de la sala real, el atajo sigue cerrando/abriendo como
+  lo dejó Edu.
+- **Cómo:** el join ahora devuelve `ghosted`. Con eso, Ctrl+Alt+B es contextual:
+  si `ghosted` → `admitToRealRoom()` (nuevo), si no → `toggleRoomClosed()` (de
+  Edu). `admitToRealRoom` pide al servidor un **token de miembro** de la sala real
+  (evento `admit-to-room` → `realRoom.memberTokens.add(token)`), lo guarda en
+  `sessionStorage` y **reconecta**: el rejoin presenta el token, el servidor lo
+  reconoce como miembro y lo enruta a la sala real. Solo se añadió ESE token, así
+  que la sala no se abre para nadie más.
+- **Modelo de seguridad:** por oscuridad, igual que todo lo demás — conocer el
+  atajo ES la llave. Aceptado explícitamente.
+
+---
+
 ## 2026-07-22 (3)
 
 ### Cerrar la sala (privada) sin cartel — `Ctrl+Alt+B`

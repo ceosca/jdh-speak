@@ -332,6 +332,10 @@ export function createSignalingServer(
           // Whether THIS (effective) room is closed. A ghost sees its own ghost
           // room, which is open — so it never learns the real room is closed.
           closed: room.closed,
+          // Whether we were ghosted (real room is closed and we're not a member).
+          // The client uses this so Ctrl+Alt+B, pressed from a ghost room, admits
+          // us into the real room instead of toggling the ghost room's own flag.
+          ghosted,
           // Recent chat so a late joiner can read/announce the last messages.
           messages: room.messages,
         });
@@ -758,6 +762,24 @@ export function createSignalingServer(
       currentRoom.closed = parsed.data.closed;
       socket.to(currentRoom.name).emit("room-closed", { closed: parsed.data.closed });
       cb?.({ ok: true });
+    });
+
+    // Self-admit into a CLOSED room from its ghost room. Whoever knows the
+    // Ctrl+Alt+B shortcut can let THEMSELVES through into the real room — it mints
+    // a real-room membership token and hands it back; the client stores it and
+    // rejoins, so the join handler recognises them as a member and routes them to
+    // the real room. The room STAYS CLOSED for everyone else (only this caller got
+    // a token), so people who don't know the shortcut remain ghosted. Same
+    // obscurity model as the rest: knowing the shortcut is the key.
+    socket.on("admit-to-room", (data: unknown, cb?: (res: unknown) => void) => {
+      const parsed = z.object({ roomName: roomNameSchema }).safeParse(data);
+      if (!parsed.success) return cb?.({ ok: false, error: "Invalid room" });
+      const realRoom = getRooms().get(parsed.data.roomName);
+      // Nothing to admit into if the real room isn't live (nobody's there).
+      if (!realRoom) return cb?.({ ok: false, error: "No such room" });
+      const admitToken = randomUUID();
+      realRoom.memberTokens.add(admitToken);
+      cb?.({ ok: true, token: admitToken });
     });
 
     // Acoustic ambience (reverb space) for the WHOLE room. Whoever picks it

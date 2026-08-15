@@ -34,6 +34,8 @@ import {
   announce_force_sfu_off,
   announce_room_closed,
   announce_room_open,
+  announce_room_entering,
+  announce_room_no_admit,
   announce_bitrate,
   announce_bitrate_original,
 } from "../paraglide/messages.js";
@@ -1406,6 +1408,7 @@ export function useMediasoup() {
           forceSfu?: boolean;
           token?: string;
           closed?: boolean;
+          ghosted?: boolean;
           messages: ChatMessage[];
         };
         // Per-room membership token (see closed-room ghost routing). Persisted so
@@ -1452,6 +1455,9 @@ export function useMediasoup() {
           }
         }
         store.getState().setRoomClosed(joinRes.closed ?? false);
+        // Were we ghosted into a separate room because the real one is closed?
+        // Ctrl+Alt+B reads this to decide: admit-to-real (ghosted) vs toggle.
+        store.getState().setGhosted(joinRes.ghosted ?? false);
         // The out graph exists by now — wire the (possibly spatial) monitor.
         applyMicMonitor();
 
@@ -3071,6 +3077,33 @@ export function useMediasoup() {
     }
   }, [emit, store]);
 
+  // Self-admit from a ghost room into the real (closed) room. Ctrl+Alt+B does
+  // THIS when we were ghosted (instead of toggling the ghost room): whoever knows
+  // the shortcut lets themselves through. The server mints a real-room membership
+  // token; we persist it and reconnect, so the rejoin is recognised as a member
+  // and routed to the real room. The real room STAYS CLOSED for everyone else.
+  const admitToRealRoom = useCallback(async () => {
+    const roomName = store.getState().roomName;
+    if (!roomName) return;
+    try {
+      const res = await emit<{ token: string }>("admit-to-room", { roomName });
+      try {
+        sessionStorage.setItem(`jdh-speak:roomToken:${roomName}`, res.token);
+      } catch {
+        /* storage blocked — the rejoin below still carries the token in memory
+           only if reconnect re-reads it; without storage this can't proceed. */
+      }
+      store.getState().announce(announce_room_entering());
+      // Reconnect: the connect handler rejoins reading the token we just stored,
+      // so the server routes us into the real room this time.
+      socketRef.current?.disconnect();
+      socketRef.current?.connect();
+    } catch (err) {
+      console.error("[admit] failed:", err);
+      store.getState().announce(announce_room_no_admit());
+    }
+  }, [emit, store]);
+
   // Change your display name live: persist it, tell the server (which broadcasts
   // peer-renamed to other peers), and reflect it locally.
   const rename = useCallback(
@@ -3369,6 +3402,7 @@ export function useMediasoup() {
     setAmbience,
     toggleForceSfu,
     toggleRoomClosed,
+    admitToRealRoom,
     peerAudiosRef,
   };
 }
