@@ -161,6 +161,26 @@ const AUDIO_EXTENSIONS = new Set(["mp3", "m4a", "aac", "ogg", "opus", "wav", "fl
 // side only, applied to BOTH P2P and SFU received tracks. Tunable.
 const JITTER_BUFFER_HINT = 0.05;
 
+// Set the receiver-side jitter buffer target. `jitterBufferTarget` (RTCRtpReceiver,
+// Chrome 124+) is the modern, spec'd successor to the non-standard track
+// `playoutDelayHint` — and crucially Chrome now *honours it* while increasingly
+// ignoring the old hint. In jam mode we ask for 0 (minimum the UA allows) so the
+// return is heard as early as the network permits; otherwise the small floor
+// (ms) matching JITTER_BUFFER_HINT. We set BOTH APIs at each receive site: the
+// new one for Chrome 124+, the old hint as a fallback for anything older/Firefox.
+// Wrapped in try/catch because the setter throws RangeError outside [0, 4000] and
+// isn't present on every engine.
+function setReceiverJitterTarget(receiver: RTCRtpReceiver | undefined, jam: boolean) {
+  if (!receiver || !("jitterBufferTarget" in receiver)) return;
+  try {
+    (receiver as unknown as Record<string, number | null>).jitterBufferTarget = jam
+      ? 0
+      : JITTER_BUFFER_HINT * 1000;
+  } catch {
+    /* unsupported value/engine — the playoutDelayHint fallback still applies */
+  }
+}
+
 async function setSenderMaxBitrate(
   sender: RTCRtpSender | null | undefined,
   kbps: number,
@@ -1176,6 +1196,7 @@ export function useMediasoup() {
       if ("playoutDelayHint" in consumer.track) {
         (consumer.track as unknown as Record<string, number>).playoutDelayHint = 0;
       }
+      setReceiverJitterTarget(consumer.rtpReceiver, true);
       const pipeline = createAudioPipeline(consumer.track); // gain → destination
       pipeline.gainNode.gain.value = 1;
       netMonitorRef.current = { ...pipeline, consumer, producerId: producer.id };
@@ -1291,10 +1312,13 @@ export function useMediasoup() {
       // Remote track → audio pipeline
       pc.ontrack = (e) => {
         const remoteTrack = e.track;
+        const jam = useRoomStore.getState().jamMode;
         if ("playoutDelayHint" in remoteTrack) {
-          (remoteTrack as unknown as Record<string, number>).playoutDelayHint =
-            useRoomStore.getState().jamMode ? 0 : JITTER_BUFFER_HINT;
+          (remoteTrack as unknown as Record<string, number>).playoutDelayHint = jam
+            ? 0
+            : JITTER_BUFFER_HINT;
         }
+        setReceiverJitterTarget(e.receiver, jam);
         const pipeline = createAudioPipeline(remoteTrack);
         // Respect deafen / per-peer volume on a (re)built P2P pipeline too —
         // otherwise an SFU→P2P switch resets everyone to full volume and a
@@ -1309,7 +1333,7 @@ export function useMediasoup() {
       if (isOfferer) {
         // Create offer with stereo 128k low-latency Opus params.
         pc.createOffer().then(async (offer) => {
-          offer.sdp = forceOpusParams(offer.sdp!);
+          offer.sdp = forceOpusParams(offer.sdp!, 128, useRoomStore.getState().jamMode);
           await pc.setLocalDescription(offer);
           socket.emit("p2p-signal", {
             targetPeerId: peerId,
@@ -1402,9 +1426,14 @@ export function useMediasoup() {
         >[0]["rtpParameters"],
       });
 
-      if ("playoutDelayHint" in consumer.track) {
-        (consumer.track as unknown as Record<string, number>).playoutDelayHint =
-          useRoomStore.getState().jamMode ? 0 : JITTER_BUFFER_HINT;
+      {
+        const jam = useRoomStore.getState().jamMode;
+        if ("playoutDelayHint" in consumer.track) {
+          (consumer.track as unknown as Record<string, number>).playoutDelayHint = jam
+            ? 0
+            : JITTER_BUFFER_HINT;
+        }
+        setReceiverJitterTarget(consumer.rtpReceiver, jam);
       }
 
       const pipeline = createAudioPipeline(consumer.track);
@@ -1517,8 +1546,21 @@ export function useMediasoup() {
         codecOptions: {
           opusStereo: true,
           opusDtx: false,
-          opusFec: true,
+          // Jam mode: FEC off — in-band FEC recovers a lost packet from the NEXT
+          // one, so the decoder holds a packet back "just in case", adding one
+          // packet-time of latency. A musician wants the earliest sample, not the
+          // safest. Read at produce time (like hi-fi voice), so it applies on the
+          // next call / mode switch. Normal calls keep FEC on for resilience.
+          opusFec: !store.getState().jamMode,
           opusMaxPlaybackRate: 48000,
+          // Jam mode: halve packetisation (20ms → 10ms). Default Opus/WebRTC
+          // ptime is 20ms — a full 20ms of samples buffered on the SENDER before
+          // the first packet leaves. This is the biggest lever left on the SFU
+          // path (the network-monitor return goes mic → produce → consume back,
+          // so this cut lands directly on what you hear returning). 10ms is the
+          // proven sweet spot; below it the RTP/UDP/IP header overhead balloons
+          // for no audible gain. Cost here is ~+32kbps of headers — trivial.
+          ...(store.getState().jamMode ? { opusPtime: 10 } : {}),
           // Honour the room's current quality at produce time (a mode switch or
           // late join rebuilds the producer); 128 = original.
           opusMaxAverageBitrate:
@@ -1561,6 +1603,7 @@ export function useMediasoup() {
       applyNetworkMonitor,
       applyJamSenderPriority,
       applyJamSendPath,
+      store,
     ],
   );
 
@@ -2004,7 +2047,7 @@ export function useMediasoup() {
               );
               await flushPendingCandidates(fromPeerId, pc);
               const answer = await pc.createAnswer();
-              answer.sdp = forceOpusParams(answer.sdp!);
+              answer.sdp = forceOpusParams(answer.sdp!, 128, useRoomStore.getState().jamMode);
               await pc.setLocalDescription(answer);
               socket.emit("p2p-signal", {
                 targetPeerId: fromPeerId,

@@ -34,8 +34,45 @@
   compartido/secundario no se envía mientras va crudo. Acotado a ensayo (opt-in):
   las llamadas normales no cambian. El mute sigue funcionando (desactiva la pista
   cruda aguas arriba).
-- **Pendiente:** **FEC off** en ensayo (la recuperación FEC espera al siguiente
-  paquete → añade latencia); requiere re-producir al alternar, se hará aparte.
+- **FEC off (hecho, ver fase 3):** ya no queda pendiente.
+
+---
+
+## 2026-08-19 (4)
+
+### Modo ensayo: hacks de latencia fase 3 (investigados, no de memoria)
+
+Tras investigar el estado del arte actual (WebCodecs/WebTransport, la API nueva
+`jitterBufferTarget`, `ptime` de Opus, y el proyecto selkies que exprime WebRTC
+para streaming en vivo), tres palancas **reales y nuevas**, todas **solo en
+ensayo** y apuntando al camino del **monitoreo de red** (mic → produce → consume
+de vuelta):
+
+- **`ptime=10` en el SFU (lo más gordo aquí):** el `produce` usaba la
+  paquetización por defecto de **20 ms** — 20 ms de muestras acumuladas en el
+  emisor antes de que salga el primer paquete. En ensayo se pone
+  `opusPtime: 10` en los `codecOptions` → **10 ms menos** justo en lo que oís
+  volver. (En P2P el `ptime=10` ya estaba vía `sdp-munger`; el hueco era el SFU,
+  que es el camino del monitoreo de red.) Coste: ~+32 kbps de cabeceras, trivial.
+- **`jitterBufferTarget = 0` (API nueva, Chrome 124+):** es el sucesor con
+  especificación del viejo `playoutDelayHint` **no estándar** — y Chrome ya lo
+  **honra** mientras ignora cada vez más el hint viejo. Se aplica en los tres
+  sitios de recepción (P2P `ontrack`, consume SFU, retorno del monitoreo de red)
+  vía `RTCRtpReceiver.jitterBufferTarget`; seguimos poniendo también el
+  `playoutDelayHint` como respaldo para motores viejos/Firefox. Helper
+  `setReceiverJitterTarget` con try/catch (el setter lanza `RangeError` fuera de
+  `[0,4000]` y no existe en todo motor).
+- **FEC off en ensayo:** in-band FEC recupera un paquete perdido **desde el
+  siguiente**, así que el decodificador retiene un paquete "por si acaso" → suma
+  un tiempo-de-paquete de latencia. Un músico quiere la muestra más temprana, no
+  la más segura. `opusFec: false` en el produce (SFU) y `useinbandfec=0` en el
+  `sdp-munger` (P2P). Se lee al producir (como hi-fi voice), aplica en la próxima
+  llamada / cambio de modo; las llamadas normales mantienen FEC para resiliencia.
+
+Descartado a propósito (por ahora): reescribir el transporte a
+**WebCodecs + WebTransport** (buffer propio, sin NetEQ) — es la vía nuclear real
+para bajar aún más, pero es un rework grande y aparte del stack mediasoup; se
+deja anotado como la siguiente frontera si algún día hace falta.
 
 ---
 

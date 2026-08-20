@@ -9,7 +9,7 @@
  * At 128 (original) we add no cap. (SFU voice uses the produce
  * `opusMaxAverageBitrate` flag instead; this munger only touches P2P SDP.)
  */
-export function forceOpusParams(sdp: string, kbps = 128): string {
+export function forceOpusParams(sdp: string, kbps = 128, jam = false): string {
   const lines = sdp.split("\r\n");
   const result: string[] = [];
   const capped = kbps >= 128 ? 128 : kbps;
@@ -52,7 +52,9 @@ export function forceOpusParams(sdp: string, kbps = 128): string {
       // Force stereo + low-latency params at the chosen bitrate.
       params.set("stereo", "1");
       params.set("sprop-stereo", "1");
-      params.set("useinbandfec", "1");
+      // Jam: FEC off (recovery holds a packet back → +1 packet-time of latency);
+      // normal calls keep in-band FEC for resilience.
+      params.set("useinbandfec", jam ? "0" : "1");
       params.set("maxaveragebitrate", String(bitrate));
       params.set("minptime", "10");
       params.set("ptime", "10");
