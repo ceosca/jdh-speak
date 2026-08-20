@@ -9,6 +9,8 @@
     "test": "node --import tsx --test \"src/**/*.test.ts\""
   },
   "dependencies": {
+    "@fails-components/webtransport": "1.4.0",
+    "@fails-components/webtransport-transport-http3-quiche": "1.4.0",
     "express": "^5.1.0",
     "mediasoup": "^3.20.4",
     "socket.io": "^4.8.1",

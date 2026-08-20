@@ -20,6 +20,8 @@ import {
   TranscodeBusyError,
 } from "./audio-sources.js";
 import { parseTvChannels, type Channel } from "./tv-channels.js";
+// THROWAWAY WebTransport probe (branch feat/webtransport-jam only). Fail-safe.
+import { startWebTransportProbe, getWebTransportProbeInfo } from "./webtransport-probe.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -289,6 +291,12 @@ async function main() {
     res.json(await loadTvChannels());
   });
 
+  // THROWAWAY WebTransport probe status (branch only). The static probe page at
+  // /webtransport-jam-probe/probe.html reads this to learn the QUIC echo URL.
+  app.get("/api/wt-probe", (_req, res) => {
+    res.json(getWebTransportProbeInfo());
+  });
+
   // Extra acoustic ambiences (operator-hosted reverb IRs, see AMBIENCE_IR_DIR).
   // The client merges these into the ambience menu on top of the built-ins.
   app.get("/api/ambiences", async (_req, res) => {
@@ -435,6 +443,10 @@ async function main() {
   httpServer.listen(PORT, () => {
     console.log(`JDH Speak server listening on port ${PORT}`);
   });
+
+  // Fire-and-forget: start the throwaway WebTransport echo probe (branch only).
+  // Fail-safe internally — never rejects into startup.
+  void startWebTransportProbe();
 
   // Clean up recordings and live streams (ffmpeg processes, temp files) on
   // shutdown.

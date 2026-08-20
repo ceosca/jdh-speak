@@ -12,7 +12,11 @@ const numCores = os.cpus().length;
 export const workerSettings: WorkerSettings = {
   logLevel: "warn",
   rtcMinPort: 40000,
-  rtcMaxPort: 40059,
+  // THROWAWAY (branch feat/webtransport-jam): 40059 was freed for the embedded
+  // WebTransport probe's QUIC listener (still inside the forwarded 40000-40100
+  // range, so no new router port). On main this is 40059. Reverting the branch
+  // restores the full range.
+  rtcMaxPort: 40058,
 };
 
 export const numWorkers = Math.max(1, numCores);

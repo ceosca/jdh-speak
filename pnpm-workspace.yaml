@@ -10,7 +10,17 @@ packages:
 allowBuilds:
   esbuild: true
   mediasoup: true
+  # THROWAWAY (branch feat/webtransport-jam): the QUIC transport fetches a
+  # prebuilt native binary via its install script (prebuild-install). Reverting
+  # the branch drops this again.
+  "@fails-components/webtransport-transport-http3-quiche": true
 
 onlyBuiltDependencies:
   - esbuild
   - mediasoup
+  - "@fails-components/webtransport-transport-http3-quiche"
+
+# THROWAWAY (branch only): pin the QUIC transport to 1.4.0 — the newest arm64
+# prebuild that loads under the Pi's glibc 2.36 (1.5.1+ need GLIBC_2.38).
+overrides:
+  "@fails-components/webtransport-transport-http3-quiche": "1.4.0"

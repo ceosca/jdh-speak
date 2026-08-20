@@ -1,108 +1,81 @@
-# Probe: WebTransport + WebCodecs para jam (DESECHABLE)
+# Probe: WebTransport + WebCodecs para jam (DESECHABLE, integrado en el servidor)
 
 > **Nivel 1 de la evaluación de factibilidad.** Su única salida es **un número
-> con el que decidir**, no código para quedarse. Si gana claramente, se diseña
-> el Nivel 2 aparte; si no, se descarta esta carpeta. **No** está en el workspace
-> pnpm, **no** lo arranca systemd, **no** toca mediasoup, grabación ni streaming.
+> con el que decidir**, no código para quedarse. Corre **dentro del servidor
+> principal** (rama `feat/webtransport-jam`), así que tu operación es solo
+> *cambiar de rama + build*, y revertir es *borrar la rama + build de `main`*.
+> No abre puertos nuevos, no hay procesos aparte, y es **a prueba de fallos**: si
+> el probe no puede arrancar, solo loguea un aviso y el servidor de conferencia
+> sigue igual.
 
 ## Qué mide
 
 Reproduce el **monitoreo de red** (oír tu propio retorno por el servidor) pero
-por un camino totalmente distinto:
+por un transporte totalmente distinto:
 
 ```
-mic → AudioWorklet → AudioEncoder(Opus 10ms, lowdelay) → datagrama WebTransport
-      → relay QUIC en la Pi (eco) → datagrama de vuelta
-      → AudioDecoder → ring buffer propio (sin NetEQ) → altavoz
+mic → AudioWorklet → AudioEncoder(Opus 10ms, FEC off) → datagrama WebTransport(QUIC)
+    → eco en el servidor → AudioDecoder → ring buffer propio (sin NetEQ) → auriculares
 ```
 
-Frente a lo actual (WebRTC/mediasoup + NetEQ). La pregunta que responde:
-**¿el transporte QUIC + nuestro propio buffer mínimo da menos latencia que lo que
-ya tenemos, que ya está muy exprimido?**
+La pregunta: **¿QUIC + nuestro propio buffer mínimo baja la latencia respecto a
+lo que ya tenemos (WebRTC/mediasoup + NetEQ), que ya está muy exprimido?**
 
-Números en la página:
+## Cómo está integrado (sin procesos ni puertos extra)
 
-- **RTT de red (mediana/mín/p95):** ida y vuelta de un datagrama de ping.
-  Comparable con lo que muestra **Ctrl+Alt+L** ("al servidor") en la app real.
-- **Colchón de retorno (ms):** cuánto audio tenemos en nuestro ring buffer. Es el
-  cojín que sustituye a NetEQ; cuanto más bajo sin cortes, mejor.
-- **Cortes (underflows):** veces que el buffer se quedó seco (colchón demasiado
-  bajo para el jitter real).
-- **Latencia estimada del monitor:** `RTT/2 + 10ms (trama) + colchón`. Es lo que
-  de verdad oyes de retraso en tu propio retorno.
+- **Relay de eco**: `server/src/webtransport-probe.ts`, arrancado desde
+  `server/src/index.ts` justo tras `httpServer.listen`. Escucha QUIC en
+  **udp/40059**, que se liberó bajando `rtcMaxPort` de mediasoup a **40058**
+  (`server/src/mediasoup-config.ts`). 40059 sigue dentro del rango
+  **40000–40100 ya reenviado** en el router → **no hay puerto nuevo**.
+- **Cert**: el servicio corre como **root**, así que el relay lee directamente el
+  cert vivo de Caddy (`jdh.privatedns.org`). Conexión **de confianza**, sin
+  `serverCertificateHashes`.
+- **Página**: `client/public/webtransport-jam-probe/probe.html` — la sirve la
+  app por HTTPS (Caddy 443). Lee la URL del relay desde `GET /api/wt-probe`.
+- **Apagar sin revertir**: `WT_PROBE=0` en el entorno del servicio.
 
-## Cómo correrlo
+## Cómo probarlo
 
-### 1. Relay en la Pi
-
-Vive en un **worktree** aparte (`/home/pi/jdh-speak-wt-probe`) para no mover el
-checkout vivo de la app, que sigue en `main`. Las dependencias ya están
-instaladas ahí (con el transporte QUIC pineado a 1.4.0, el prebuild que carga con
-la glibc 2.36 de Bookworm — el 1.5.1+ pide 2.38).
-
-**En primer plano** (lo más simple; Ctrl-C para parar):
+En la Raspberry, poné el despliegue en esta rama y build (como cualquier cambio
+de servidor):
 
 ```bash
-ssh pi@192.168.4.2
-cd /home/pi/jdh-speak-wt-probe/experiments/webtransport-jam
-bash run-on-pi.sh
+cd /home/pi/jdh-speak
+git fetch origin && git checkout feat/webtransport-jam && git pull
+pnpm install            # baja el binario QUIC (arm64, glibc 2.36) — pineado a 1.4.0
+pnpm --filter client build
+sudo systemctl restart jdh-speak
+journalctl -u jdh-speak -n 20 --no-pager   # debe verse: [wt-probe] HTTP/3 echo relay on udp/40059
 ```
 
-Imprime `echo probe up` y la URL de la página. Deja la terminal abierta mientras
-pruebas.
-
-**Persistente** (si quieres que siga tras cerrar la terminal), lánzalo tú con tu
-sudo (a Claude el clasificador le bloquea crear servicios):
-
-```bash
-cd /home/pi/jdh-speak-wt-probe/experiments/webtransport-jam
-sudo systemd-run --unit=wt-jam-probe --collect \
-  --working-directory="$PWD" /usr/bin/node relay.mjs
-# ver logs:   journalctl -u wt-jam-probe -f
-# parar:      sudo systemctl stop wt-jam-probe
-```
-
-> Nota: el `run-on-pi.sh` copia el cert vivo de Caddy junto al relay. El modo
-> persistente asume que ya lo corriste una vez (o copia el cert a mano antes).
-
-El propio relay sirve **también la página** por HTTPS (mismo cert real), así que
-no hay que tocar la app ni reconstruir su cliente.
-
-### 2. Puertos (solo para prueba entre redes distintas)
-
-- **En la misma LAN / desde la propia Pi:** no hace falta tocar el router (por
-  *hairpin* del dominio).
-- **Con alguien en otra red:** reenvía en el router hacia `192.168.4.2`:
-  - **UDP 4433** (el transporte WebTransport/QUIC)
-  - **TCP 8444** (la página HTTPS del probe)
-  Son los puertos de la prueba, no pisan nada de la app.
-
-### 3. Página probe
-
-Servida por el propio relay (contexto seguro HTTPS, cert válido):
+Luego, en Chrome/Edge y **con auriculares**:
 
 ```
-https://jdh.privatedns.org:8444/probe.html
+https://jdh.privatedns.org/webtransport-jam-probe/probe.html
 ```
 
-Abre esa URL, **ponte auriculares**, pulsa **Empezar**, habla/toca y:
+Pulsá **Empezar**, tocá/hablá, oís tu retorno por QUIC. Compará la **latencia
+estimada del monitor** con la del monitoreo de red actual (Ctrl+Alt+L en la app).
 
-1. Oirás tu propio retorno por QUIC.
-2. Compara la **latencia estimada del monitor** con la del monitoreo de red
-   actual (activa la casilla en la app, Ctrl+Alt+L, y anota).
-
-Navegadores: Chrome/Edge, Firefox 130+ (escritorio), o Safari 26.4+.
+> Navegadores: Chrome/Edge, Firefox 130+ (escritorio), o Safari 26.4+.
 
 ## Cómo leer el resultado
 
-- Si el **monitor estimado** aquí es **claramente menor** que en la app actual
-  (varios ms, de forma repetible) → vale la pena el Nivel 2.
-- Si **empatan** → el transporte no es el cuello de botella; el trabajo ya hecho
-  (captura latency:0, ptime=10, jitter 0, FEC off) ya alcanzó el suelo práctico.
-  Se descarta la migración. **Ese también es un resultado bueno**: ahorra meses.
+- **Claramente menor y repetible** que lo actual → vale el Nivel 2 (relay entre
+  músicos, no solo eco).
+- **Empatan** → el transporte no es el cuello de botella; lo ya hecho (captura
+  `latency:0`, `ptime=10`, jitter 0, FEC off) ya tocó el suelo práctico. **Se
+  descarta la migración** — y eso ahorra meses. Es un resultado válido.
 
-## Limpieza
+## Revertir
 
-Es una rama aislada. Si se descarta: `git branch -D feat/webtransport-jam` y
-borra esta carpeta. No queda nada colgado en la app ni en systemd. El cert
-copiado aquí (`*.crt`/`*.key`) está en `.gitignore`; no se versiona.
+```bash
+cd /home/pi/jdh-speak
+git checkout main && pnpm install && pnpm --filter client build
+sudo systemctl restart jdh-speak
+git branch -D feat/webtransport-jam    # opcional
+```
+
+`main` no fue tocado en ningún momento: mediasoup vuelve a 40000–40059, sin la
+dependencia QUIC, sin la página, sin el módulo del probe.

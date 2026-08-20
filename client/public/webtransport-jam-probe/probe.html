@@ -48,7 +48,7 @@
     </p>
 
     <label for="url">URL del relay (WebTransport):</label>
-    <input id="url" value="https://jdh.privatedns.org:4433/echo" />
+    <input id="url" value="" placeholder="se autocompleta desde /api/wt-probe" />
 
     <div>
       <button id="start">Empezar</button>
@@ -323,6 +323,21 @@
         muted = !muted;
         $("mute").textContent = muted ? "Reactivar retorno" : "Silenciar retorno";
       });
+
+      // Ask the main server where its embedded QUIC echo relay is (real cert,
+      // trusted — no serverCertificateHashes needed).
+      fetch("/api/wt-probe")
+        .then((r) => r.json())
+        .then((d) => {
+          if (d && d.enabled && d.url) {
+            $("url").value = d.url;
+            log("Relay del servidor: " + d.url);
+          } else {
+            log("El servidor no tiene el probe activo (WT_PROBE=0 o sin cert).");
+            $("live").textContent = "El probe no está activo en el servidor.";
+          }
+        })
+        .catch(() => log("No pude leer /api/wt-probe."));
 
       if (!("WebTransport" in window)) {
         $("live").textContent =
