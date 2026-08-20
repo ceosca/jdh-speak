@@ -24,10 +24,18 @@
   tráfico masivo → menos jitter en enlaces cargados. Se re-aplica en cada
   (re)producción y conexión P2P nueva.
 - **Buffer de jitter 0** en ensayo (ya estaba).
-- **Fase 2 (pendiente, con más cuidado):** puentear el grafo de Web Audio en el
-  envío (mandar el micro crudo, saltando el limitador y su lookahead ~6-10 ms vía
-  `replaceTrack`) y **FEC off** en ensayo (la recuperación FEC espera al siguiente
-  paquete → añade latencia). Ambas tienen contras y se harán aisladas.
+- **Bypass del grafo de envío (fase 2, hecho):** en ensayo se manda el **micro
+  crudo** directo al productor/senders vía `replaceTrack` (no renegocia), saltando
+  el grafo de Web Audio de salida — el _lookahead_ ~6 ms del limitador más el
+  buffer `MediaStreamDestination→source`. Live y sin cortes; se re-aplica al
+  (re)producir, en cada P2P nueva y al **cambiar de dispositivo** de micro
+  (el productor apunta a la pista cruda nueva). Contras (asumibles al tocar): sin
+  limitador de salida (una interfaz a nivel de línea no clippea) y el audio
+  compartido/secundario no se envía mientras va crudo. Acotado a ensayo (opt-in):
+  las llamadas normales no cambian. El mute sigue funcionando (desactiva la pista
+  cruda aguas arriba).
+- **Pendiente:** **FEC off** en ensayo (la recuperación FEC espera al siguiente
+  paquete → añade latencia); requiere re-producir al alternar, se hará aparte.
 
 ---
 

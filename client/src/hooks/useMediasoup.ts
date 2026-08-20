@@ -559,7 +559,8 @@ export function useMediasoup() {
     if (state.displayName) names.add(state.displayName);
     for (const p of state.peers.values()) if (!p.isMusic) names.add(p.displayName);
     const sorted = [...names].sort();
-    return (name: string): SpatialSeat => autoSeat(Math.max(0, sorted.indexOf(name)), sorted.length || 1);
+    return (name: string): SpatialSeat =>
+      autoSeat(Math.max(0, sorted.indexOf(name)), sorted.length || 1);
   }, [store]);
 
   // Re-seat everyone for the current spatial setting. Called when the toggle
@@ -808,6 +809,45 @@ export function useMediasoup() {
   // Jam ("modo ensayo") forces capture UNPROCESSED (echo cancel / noise suppress
   // / AGC off) for full-band instrument tone with no processing latency — so the
   // effective processing is voiceProcessing AND NOT jam.
+  // Send-path bypass for jam: send the RAW mic track directly instead of the
+  // processed outDest track, dropping the outgoing Web Audio graph latency — the
+  // soft limiter's ~6 ms lookahead plus the MediaStreamDestination→source buffer.
+  // Live via replaceTrack (no renegotiation), so it toggles seamlessly.
+  //
+  // Trade-offs, all fine for jamming: no send-side limiter (an interface's line
+  // level won't clip anyway), and shared/secondary audio (which mix into outDest)
+  // aren't sent while raw — you're playing, not sharing. Mute still works: it
+  // disables the raw mic track upstream either way. Contained to jam (opt-in), so
+  // normal calls are untouched.
+  const applyJamSendPath = useCallback(async () => {
+    const jam = store.getState().jamMode;
+    const raw = localStreamRef.current?.getAudioTracks()[0] ?? null;
+    const processed = outGraphRef.current?.outDest.stream.getAudioTracks()[0] ?? null;
+    const track = jam && raw ? raw : processed;
+    if (!track) return;
+    if (modeRef.current === "sfu") {
+      const producer = producerRef.current;
+      if (producer && producer.track !== track) {
+        try {
+          await producer.replaceTrack({ track });
+        } catch (err) {
+          console.error("[jam] SFU replaceTrack failed:", err);
+        }
+      }
+    } else {
+      for (const pc of p2pConnectionsRef.current.values()) {
+        const sender = pc.getSenders().find((s) => s.track?.kind === "audio");
+        if (sender && sender.track !== track) {
+          try {
+            await sender.replaceTrack(track);
+          } catch (err) {
+            console.error("[jam] P2P replaceTrack failed:", err);
+          }
+        }
+      }
+    }
+  }, [store]);
+
   const effectiveProcessing = voiceProcessingEnabled && !jamMode;
   const prevMicSettingsRef = useRef({ micDeviceId, effectiveProcessing, jamMode });
   useEffect(() => {
@@ -839,12 +879,15 @@ export function useMediasoup() {
       const old = localStreamRef.current;
       localStreamRef.current = stream;
       connectMicToGraph(stream);
+      // Jam sends the raw mic directly, so a device change must re-point the
+      // producer/senders at the new raw track (a no-op when jam is off).
+      void applyJamSendPath();
       old?.getTracks().forEach((t) => t.stop());
     })();
     return () => {
       cancelled = true;
     };
-  }, [micDeviceId, effectiveProcessing, jamMode, connectMicToGraph, store]);
+  }, [micDeviceId, effectiveProcessing, jamMode, connectMicToGraph, applyJamSendPath, store]);
 
   // Jam mode ("modo ensayo") toggled: re-apply the jitter-buffer target to the
   // tracks we're already receiving (0 for jam = lowest latency; the normal floor
@@ -886,6 +929,7 @@ export function useMediasoup() {
       }
     }
     void applyJamSenderPriority();
+    void applyJamSendPath();
     // Only speak on an actual toggle, not on initial mount.
     if (prevJamRef.current === jamMode) return;
     prevJamRef.current = jamMode;
@@ -897,7 +941,7 @@ export function useMediasoup() {
     } else {
       store.getState().announce(announce_jam_off());
     }
-  }, [jamMode, applyJamSenderPriority, store]);
+  }, [jamMode, applyJamSenderPriority, applyJamSendPath, store]);
 
   // Track previously-applied secondary settings so a monitor-only change can
   // skip the getUserMedia round-trip (mirrors prevMicSettingsRef pattern).
@@ -963,20 +1007,24 @@ export function useMediasoup() {
     // Monitor-only change: enabled and deviceId are unchanged, and the source
     // node is already live — just connect/disconnect the destination edge
     // without re-acquiring the device (avoids an audible gap on monitor toggle).
-    if (
-      enabled === prev.enabled &&
-      deviceId === prev.deviceId &&
-      g?.secondaryGain
-    ) {
+    if (enabled === prev.enabled && deviceId === prev.deviceId && g?.secondaryGain) {
       if (monitor) {
         // Guard against double-connect: disconnect first (no-op if not connected),
         // then reconnect — Web Audio silently allows duplicate connects but it
         // stacks, so a disconnect/reconnect cycle keeps exactly one connection.
         // Tapped at secondaryGain (post-gain) so the monitor matches what's sent.
-        try { g.secondaryGain.disconnect(sharedAudioContext.destination); } catch { /* not connected */ }
+        try {
+          g.secondaryGain.disconnect(sharedAudioContext.destination);
+        } catch {
+          /* not connected */
+        }
         g.secondaryGain.connect(sharedAudioContext.destination);
       } else {
-        try { g.secondaryGain.disconnect(sharedAudioContext.destination); } catch { /* already disconnected */ }
+        try {
+          g.secondaryGain.disconnect(sharedAudioContext.destination);
+        } catch {
+          /* already disconnected */
+        }
       }
       return;
     }
@@ -1033,9 +1081,21 @@ export function useMediasoup() {
     const g = outGraphRef.current;
     if (!g) return;
     const ctx = sharedAudioContext;
-    try { g.micGain.disconnect(ctx.destination); } catch { /* not connected */ }
-    try { g.micGain.disconnect(g.monitorAir); } catch { /* not connected */ }
-    try { g.micGain.disconnect(g.reverbInput); } catch { /* not connected */ }
+    try {
+      g.micGain.disconnect(ctx.destination);
+    } catch {
+      /* not connected */
+    }
+    try {
+      g.micGain.disconnect(g.monitorAir);
+    } catch {
+      /* not connected */
+    }
+    try {
+      g.micGain.disconnect(g.reverbInput);
+    } catch {
+      /* not connected */
+    }
     g.monitorAir.disconnect();
     g.monitorPanner.disconnect();
 
@@ -1155,7 +1215,11 @@ export function useMediasoup() {
   useEffect(() => {
     const g = outGraphRef.current;
     if (!g?.displaySource) return;
-    try { g.displaySource.disconnect(sharedAudioContext.destination); } catch { /* not connected */ }
+    try {
+      g.displaySource.disconnect(sharedAudioContext.destination);
+    } catch {
+      /* not connected */
+    }
     if (shareMonitor) g.displaySource.connect(sharedAudioContext.destination);
   }, [shareMonitor]);
 
@@ -1211,6 +1275,7 @@ export function useMediasoup() {
       void setSenderMaxBitrate(voiceSender, roomBitrateRef.current);
       // Re-assert jam high network priority on this new sender.
       void applyJamSenderPriority();
+      void applyJamSendPath();
 
       // ICE candidates → relay via server
       pc.onicecandidate = (e) => {
@@ -1227,7 +1292,8 @@ export function useMediasoup() {
       pc.ontrack = (e) => {
         const remoteTrack = e.track;
         if ("playoutDelayHint" in remoteTrack) {
-          (remoteTrack as unknown as Record<string, number>).playoutDelayHint = useRoomStore.getState().jamMode ? 0 : JITTER_BUFFER_HINT;
+          (remoteTrack as unknown as Record<string, number>).playoutDelayHint =
+            useRoomStore.getState().jamMode ? 0 : JITTER_BUFFER_HINT;
         }
         const pipeline = createAudioPipeline(remoteTrack);
         // Respect deafen / per-peer volume on a (re)built P2P pipeline too —
@@ -1262,6 +1328,7 @@ export function useMediasoup() {
       effectiveGain,
       refreshSpatial,
       applyJamSenderPriority,
+      applyJamSendPath,
     ],
   );
 
@@ -1336,7 +1403,8 @@ export function useMediasoup() {
       });
 
       if ("playoutDelayHint" in consumer.track) {
-        (consumer.track as unknown as Record<string, number>).playoutDelayHint = useRoomStore.getState().jamMode ? 0 : JITTER_BUFFER_HINT;
+        (consumer.track as unknown as Record<string, number>).playoutDelayHint =
+          useRoomStore.getState().jamMode ? 0 : JITTER_BUFFER_HINT;
       }
 
       const pipeline = createAudioPipeline(consumer.track);
@@ -1470,6 +1538,7 @@ export function useMediasoup() {
       // re-assert the jam high-priority marking on the new sender.
       void applyNetworkMonitor();
       void applyJamSenderPriority();
+      void applyJamSendPath();
 
       // Share audio and file audio both mix directly into outDest (no separate
       // producer for either — no rebuild needed on SFU setup).
@@ -1491,6 +1560,7 @@ export function useMediasoup() {
       consumeProducer,
       applyNetworkMonitor,
       applyJamSenderPriority,
+      applyJamSendPath,
     ],
   );
 
@@ -1795,14 +1865,12 @@ export function useMediasoup() {
       socket.on("ambience", ({ id, by }: { id: string; by: string }) => {
         store.getState().setAmbience(id);
         applyAmbience();
-        store
-          .getState()
-          .announceEvent(
-            m.ambience_set_by({
-              name: by,
-              ambience: ambienceName(id, store.getState().serverAmbiences),
-            }),
-          );
+        store.getState().announceEvent(
+          m.ambience_set_by({
+            name: by,
+            ambience: ambienceName(id, store.getState().serverAmbiences),
+          }),
+        );
       });
 
       // Someone moved a seat in the 3D field (room-wide) — re-apply for everyone.
@@ -2058,10 +2126,13 @@ export function useMediasoup() {
 
       // A peer started/stopped streaming audio — re-seat so their track is
       // centred (never spatialised) while streaming, then back to their seat.
-      socket.on("peer-streaming", ({ peerId, streaming }: { peerId: string; streaming: boolean }) => {
-        store.getState().setPeerStreaming(peerId, streaming);
-        refreshSpatial();
-      });
+      socket.on(
+        "peer-streaming",
+        ({ peerId, streaming }: { peerId: string; streaming: boolean }) => {
+          store.getState().setPeerStreaming(peerId, streaming);
+          refreshSpatial();
+        },
+      );
 
       // Incoming chat (including the echo of our own messages): render it, chime
       // a distinct cue, and announce it via the user's chosen channel — a polite
@@ -2422,7 +2493,11 @@ export function useMediasoup() {
       // handle any remaining entries in the playlist that were not yet played.
       const { playlist } = store.getState();
       for (const track of playlist) {
-        try { URL.revokeObjectURL(track.objectUrl); } catch { /* best-effort */ }
+        try {
+          URL.revokeObjectURL(track.objectUrl);
+        } catch {
+          /* best-effort */
+        }
       }
       store.getState().setPlaylist([]);
       store.getState().setPlaylistIndex(0);
@@ -2510,11 +2585,14 @@ export function useMediasoup() {
         clearTimeout(fadeTimerRef.current[oldActiveIdx]!);
         fadeTimerRef.current[oldActiveIdx] = null;
       }
-      fadeTimerRef.current[oldActiveIdx] = window.setTimeout(() => {
-        fadeTimerRef.current[oldActiveIdx] = null;
-        if (fadeGenRef.current[oldActiveIdx] !== capturedGen) return;
-        oldActive.audioEl.pause();
-      }, XFADE_TAU * 5 * 1000);
+      fadeTimerRef.current[oldActiveIdx] = window.setTimeout(
+        () => {
+          fadeTimerRef.current[oldActiveIdx] = null;
+          if (fadeGenRef.current[oldActiveIdx] !== capturedGen) return;
+          oldActive.audioEl.pause();
+        },
+        XFADE_TAU * 5 * 1000,
+      );
 
       store.getState().setFileStream(name);
       store.getState().setFileStreamPlaying(true);
@@ -2740,9 +2818,7 @@ export function useMediasoup() {
             saveSerieProgress();
             store.getState().setFileStreamPlaying(false);
           });
-          el.addEventListener("ended", () =>
-            store.getState().setFileStreamPlaying(false),
-          );
+          el.addEventListener("ended", () => store.getState().setFileStreamPlaying(false));
           serieAudioRef.current = el;
           serieSourceRef.current = sharedAudioContext.createMediaElementSource(el);
         }
@@ -2784,7 +2860,14 @@ export function useMediasoup() {
         throw err;
       }
     },
-    [ensureOutGraph, ensureFileVolumeGain, stopFileStream, store, onSerieTimeUpdate, saveSerieProgress],
+    [
+      ensureOutGraph,
+      ensureFileVolumeGain,
+      stopFileStream,
+      store,
+      onSerieTimeUpdate,
+      saveSerieProgress,
+    ],
   );
 
   const serieSeekEpisode = useCallback(
@@ -3137,7 +3220,6 @@ export function useMediasoup() {
 
   // Toggle play/pause — alias exposed under the brief's name.
   const playerTogglePlay = toggleFilePlayback;
-
 
   // Subscribe timeupdate / durationchange / loadedmetadata on the active slot's
   // element so the store stays current. Throttle writes to ~250 ms so React
@@ -3526,7 +3608,11 @@ export function useMediasoup() {
     deviceRef.current = null;
     // Revoke any remaining playlist object URLs before reset() clears the array.
     for (const track of store.getState().playlist) {
-      try { URL.revokeObjectURL(track.objectUrl); } catch { /* best-effort */ }
+      try {
+        URL.revokeObjectURL(track.objectUrl);
+      } catch {
+        /* best-effort */
+      }
     }
     store.getState().reset();
   }, [teardownP2p, teardownSfu, detachSharedAudio, store]);
