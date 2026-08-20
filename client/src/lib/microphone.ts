@@ -20,9 +20,16 @@ export const isIOS =
 // the current/default device, so picking another mic appeared to do nothing.
 // Callers use getMicrophoneStream(), which falls back to the default device if
 // the chosen one is gone (OverconstrainedError).
+// lowLatency (jam / "modo ensayo"): ask the browser for the SMALLEST possible
+// capture buffer via the `latency` constraint (seconds). The default capture
+// buffer is often 20-40 ms; requesting ~0 pushes Chrome/Edge toward ~10 ms or
+// less — the biggest reduction available in the otherwise-fixed browser audio
+// floor. It's an `ideal`, so devices that can't honour it just keep their
+// minimum instead of failing.
 export function microphoneConstraints(
   deviceId: string,
   voiceProcessingEnabled: boolean,
+  lowLatency = false,
 ): MediaTrackConstraints {
   return {
     channelCount: isIOS ? 1 : 2,
@@ -30,6 +37,7 @@ export function microphoneConstraints(
     echoCancellation: voiceProcessingEnabled,
     noiseSuppression: voiceProcessingEnabled,
     autoGainControl: voiceProcessingEnabled,
+    ...(lowLatency ? { latency: { ideal: 0 } } : {}),
     ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
   };
 }
@@ -42,15 +50,16 @@ export function microphoneConstraints(
 export async function getMicrophoneStream(
   deviceId: string,
   voiceProcessingEnabled: boolean,
+  lowLatency = false,
 ): Promise<MediaStream> {
   try {
     return await navigator.mediaDevices.getUserMedia({
-      audio: microphoneConstraints(deviceId, voiceProcessingEnabled),
+      audio: microphoneConstraints(deviceId, voiceProcessingEnabled, lowLatency),
     });
   } catch (err) {
     if (deviceId && err instanceof DOMException && err.name === "OverconstrainedError") {
       return navigator.mediaDevices.getUserMedia({
-        audio: microphoneConstraints("", voiceProcessingEnabled),
+        audio: microphoneConstraints("", voiceProcessingEnabled, lowLatency),
       });
     }
     throw err;

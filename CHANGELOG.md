@@ -8,6 +8,29 @@
 
 ---
 
+## 2026-08-19 (3)
+
+### Modo ensayo: auto-SFU + hacks de latencia (fase 1)
+
+- **Auto-SFU:** al marcar **Monitoreo de red**, si la sala no está en SFU, se
+  fuerza automáticamente (`set-force-sfu`) — el retorno propio necesita el
+  servidor en el bucle, así que ya no hay que activarlo a mano.
+- **Captura de baja latencia:** en modo ensayo, `getUserMedia` pide el buffer de
+  entrada **mínimo** (constraint `latency: { ideal: 0 }`). Ataca el "suelo fijo"
+  del navegador (el buffer de captura suele ser 20-40 ms; esto empuja a ~10 ms o
+  menos donde el dispositivo lo permite). Es la mayor reducción disponible.
+- **Prioridad de red alta:** el audio saliente en ensayo se marca
+  `networkPriority: "high"` (DSCP/QoS) para que la red lo encole antes que el
+  tráfico masivo → menos jitter en enlaces cargados. Se re-aplica en cada
+  (re)producción y conexión P2P nueva.
+- **Buffer de jitter 0** en ensayo (ya estaba).
+- **Fase 2 (pendiente, con más cuidado):** puentear el grafo de Web Audio en el
+  envío (mandar el micro crudo, saltando el limitador y su lookahead ~6-10 ms vía
+  `replaceTrack`) y **FEC off** en ensayo (la recuperación FEC espera al siguiente
+  paquete → añade latencia). Ambas tienen contras y se harán aisladas.
+
+---
+
 ## 2026-08-19 (2)
 
 ### Monitoreo de red (retorno propio, "a lo Jamulus")

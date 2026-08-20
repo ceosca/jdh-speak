@@ -298,7 +298,7 @@
   "announce_jam_off": "Modo ensayo desactivado",
   "announce_net_monitor_on": "Monitoreo de red activado. Oís tu propio retorno por el servidor: tocá adelantándote a él para caer en tiempo con todos. Usá auriculares.",
   "announce_net_monitor_off": "Monitoreo de red desactivado",
-  "announce_net_monitor_need_sfu": "Monitoreo de red: necesita que la sala esté en SFU para que tu señal vuelva por el servidor. Pulsá Control+Alt+S para forzar SFU.",
+  "announce_net_monitor_forcing_sfu": "Monitoreo de red activado. Activando SFU en la sala para que tu señal vuelva por el servidor. Usá auriculares.",
 
   "announce_bitrate": "{name} ajustó la calidad de la sala a {kbps} kbps",
   "announce_bitrate_original": "{name} restauró la calidad original (128 kbps)",

@@ -41,7 +41,7 @@ import {
   announce_jam_off,
   announce_net_monitor_on,
   announce_net_monitor_off,
-  announce_net_monitor_need_sfu,
+  announce_net_monitor_forcing_sfu,
   announce_bitrate,
   announce_bitrate_original,
 } from "../paraglide/messages.js";
@@ -809,21 +809,23 @@ export function useMediasoup() {
   // / AGC off) for full-band instrument tone with no processing latency — so the
   // effective processing is voiceProcessing AND NOT jam.
   const effectiveProcessing = voiceProcessingEnabled && !jamMode;
-  const prevMicSettingsRef = useRef({ micDeviceId, effectiveProcessing });
+  const prevMicSettingsRef = useRef({ micDeviceId, effectiveProcessing, jamMode });
   useEffect(() => {
     const previous = prevMicSettingsRef.current;
     if (
       previous.micDeviceId === micDeviceId &&
-      previous.effectiveProcessing === effectiveProcessing
+      previous.effectiveProcessing === effectiveProcessing &&
+      previous.jamMode === jamMode
     )
       return;
-    prevMicSettingsRef.current = { micDeviceId, effectiveProcessing };
+    prevMicSettingsRef.current = { micDeviceId, effectiveProcessing, jamMode };
     if (!localStreamRef.current) return;
     let cancelled = false;
     void (async () => {
       let stream: MediaStream;
       try {
-        stream = await getMicrophoneStream(micDeviceId, effectiveProcessing);
+        // jam = lowLatency capture (smallest input buffer).
+        stream = await getMicrophoneStream(micDeviceId, effectiveProcessing, jamMode);
       } catch (err) {
         console.error("[mic] device switch failed:", err);
         return;
@@ -842,12 +844,38 @@ export function useMediasoup() {
     return () => {
       cancelled = true;
     };
-  }, [micDeviceId, effectiveProcessing, connectMicToGraph, store]);
+  }, [micDeviceId, effectiveProcessing, jamMode, connectMicToGraph, store]);
 
   // Jam mode ("modo ensayo") toggled: re-apply the jitter-buffer target to the
   // tracks we're already receiving (0 for jam = lowest latency; the normal floor
   // otherwise) so it takes effect live, and give the honest guidance. The
   // unprocessed-capture half is handled by the mic effect above (effectiveProcessing).
+  // Mark our OUTGOING audio as high network priority while jamming, so the OS/
+  // network stack sets DSCP/QoS on those packets — many networks then queue them
+  // ahead of bulk traffic, shaving jitter/latency on a busy link. Applied to the
+  // SFU producer's sender and every P2P audio sender; re-applied on rebuild.
+  const applyJamSenderPriority = useCallback(async () => {
+    const priority: RTCPriorityType = store.getState().jamMode ? "high" : "medium";
+    const setPrio = async (sender: RTCRtpSender | null | undefined) => {
+      if (!sender) return;
+      try {
+        const params = sender.getParameters();
+        if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+        for (const enc of params.encodings) enc.networkPriority = priority;
+        await sender.setParameters(params);
+      } catch {
+        /* not renegotiated yet / unsupported — best-effort */
+      }
+    };
+    if (modeRef.current === "sfu") {
+      await setPrio(producerRef.current?.rtpSender);
+    } else {
+      for (const pc of p2pConnectionsRef.current.values()) {
+        await setPrio(pc.getSenders().find((s) => s.track?.kind === "audio"));
+      }
+    }
+  }, [store]);
+
   const prevJamRef = useRef(jamMode);
   useEffect(() => {
     const hint = jamMode ? 0 : JITTER_BUFFER_HINT;
@@ -857,6 +885,7 @@ export function useMediasoup() {
         (track as unknown as Record<string, number>).playoutDelayHint = hint;
       }
     }
+    void applyJamSenderPriority();
     // Only speak on an actual toggle, not on initial mount.
     if (prevJamRef.current === jamMode) return;
     prevJamRef.current = jamMode;
@@ -868,7 +897,7 @@ export function useMediasoup() {
     } else {
       store.getState().announce(announce_jam_off());
     }
-  }, [jamMode, store]);
+  }, [jamMode, applyJamSenderPriority, store]);
 
   // Track previously-applied secondary settings so a monitor-only change can
   // skip the getUserMedia round-trip (mirrors prevMicSettingsRef pattern).
@@ -1102,15 +1131,22 @@ export function useMediasoup() {
     if (prevNetMonRef.current === networkMonitor) return;
     prevNetMonRef.current = networkMonitor;
     if (networkMonitor) {
-      store
-        .getState()
-        .announce(
-          modeRef.current === "sfu" ? announce_net_monitor_on() : announce_net_monitor_need_sfu(),
-        );
+      if (modeRef.current !== "sfu" && !store.getState().forceSfu) {
+        // Network monitoring needs the server in the loop (your signal has to
+        // return via it). Auto-force SFU for the room instead of just warning:
+        // the switch-to-SFU then produces, and the post-produce hook wires the
+        // self-return automatically.
+        void emit("set-force-sfu", { force: true })
+          .then(() => store.getState().setForceSfu(true))
+          .catch((err) => console.error("[net-monitor] auto force-SFU failed:", err));
+        store.getState().announce(announce_net_monitor_forcing_sfu());
+      } else {
+        store.getState().announce(announce_net_monitor_on());
+      }
     } else {
       store.getState().announce(announce_net_monitor_off());
     }
-  }, [networkMonitor, applyNetworkMonitor, applyMicMonitor, store]);
+  }, [networkMonitor, applyNetworkMonitor, applyMicMonitor, emit, store]);
 
   // Toggle the shared-audio monitor live: also play the shared tab/system audio
   // out the app's selected playback device (it follows the speaker pick via the
@@ -1137,6 +1173,7 @@ export function useMediasoup() {
     const stream = await getMicrophoneStream(
       useRoomStore.getState().micDeviceId,
       useRoomStore.getState().voiceProcessingEnabled && !useRoomStore.getState().jamMode,
+      useRoomStore.getState().jamMode,
     );
     localStreamRef.current = stream;
     connectMicToGraph(stream);
@@ -1172,6 +1209,8 @@ export function useMediasoup() {
       const voiceSender = pc.addTrack(g.outDest.stream.getAudioTracks()[0], g.outDest.stream);
       // Apply the current room bitrate to this new P2P sender's encoder.
       void setSenderMaxBitrate(voiceSender, roomBitrateRef.current);
+      // Re-assert jam high network priority on this new sender.
+      void applyJamSenderPriority();
 
       // ICE candidates → relay via server
       pc.onicecandidate = (e) => {
@@ -1216,7 +1255,14 @@ export function useMediasoup() {
 
       return pc;
     },
-    [ensureLocalStream, connectMicToGraph, ensureOutGraph, effectiveGain, refreshSpatial],
+    [
+      ensureLocalStream,
+      connectMicToGraph,
+      ensureOutGraph,
+      effectiveGain,
+      refreshSpatial,
+      applyJamSenderPriority,
+    ],
   );
 
   // Apply candidates that were queued for a peer while its connection had no
@@ -1420,8 +1466,10 @@ export function useMediasoup() {
         stopTracks: false,
       });
       producerRef.current = producer;
-      // (Re)establish network monitoring on the fresh producer, if it's on.
+      // (Re)establish network monitoring on the fresh producer, if it's on, and
+      // re-assert the jam high-priority marking on the new sender.
       void applyNetworkMonitor();
+      void applyJamSenderPriority();
 
       // Share audio and file audio both mix directly into outDest (no separate
       // producer for either — no rebuild needed on SFU setup).
@@ -1442,6 +1490,7 @@ export function useMediasoup() {
       ensureOutGraph,
       consumeProducer,
       applyNetworkMonitor,
+      applyJamSenderPriority,
     ],
   );
 
@@ -1483,6 +1532,7 @@ export function useMediasoup() {
           stream = await getMicrophoneStream(
             store.getState().micDeviceId,
             store.getState().voiceProcessingEnabled && !store.getState().jamMode,
+            store.getState().jamMode,
           );
         } catch (err) {
           console.warn("[mic] no microphone — joining in listen/chat-only mode:", err);
