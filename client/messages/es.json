@@ -198,6 +198,8 @@
   "settings_secondary_label": "Activar placa de transmisión secundaria",
   "settings_secondary_device_label": "Dispositivo secundario",
   "settings_secondary_monitor_label": "Escuchar tu placa secundaria",
+  "settings_jam_label": "Modo ensayo (instrumentos)",
+  "settings_jam_hint": "Latencia al mínimo para tocar en vivo: micrófono sin procesar (sin cancelación de eco ni supresión de ruido) y buffer mínimo. Usa una interfaz de audio y escúchate por su monitor directo por hardware, no por el navegador. Solo funciona bien con gente cercana y en P2P (no en SFU). A cambio, puede haber algún microcorte.",
   "settings_share_monitor_label": "Oír el audio compartido en tu dispositivo",
   "settings_share_monitor_hint": "Al compartir pestaña/pantalla, reproduce ese audio también por tu dispositivo de salida elegido. Puede generar eco si la pestaña ya suena en ese mismo dispositivo.",
   "settings_secondary_hint": "Mezcla un segundo dispositivo de grabación (otro micro o un loopback) en tu audio. Al silenciar, solo se silencia tu micro principal.",
@@ -289,6 +291,9 @@
   "announce_room_open": "Sala abierta",
   "announce_room_entering": "Entrando a la sala…",
   "announce_room_no_admit": "No se pudo entrar a la sala",
+  "announce_jam_on": "Modo ensayo activado. Micrófono sin procesar y latencia al mínimo. Escúchate por el monitor directo de tu interfaz, no por el navegador. Funciona mejor con gente cercana y en P2P.",
+  "announce_jam_on_sfu": "Modo ensayo activado, pero la sala está en SFU: la latencia no baja porque el audio pasa por el servidor. Para ensayar, usá P2P (que la sala no esté forzada a SFU).",
+  "announce_jam_off": "Modo ensayo desactivado",
 
   "announce_bitrate": "{name} ajustó la calidad de la sala a {kbps} kbps",
   "announce_bitrate_original": "{name} restauró la calidad original (128 kbps)",

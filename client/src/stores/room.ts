@@ -27,6 +27,7 @@ function loadMicGain(): number {
 const MIC_DEVICE_KEY = "jdh-speak:micDeviceId";
 const SPEAKER_DEVICE_KEY = "jdh-speak:speakerDeviceId";
 const VOICE_PROCESSING_KEY = "jdh-speak:voiceProcessing";
+const JAM_MODE_KEY = "jdh-speak:jamMode";
 const SECONDARY_ENABLED_KEY = "jdh-speak:secondaryEnabled";
 const SECONDARY_DEVICE_KEY = "jdh-speak:secondaryDeviceId";
 const SECONDARY_MONITOR_KEY = "jdh-speak:secondaryMonitor";
@@ -193,6 +194,9 @@ interface RoomState {
   // automatic gain). Defaults OFF everywhere (iPhone/iPad included — they send a
   // clean mono signal instead; see loadVoiceProcessing / microphoneConstraints).
   voiceProcessingEnabled: boolean;
+  // Jam ("modo ensayo"): minimise latency for playing instruments together —
+  // unprocessed capture + tiny jitter buffer. Per-user, local, persisted.
+  jamMode: boolean;
   // Monitor your own primary mic locally (hear yourself through your speakers).
   // Off by default; for-you only (like the secondary monitor). Persisted.
   micMonitor: boolean;
@@ -301,6 +305,7 @@ interface RoomState {
   setMicDeviceId: (deviceId: string) => void;
   setSpeakerDeviceId: (deviceId: string) => void;
   setVoiceProcessingEnabled: (enabled: boolean) => void;
+  setJamMode: (enabled: boolean) => void;
   setMicMonitor: (monitor: boolean) => void;
   setSpatialAudio: (enabled: boolean) => void;
   setForceSfu: (force: boolean) => void;
@@ -360,6 +365,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   micDeviceId: loadString(MIC_DEVICE_KEY),
   speakerDeviceId: loadString(SPEAKER_DEVICE_KEY),
   voiceProcessingEnabled: loadVoiceProcessing(),
+  jamMode: loadString(JAM_MODE_KEY) === "true",
   micMonitor: loadString(MIC_MONITOR_KEY) === "true",
   spatialAudio: false,
   forceSfu: false,
@@ -456,6 +462,10 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setVoiceProcessingEnabled: (voiceProcessingEnabled) => {
     saveString(VOICE_PROCESSING_KEY, String(voiceProcessingEnabled));
     set({ voiceProcessingEnabled });
+  },
+  setJamMode: (jamMode) => {
+    saveString(JAM_MODE_KEY, String(jamMode));
+    set({ jamMode });
   },
   setMicMonitor: (micMonitor) => {
     saveString(MIC_MONITOR_KEY, String(micMonitor));

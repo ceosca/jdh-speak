@@ -36,6 +36,9 @@ import {
   announce_room_open,
   announce_room_entering,
   announce_room_no_admit,
+  announce_jam_on,
+  announce_jam_on_sfu,
+  announce_jam_off,
   announce_bitrate,
   announce_bitrate_original,
 } from "../paraglide/messages.js";
@@ -764,6 +767,7 @@ export function useMediasoup() {
   const micDeviceId = useRoomStore((s) => s.micDeviceId);
   const speakerDeviceId = useRoomStore((s) => s.speakerDeviceId);
   const voiceProcessingEnabled = useRoomStore((s) => s.voiceProcessingEnabled);
+  const jamMode = useRoomStore((s) => s.jamMode);
   const secondaryEnabled = useRoomStore((s) => s.secondaryEnabled);
   const secondaryDeviceId = useRoomStore((s) => s.secondaryDeviceId);
   const secondaryMonitor = useRoomStore((s) => s.secondaryMonitor);
@@ -791,21 +795,25 @@ export function useMediasoup() {
   // and voice-processing preference, then reroute it into the outgoing graph.
   // Senders/producers never see the swap because they always carry outDest's
   // track. Before a call (no local stream), join() picks the settings up.
-  const prevMicSettingsRef = useRef({ micDeviceId, voiceProcessingEnabled });
+  // Jam ("modo ensayo") forces capture UNPROCESSED (echo cancel / noise suppress
+  // / AGC off) for full-band instrument tone with no processing latency — so the
+  // effective processing is voiceProcessing AND NOT jam.
+  const effectiveProcessing = voiceProcessingEnabled && !jamMode;
+  const prevMicSettingsRef = useRef({ micDeviceId, effectiveProcessing });
   useEffect(() => {
     const previous = prevMicSettingsRef.current;
     if (
       previous.micDeviceId === micDeviceId &&
-      previous.voiceProcessingEnabled === voiceProcessingEnabled
+      previous.effectiveProcessing === effectiveProcessing
     )
       return;
-    prevMicSettingsRef.current = { micDeviceId, voiceProcessingEnabled };
+    prevMicSettingsRef.current = { micDeviceId, effectiveProcessing };
     if (!localStreamRef.current) return;
     let cancelled = false;
     void (async () => {
       let stream: MediaStream;
       try {
-        stream = await getMicrophoneStream(micDeviceId, voiceProcessingEnabled);
+        stream = await getMicrophoneStream(micDeviceId, effectiveProcessing);
       } catch (err) {
         console.error("[mic] device switch failed:", err);
         return;
@@ -820,12 +828,37 @@ export function useMediasoup() {
       localStreamRef.current = stream;
       connectMicToGraph(stream);
       old?.getTracks().forEach((t) => t.stop());
-      // Voice-processing flag changed — no announcement needed.
     })();
     return () => {
       cancelled = true;
     };
-  }, [micDeviceId, voiceProcessingEnabled, connectMicToGraph, store]);
+  }, [micDeviceId, effectiveProcessing, connectMicToGraph, store]);
+
+  // Jam mode ("modo ensayo") toggled: re-apply the jitter-buffer target to the
+  // tracks we're already receiving (0 for jam = lowest latency; the normal floor
+  // otherwise) so it takes effect live, and give the honest guidance. The
+  // unprocessed-capture half is handled by the mic effect above (effectiveProcessing).
+  const prevJamRef = useRef(jamMode);
+  useEffect(() => {
+    const hint = jamMode ? 0 : JITTER_BUFFER_HINT;
+    for (const pa of peerAudiosRef.current.values()) {
+      const track = (pa.audioEl.srcObject as MediaStream | null)?.getAudioTracks()[0];
+      if (track && "playoutDelayHint" in track) {
+        (track as unknown as Record<string, number>).playoutDelayHint = hint;
+      }
+    }
+    // Only speak on an actual toggle, not on initial mount.
+    if (prevJamRef.current === jamMode) return;
+    prevJamRef.current = jamMode;
+    if (jamMode) {
+      // In SFU the media detours through the server, so latency won't drop — warn.
+      store
+        .getState()
+        .announce(modeRef.current === "sfu" ? announce_jam_on_sfu() : announce_jam_on());
+    } else {
+      store.getState().announce(announce_jam_off());
+    }
+  }, [jamMode, store]);
 
   // Track previously-applied secondary settings so a monitor-only change can
   // skip the getUserMedia round-trip (mirrors prevMicSettingsRef pattern).
@@ -1020,7 +1053,7 @@ export function useMediasoup() {
     // Re-acquire mic (on the user's selected device, if any)
     const stream = await getMicrophoneStream(
       useRoomStore.getState().micDeviceId,
-      useRoomStore.getState().voiceProcessingEnabled,
+      useRoomStore.getState().voiceProcessingEnabled && !useRoomStore.getState().jamMode,
     );
     localStreamRef.current = stream;
     connectMicToGraph(stream);
@@ -1072,7 +1105,7 @@ export function useMediasoup() {
       pc.ontrack = (e) => {
         const remoteTrack = e.track;
         if ("playoutDelayHint" in remoteTrack) {
-          (remoteTrack as unknown as Record<string, number>).playoutDelayHint = JITTER_BUFFER_HINT;
+          (remoteTrack as unknown as Record<string, number>).playoutDelayHint = useRoomStore.getState().jamMode ? 0 : JITTER_BUFFER_HINT;
         }
         const pipeline = createAudioPipeline(remoteTrack);
         // Respect deafen / per-peer volume on a (re)built P2P pipeline too —
@@ -1169,7 +1202,7 @@ export function useMediasoup() {
       });
 
       if ("playoutDelayHint" in consumer.track) {
-        (consumer.track as unknown as Record<string, number>).playoutDelayHint = JITTER_BUFFER_HINT;
+        (consumer.track as unknown as Record<string, number>).playoutDelayHint = useRoomStore.getState().jamMode ? 0 : JITTER_BUFFER_HINT;
       }
 
       const pipeline = createAudioPipeline(consumer.track);
@@ -1358,7 +1391,7 @@ export function useMediasoup() {
         try {
           stream = await getMicrophoneStream(
             store.getState().micDeviceId,
-            store.getState().voiceProcessingEnabled,
+            store.getState().voiceProcessingEnabled && !store.getState().jamMode,
           );
         } catch (err) {
           console.warn("[mic] no microphone — joining in listen/chat-only mode:", err);

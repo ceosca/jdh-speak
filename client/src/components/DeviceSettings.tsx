@@ -22,7 +22,9 @@ export function DeviceSettings() {
   const setSecondaryMonitor = useRoomStore((s) => s.setSecondaryMonitor);
 
   const shareMonitor = useRoomStore((s) => s.shareMonitor);
+  const jamMode = useRoomStore((s) => s.jamMode);
   const setShareMonitor = useRoomStore((s) => s.setShareMonitor);
+  const setJamMode = useRoomStore((s) => s.setJamMode);
 
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
   const [speakers, setSpeakers] = useState<MediaDeviceInfo[]>([]);
@@ -35,6 +37,8 @@ export function DeviceSettings() {
   const secondaryMonitorId = useId();
   const shareMonitorId = useId();
   const shareMonitorHintId = useId();
+  const jamModeId = useId();
+  const jamModeHintId = useId();
 
   const refresh = useCallback(async () => {
     try {
@@ -182,6 +186,27 @@ export function DeviceSettings() {
         </div>
         <p id={shareMonitorHintId} className="mt-1 text-xs text-sonic-400">
           {m.settings_share_monitor_hint()}
+        </p>
+      </div>
+
+      {/* Jam mode: minimise latency for playing instruments together (unprocessed
+          capture + tiny jitter buffer). Local + persisted, per-user. */}
+      <div>
+        <div className="flex items-start gap-2">
+          <input
+            type="checkbox"
+            id={jamModeId}
+            checked={jamMode}
+            onChange={(e) => setJamMode(e.target.checked)}
+            aria-describedby={jamModeHintId}
+            className="mt-0.5 shrink-0 accent-sonic-accent"
+          />
+          <label htmlFor={jamModeId} className="text-xs font-medium text-sonic-300 cursor-pointer">
+            {m.settings_jam_label()}
+          </label>
+        </div>
+        <p id={jamModeHintId} className="mt-1 text-xs text-sonic-400">
+          {m.settings_jam_hint()}
         </p>
       </div>
 
