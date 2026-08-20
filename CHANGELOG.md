@@ -8,6 +8,29 @@
 
 ---
 
+## 2026-08-19
+
+### Modo ensayo (instrumentos) — casilla en Ajustes de audio
+
+- **Qué:** casilla **"Modo ensayo (instrumentos)"** (bajo las de monitoreo) que
+  exprime la latencia de WebRTC para tocar en vivo con amigos **cercanos**. Es
+  per-usuario, local y persistido.
+- **Cómo:** con jam **on**, la captura del micro va **sin procesar** (sin
+  cancelación de eco / supresión de ruido / AGC) para tono real de instrumento y
+  cero latencia de procesado, y el **buffer de jitter** de recepción baja a **0**
+  (vs 50 ms). Ambas se re-aplican en vivo al alternar (re-adquiere el micro vía
+  `effectiveProcessing = voiceProcessing && !jam`; ajusta `playoutDelayHint` de
+  las pistas ya recibidas). Aviso hablado al activar con la guía honesta (interfaz
+  + monitor directo por hardware, auriculares, P2P).
+- **Honestidad / límites:** un navegador **no** iguala a Jamulus (la tubería de
+  audio `getUserMedia`+WebAudio, ~40-60 ms, es infranqueable desde JS). Solo es
+  *tocable* con RTT bajo (gente cercana) y en **P2P**; en SFU el audio pasa por el
+  servidor y la latencia no baja (el aviso lo dice). El `.deb` de Jamulus es
+  C++/Qt nativo, no reutilizable en navegador. Palancas siguientes posibles:
+  puentear el limitador de envío y forzar P2P automáticamente en jam.
+
+---
+
 ## 2026-08-05
 
 ### Auto-colarse desde la fantasma a la sala cerrada — `Ctrl+Alt+B`
