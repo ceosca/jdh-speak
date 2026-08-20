@@ -83,6 +83,7 @@
       let micStream;
       let running = false;
       let muted = false;
+      let wtOptions = undefined; // serverCertificateHashes when self-signed
 
       // Stats
       let seq = 0;
@@ -174,7 +175,7 @@
           $("start").disabled = true;
           const url = $("url").value.trim();
           log("Conectando WebTransport a " + url + " …");
-          wtSession = new WebTransport(url);
+          wtSession = new WebTransport(url, wtOptions);
           await wtSession.ready;
           log("WebTransport listo.");
           wtWriter = wtSession.datagrams.writable.getWriter();
@@ -331,7 +332,16 @@
         .then((d) => {
           if (d && d.enabled && d.url) {
             $("url").value = d.url;
-            log("Relay del servidor: " + d.url);
+            if (d.certHash && Array.isArray(d.certHash.value)) {
+              wtOptions = {
+                serverCertificateHashes: [
+                  { algorithm: "sha-256", value: new Uint8Array(d.certHash.value) },
+                ],
+              };
+              log("Relay del servidor: " + d.url + " (cert autofirmado + hash)");
+            } else {
+              log("Relay del servidor: " + d.url + " (cert de confianza)");
+            }
           } else {
             log("El servidor no tiene el probe activo (WT_PROBE=0 o sin cert).");
             $("live").textContent = "El probe no está activo en el servidor.";

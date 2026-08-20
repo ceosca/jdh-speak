@@ -5,25 +5,78 @@
 //
 // It reproduces the network-monitor over a completely different transport: your
 // own audio, sent as WebCodecs Opus over WebTransport (QUIC) datagrams, echoed
-// straight back by this relay, so the browser can time the round-trip against the
-// current WebRTC/mediasoup path. It does NOT relay between peers, record, stream,
-// or touch any real-app state — just bounces datagrams.
+// straight back, so the browser can time the round-trip against the current
+// WebRTC/mediasoup path. It does NOT relay between peers, record, stream, or touch
+// any real-app state — just bounces datagrams.
 //
-// FAIL-SAFE BY DESIGN: everything is wrapped so that a missing dependency, an
-// unreadable cert, or a bind error only logs a warning and leaves the probe
-// disabled. It must never crash or degrade the conferencing server. To turn it
-// off entirely, set WT_PROBE=0.
+// CERT — two modes, decided at runtime:
+//   * If CERT_PATH/KEY_PATH point at a readable cert (e.g. the service runs as
+//     root and can read Caddy's live cert), use it: the browser trusts it and no
+//     serverCertificateHashes is needed.
+//   * Otherwise (this Pi runs the service as `pi`, which can't read Caddy's cert)
+//     self-sign a short-lived ECDSA P-256 cert with openssl and hand its SHA-256
+//     to the browser via serverCertificateHashes. No root, and the domain's real
+//     private key is never copied.
+//
+// FAIL-SAFE BY DESIGN: any failure (missing dep, no openssl, bind error) only logs
+// a warning and leaves the probe disabled; the conferencing server boots
+// regardless. Turn it off entirely with WT_PROBE=0.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const CADDY_DIR =
-  "/var/lib/caddy/.local/share/caddy/certificates/" +
-  "acme-v02.api.letsencrypt.org-directory/jdh.privatedns.org";
-
-let info: { enabled: boolean; url: string | null } = { enabled: false, url: null };
+type CertHash = { algorithm: "sha-256"; value: number[] };
+let info: { enabled: boolean; url: string | null; certHash: CertHash | null } = {
+  enabled: false,
+  url: null,
+  certHash: null,
+};
 
 export function getWebTransportProbeInfo() {
   return info;
+}
+
+// SHA-256 of the cert's DER bytes — the value WebTransport's serverCertificateHashes
+// expects. Returned as a plain number[] so it survives JSON to the browser.
+function certSha256(certPem: string): CertHash {
+  const b64 = certPem
+    .replace(/-----BEGIN CERTIFICATE-----/g, "")
+    .replace(/-----END CERTIFICATE-----/g, "")
+    .replace(/\s+/g, "");
+  const der = Buffer.from(b64, "base64");
+  const digest = createHash("sha256").update(der).digest();
+  return { algorithm: "sha-256", value: Array.from(digest) };
+}
+
+// Self-sign a short-lived ECDSA P-256 cert (serverCertificateHashes requires
+// ECDSA and validity <=14 days). Regenerated if missing or expiring soon.
+function ensureSelfSignedCert(dir: string): { cert: string; key: string } | null {
+  const certFile = path.join(dir, "cert.pem");
+  const keyFile = path.join(dir, "key.pem");
+
+  const stillValid = () => {
+    if (!existsSync(certFile) || !existsSync(keyFile)) return false;
+    const r = spawnSync("openssl", ["x509", "-in", certFile, "-checkend", "172800"]); // 2 days
+    return r.status === 0;
+  };
+
+  if (!stillValid()) {
+    mkdirSync(dir, { recursive: true });
+    const r = spawnSync("openssl", [
+      "req", "-x509", "-newkey", "ec",
+      "-pkeyopt", "ec_paramgen_curve:prime256v1",
+      "-keyout", keyFile, "-out", certFile,
+      "-days", "13", "-nodes", "-subj", "/CN=jam-probe",
+    ]);
+    if (r.status !== 0) {
+      const msg = (r.stderr || Buffer.from("")).toString().split("\n")[0] || "openssl failed";
+      throw new Error(`openssl self-sign failed: ${msg}`);
+    }
+  }
+  return { cert: readFileSync(certFile, "utf8"), key: readFileSync(keyFile, "utf8") };
 }
 
 export async function startWebTransportProbe(): Promise<void> {
@@ -34,20 +87,33 @@ export async function startWebTransportProbe(): Promise<void> {
   const port = Number(process.env.WT_PROBE_PORT || 40059);
   const host = process.env.WT_PROBE_HOST || "0.0.0.0";
   const publicHost = process.env.WT_PROBE_PUBLIC_HOST || "jdh.privatedns.org";
-  const certPath = process.env.CERT_PATH || `${CADDY_DIR}/jdh.privatedns.org.crt`;
-  const keyPath = process.env.KEY_PATH || `${CADDY_DIR}/jdh.privatedns.org.key`;
+  const certPath = process.env.CERT_PATH;
+  const keyPath = process.env.KEY_PATH;
 
   try {
-    const cert = readFileSync(certPath, "utf8");
-    const privKey = readFileSync(keyPath, "utf8");
+    let cert: string;
+    let privKey: string;
+    let certHash: CertHash | null = null;
 
-    // Dynamic import so an absent/incompatible native module can't break server
-    // startup — the whole conferencing app must boot with or without this probe.
-    // Indirected specifier so `tsc` doesn't try to resolve the (native, not
-    // installed on dev machines) package at build time.
+    if (certPath && keyPath && existsSync(certPath) && existsSync(keyPath)) {
+      // Trusted real cert (root deploy). No hash needed.
+      cert = readFileSync(certPath, "utf8");
+      privKey = readFileSync(keyPath, "utf8");
+    } else {
+      // Self-signed fallback (service runs as pi). Browser trusts it via the hash.
+      const here = path.dirname(fileURLToPath(import.meta.url));
+      const gen = ensureSelfSignedCert(path.join(here, "..", ".wt-probe-cert"));
+      if (!gen) throw new Error("could not obtain a certificate");
+      cert = gen.cert;
+      privKey = gen.key;
+      certHash = certSha256(gen.cert);
+    }
+
+    // Indirected specifier so `tsc` (and dev machines without the native module)
+    // don't try to resolve the package at build time.
     const spec = "@fails-components/webtransport";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const mod: any = await import(/* @vite-ignore */ spec);
+    const mod: any = await import(spec);
     const Http3Server = mod.Http3Server;
 
     const server = new Http3Server({
@@ -60,14 +126,17 @@ export async function startWebTransportProbe(): Promise<void> {
     server.startServer();
     await server.ready;
 
-    info = { enabled: true, url: `https://${publicHost}:${port}/echo` };
-    console.log(`[wt-probe] HTTP/3 echo relay on udp/${port} (path /echo) — ${info.url}`);
+    info = { enabled: true, url: `https://${publicHost}:${port}/echo`, certHash };
+    console.log(
+      `[wt-probe] HTTP/3 echo relay on udp/${port} (path /echo) — ${info.url}` +
+        (certHash ? " [self-signed + hash]" : " [trusted cert]"),
+    );
 
     void acceptLoop(server);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[wt-probe] not started (probe stays off, server unaffected): ${msg}`);
-    info = { enabled: false, url: null };
+    info = { enabled: false, url: null, certHash: null };
   }
 }
 
