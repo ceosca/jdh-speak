@@ -8,7 +8,8 @@
     "start": "node relay.mjs"
   },
   "dependencies": {
-    "@fails-components/webtransport": "1.4.0"
+    "@fails-components/webtransport": "1.4.0",
+    "@fails-components/webtransport-transport-http3-quiche": "1.4.0"
   },
   "comment": "Pinned to 1.4.x: the 1.5.1+ prebuilt arm64 quiche binary needs GLIBC_2.38, but the Pi (Debian 12 Bookworm) has 2.36. Transport 1.4.0 is the newest prebuild that loads under 2.36. overrides forces the transport to match so it isn't bumped to a glibc-2.38 build.",
   "overrides": {
