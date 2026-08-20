@@ -91,15 +91,24 @@ export async function startWebTransportProbe(): Promise<void> {
   const keyPath = process.env.KEY_PATH;
 
   try {
-    let cert: string;
-    let privKey: string;
+    let cert = "";
+    let privKey = "";
     let certHash: CertHash | null = null;
 
-    if (certPath && keyPath && existsSync(certPath) && existsSync(keyPath)) {
-      // Trusted real cert (root deploy). No hash needed.
-      cert = readFileSync(certPath, "utf8");
-      privKey = readFileSync(keyPath, "utf8");
-    } else {
+    // Try the trusted real cert first (root deploy). existsSync can be true while
+    // the read still EACCESes — pi can stat Caddy's cert (dir has +x) but not read
+    // it (files are 640 caddy) — so ACTUALLY read inside try/catch and fall
+    // through to self-signed on any failure.
+    if (certPath && keyPath) {
+      try {
+        cert = readFileSync(certPath, "utf8");
+        privKey = readFileSync(keyPath, "utf8");
+      } catch {
+        cert = "";
+        privKey = "";
+      }
+    }
+    if (!cert || !privKey) {
       // Self-signed fallback (service runs as pi). Browser trusts it via the hash.
       const here = path.dirname(fileURLToPath(import.meta.url));
       const gen = ensureSelfSignedCert(path.join(here, "..", ".wt-probe-cert"));
