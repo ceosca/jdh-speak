@@ -28,6 +28,7 @@ const MIC_DEVICE_KEY = "jdh-speak:micDeviceId";
 const SPEAKER_DEVICE_KEY = "jdh-speak:speakerDeviceId";
 const VOICE_PROCESSING_KEY = "jdh-speak:voiceProcessing";
 const JAM_MODE_KEY = "jdh-speak:jamMode";
+const NETWORK_MONITOR_KEY = "jdh-speak:networkMonitor";
 const SECONDARY_ENABLED_KEY = "jdh-speak:secondaryEnabled";
 const SECONDARY_DEVICE_KEY = "jdh-speak:secondaryDeviceId";
 const SECONDARY_MONITOR_KEY = "jdh-speak:secondaryMonitor";
@@ -197,6 +198,10 @@ interface RoomState {
   // Jam ("modo ensayo"): minimise latency for playing instruments together —
   // unprocessed capture + tiny jitter buffer. Per-user, local, persisted.
   jamMode: boolean;
+  // Network monitoring ("a lo Jamulus"): hear your OWN signal returned via the
+  // server (consume your own producer) as a timing reference. SFU-only. Local,
+  // persisted.
+  networkMonitor: boolean;
   // Monitor your own primary mic locally (hear yourself through your speakers).
   // Off by default; for-you only (like the secondary monitor). Persisted.
   micMonitor: boolean;
@@ -306,6 +311,7 @@ interface RoomState {
   setSpeakerDeviceId: (deviceId: string) => void;
   setVoiceProcessingEnabled: (enabled: boolean) => void;
   setJamMode: (enabled: boolean) => void;
+  setNetworkMonitor: (enabled: boolean) => void;
   setMicMonitor: (monitor: boolean) => void;
   setSpatialAudio: (enabled: boolean) => void;
   setForceSfu: (force: boolean) => void;
@@ -366,6 +372,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   speakerDeviceId: loadString(SPEAKER_DEVICE_KEY),
   voiceProcessingEnabled: loadVoiceProcessing(),
   jamMode: loadString(JAM_MODE_KEY) === "true",
+  networkMonitor: loadString(NETWORK_MONITOR_KEY) === "true",
   micMonitor: loadString(MIC_MONITOR_KEY) === "true",
   spatialAudio: false,
   forceSfu: false,
@@ -466,6 +473,10 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setJamMode: (jamMode) => {
     saveString(JAM_MODE_KEY, String(jamMode));
     set({ jamMode });
+  },
+  setNetworkMonitor: (networkMonitor) => {
+    saveString(NETWORK_MONITOR_KEY, String(networkMonitor));
+    set({ networkMonitor });
   },
   setMicMonitor: (micMonitor) => {
     saveString(MIC_MONITOR_KEY, String(micMonitor));

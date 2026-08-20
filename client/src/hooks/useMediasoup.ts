@@ -39,6 +39,9 @@ import {
   announce_jam_on,
   announce_jam_on_sfu,
   announce_jam_off,
+  announce_net_monitor_on,
+  announce_net_monitor_off,
+  announce_net_monitor_need_sfu,
   announce_bitrate,
   announce_bitrate_original,
 } from "../paraglide/messages.js";
@@ -301,6 +304,12 @@ export function useMediasoup() {
   const sendTransportRef = useRef<Transport | null>(null);
   const recvTransportRef = useRef<Transport | null>(null);
   const producerRef = useRef<Producer | null>(null);
+  // Network-monitor self-consumer (our own producer returned via the server, as
+  // a Jamulus-style timing reference). SFU-only; keyed by the producer id it
+  // follows so a re-produce re-establishes it.
+  const netMonitorRef = useRef<
+    (ReturnType<typeof createAudioPipeline> & { consumer?: Consumer; producerId?: string }) | null
+  >(null);
   const peerAudiosRef = useRef<Map<string, PeerAudio>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
   // True when we joined WITHOUT a microphone (opted out, or none available /
@@ -768,6 +777,7 @@ export function useMediasoup() {
   const speakerDeviceId = useRoomStore((s) => s.speakerDeviceId);
   const voiceProcessingEnabled = useRoomStore((s) => s.voiceProcessingEnabled);
   const jamMode = useRoomStore((s) => s.jamMode);
+  const networkMonitor = useRoomStore((s) => s.networkMonitor);
   const secondaryEnabled = useRoomStore((s) => s.secondaryEnabled);
   const secondaryDeviceId = useRoomStore((s) => s.secondaryDeviceId);
   const secondaryMonitor = useRoomStore((s) => s.secondaryMonitor);
@@ -1001,7 +1011,10 @@ export function useMediasoup() {
     g.monitorPanner.disconnect();
 
     const state = store.getState();
-    if (!state.micMonitor) return;
+    // Network monitoring (your own return via the server) replaces the local
+    // monitor — otherwise you'd hear yourself twice (locally at 0 ms AND the
+    // network return). So the local monitor stands down while it's on.
+    if (!state.micMonitor || state.networkMonitor) return;
 
     if (state.spatialAudio) {
       // Your own seat: your configured spot, or the even-spread spot — matching
@@ -1028,6 +1041,76 @@ export function useMediasoup() {
   useEffect(() => {
     applyMicMonitor();
   }, [micMonitor, applyMicMonitor]);
+
+  // Network monitoring ("a lo Jamulus"): hear your OWN signal returned via the
+  // server (consume your own producer) so you can play to the shared timing —
+  // you anticipate your own return instead of your local sound. SFU-only (P2P has
+  // no producer and never returns your audio). Re-established whenever the
+  // producer is (re)built, since consuming needs the current producer id.
+  const applyNetworkMonitor = useCallback(async () => {
+    const tearDown = () => {
+      if (netMonitorRef.current) {
+        destroyAudioPipeline(netMonitorRef.current);
+        netMonitorRef.current = null;
+      }
+    };
+    const on = store.getState().networkMonitor;
+    if (!on) return tearDown();
+
+    // Needs the server in the loop and our own producer to consume back.
+    const producer = producerRef.current;
+    const device = deviceRef.current;
+    const recvTransport = recvTransportRef.current;
+    if (modeRef.current !== "sfu" || !producer || !device || !recvTransport) {
+      tearDown();
+      return;
+    }
+    // Already monitoring THIS producer — nothing to do.
+    if (netMonitorRef.current?.producerId === producer.id) return;
+    tearDown();
+
+    try {
+      const res = await emit<ConsumeResult>("consume", {
+        producerId: producer.id,
+        rtpCapabilities: device.recvRtpCapabilities,
+      });
+      const consumer = await recvTransport.consume({
+        id: res.consumerId,
+        producerId: res.producerId,
+        kind: res.kind as "audio",
+        rtpParameters: res.rtpParameters as Parameters<
+          typeof recvTransport.consume
+        >[0]["rtpParameters"],
+      });
+      // Minimum buffer on the return — the whole point is to hear it as early as
+      // the network allows (this IS the latency you play against).
+      if ("playoutDelayHint" in consumer.track) {
+        (consumer.track as unknown as Record<string, number>).playoutDelayHint = 0;
+      }
+      const pipeline = createAudioPipeline(consumer.track); // gain → destination
+      pipeline.gainNode.gain.value = 1;
+      netMonitorRef.current = { ...pipeline, consumer, producerId: producer.id };
+    } catch (err) {
+      console.error("[net-monitor] self-consume failed:", err);
+    }
+  }, [emit, store]);
+
+  const prevNetMonRef = useRef(networkMonitor);
+  useEffect(() => {
+    void applyNetworkMonitor();
+    applyMicMonitor(); // local monitor stands down (or returns) to avoid doubling
+    if (prevNetMonRef.current === networkMonitor) return;
+    prevNetMonRef.current = networkMonitor;
+    if (networkMonitor) {
+      store
+        .getState()
+        .announce(
+          modeRef.current === "sfu" ? announce_net_monitor_on() : announce_net_monitor_need_sfu(),
+        );
+    } else {
+      store.getState().announce(announce_net_monitor_off());
+    }
+  }, [networkMonitor, applyNetworkMonitor, applyMicMonitor, store]);
 
   // Toggle the shared-audio monitor live: also play the shared tab/system audio
   // out the app's selected playback device (it follows the speaker pick via the
@@ -1172,6 +1255,11 @@ export function useMediasoup() {
     // (a new P2P session's candidates can't arrive before its offer) — drop
     // them so they never flush into a future session's connection.
     pendingCandidatesRef.current.clear();
+    // The network-monitor self-consumer belongs to the (now-closed) producer.
+    if (netMonitorRef.current) {
+      destroyAudioPipeline(netMonitorRef.current);
+      netMonitorRef.current = null;
+    }
     cleanupAllPeerAudio();
   }, [cleanupAllPeerAudio]);
 
@@ -1332,6 +1420,8 @@ export function useMediasoup() {
         stopTracks: false,
       });
       producerRef.current = producer;
+      // (Re)establish network monitoring on the fresh producer, if it's on.
+      void applyNetworkMonitor();
 
       // Share audio and file audio both mix directly into outDest (no separate
       // producer for either — no rebuild needed on SFU setup).
@@ -1351,6 +1441,7 @@ export function useMediasoup() {
       ensureLocalStream,
       ensureOutGraph,
       consumeProducer,
+      applyNetworkMonitor,
     ],
   );
 

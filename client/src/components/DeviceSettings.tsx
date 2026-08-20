@@ -23,8 +23,10 @@ export function DeviceSettings() {
 
   const shareMonitor = useRoomStore((s) => s.shareMonitor);
   const jamMode = useRoomStore((s) => s.jamMode);
+  const networkMonitor = useRoomStore((s) => s.networkMonitor);
   const setShareMonitor = useRoomStore((s) => s.setShareMonitor);
   const setJamMode = useRoomStore((s) => s.setJamMode);
+  const setNetworkMonitor = useRoomStore((s) => s.setNetworkMonitor);
 
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
   const [speakers, setSpeakers] = useState<MediaDeviceInfo[]>([]);
@@ -39,6 +41,8 @@ export function DeviceSettings() {
   const shareMonitorHintId = useId();
   const jamModeId = useId();
   const jamModeHintId = useId();
+  const netMonitorId = useId();
+  const netMonitorHintId = useId();
 
   const refresh = useCallback(async () => {
     try {
@@ -207,6 +211,27 @@ export function DeviceSettings() {
         </div>
         <p id={jamModeHintId} className="mt-1 text-xs text-sonic-400">
           {m.settings_jam_hint()}
+        </p>
+      </div>
+
+      {/* Network monitoring: hear your own return via the server (Jamulus-style
+          timing reference). SFU-only. */}
+      <div>
+        <div className="flex items-start gap-2">
+          <input
+            type="checkbox"
+            id={netMonitorId}
+            checked={networkMonitor}
+            onChange={(e) => setNetworkMonitor(e.target.checked)}
+            aria-describedby={netMonitorHintId}
+            className="mt-0.5 shrink-0 accent-sonic-accent"
+          />
+          <label htmlFor={netMonitorId} className="text-xs font-medium text-sonic-300 cursor-pointer">
+            {m.settings_net_monitor_label()}
+          </label>
+        </div>
+        <p id={netMonitorHintId} className="mt-1 text-xs text-sonic-400">
+          {m.settings_net_monitor_hint()}
         </p>
       </div>
 

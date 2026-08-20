@@ -8,6 +8,27 @@
 
 ---
 
+## 2026-08-19 (2)
+
+### Monitoreo de red (retorno propio, "a lo Jamulus")
+
+- **Qué:** casilla **"Monitoreo de red (oír tu propio retorno)"**. En vez del
+  monitor local, oís **tu propia señal de vuelta por el servidor** a la latencia
+  de red — la referencia de tiempo con la que se toca en Jamulus: te adelantás a
+  tu propio rebote para caer en tiempo con todos. Requiere **SFU** y auriculares.
+- **Cómo:** el cliente **consume su PROPIO productor** (el servidor ya lo
+  permitía; la app se auto-excluía solo del lado cliente). Ese retorno se
+  reproduce por un pipeline dedicado (gain → destino) con `playoutDelayHint = 0`
+  (la latencia que oís ES la de red). Se re-establece al (re)crear el productor
+  (reconexión / cambio de modo); se cae solo en `teardownSfu` (P2P no tiene
+  productor). Suprime el monitor local mientras está activo (para no oírte dos
+  veces). Aviso hablado; si la sala no está en SFU, avisa que pulses Ctrl+Alt+S.
+- **Por qué corrige el diseño:** el monitoreo de red **no** se puede en P2P (tu
+  señal nunca vuelve); necesita el servidor en el bucle. Es la esencia del modelo
+  de Jamulus (mezcla/retorno en servidor).
+
+---
+
 ## 2026-08-19
 
 ### Modo ensayo (instrumentos) — casilla en Ajustes de audio

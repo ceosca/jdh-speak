@@ -200,6 +200,8 @@
   "settings_secondary_monitor_label": "Escuchar tu placa secundaria",
   "settings_jam_label": "Modo ensayo (instrumentos)",
   "settings_jam_hint": "Latencia al mínimo para tocar en vivo: micrófono sin procesar (sin cancelación de eco ni supresión de ruido) y buffer mínimo. Usa una interfaz de audio y escúchate por su monitor directo por hardware, no por el navegador. Solo funciona bien con gente cercana y en P2P (no en SFU). A cambio, puede haber algún microcorte.",
+  "settings_net_monitor_label": "Monitoreo de red (oír tu propio retorno)",
+  "settings_net_monitor_hint": "En vez del monitor local, oís tu propia señal de vuelta por el servidor (a lo Jamulus), a la latencia de la red. Te guiás por ese retorno para tocar en tiempo con todos: te adelantás a tu propio rebote. Requiere que la sala esté en SFU (Control+Alt+S) y auriculares.",
   "settings_share_monitor_label": "Oír el audio compartido en tu dispositivo",
   "settings_share_monitor_hint": "Al compartir pestaña/pantalla, reproduce ese audio también por tu dispositivo de salida elegido. Puede generar eco si la pestaña ya suena en ese mismo dispositivo.",
   "settings_secondary_hint": "Mezcla un segundo dispositivo de grabación (otro micro o un loopback) en tu audio. Al silenciar, solo se silencia tu micro principal.",
@@ -294,6 +296,9 @@
   "announce_jam_on": "Modo ensayo activado. Micrófono sin procesar y latencia al mínimo. Escúchate por el monitor directo de tu interfaz, no por el navegador. Funciona mejor con gente cercana y en P2P.",
   "announce_jam_on_sfu": "Modo ensayo activado, pero la sala está en SFU: la latencia no baja porque el audio pasa por el servidor. Para ensayar, usá P2P (que la sala no esté forzada a SFU).",
   "announce_jam_off": "Modo ensayo desactivado",
+  "announce_net_monitor_on": "Monitoreo de red activado. Oís tu propio retorno por el servidor: tocá adelantándote a él para caer en tiempo con todos. Usá auriculares.",
+  "announce_net_monitor_off": "Monitoreo de red desactivado",
+  "announce_net_monitor_need_sfu": "Monitoreo de red: necesita que la sala esté en SFU para que tu señal vuelva por el servidor. Pulsá Control+Alt+S para forzar SFU.",
 
   "announce_bitrate": "{name} ajustó la calidad de la sala a {kbps} kbps",
   "announce_bitrate_original": "{name} restauró la calidad original (128 kbps)",
