@@ -209,7 +209,11 @@
             sampleRate: SR,
             numberOfChannels: 1,
             bitrate: 64000,
-            opus: { frameDuration: 10000, application: "lowdelay" },
+            // 10 ms frames, in-band FEC off (recovery holds a packet back). These
+            // are the two low-latency knobs WebCodecs actually exposes for Opus;
+            // "lowdelay/RESTRICTED_LOWDELAY" application mode is NOT settable via
+            // the standard API, so we don't pretend to set it.
+            opus: { frameDuration: 10000, useinbandfec: false },
           });
 
           decoder = new AudioDecoder({
