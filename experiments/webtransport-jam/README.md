@@ -35,14 +35,35 @@ Números en la página:
 
 ### 1. Relay en la Pi
 
+Vive en un **worktree** aparte (`/home/pi/jdh-speak-wt-probe`) para no mover el
+checkout vivo de la app, que sigue en `main`. Las dependencias ya están
+instaladas ahí (con el transporte QUIC pineado a 1.4.0, el prebuild que carga con
+la glibc 2.36 de Bookworm — el 1.5.1+ pide 2.38).
+
+**En primer plano** (lo más simple; Ctrl-C para parar):
+
 ```bash
 ssh pi@192.168.4.2
-cd /home/pi/jdh-speak/experiments/webtransport-jam
+cd /home/pi/jdh-speak-wt-probe/experiments/webtransport-jam
 bash run-on-pi.sh
 ```
 
-La primera vez compila el módulo nativo HTTP/3 (unos minutos en la Pi). Deja la
-terminal abierta; imprime `echo probe up`.
+Imprime `echo probe up` y la URL de la página. Deja la terminal abierta mientras
+pruebas.
+
+**Persistente** (si quieres que siga tras cerrar la terminal), lánzalo tú con tu
+sudo (a Claude el clasificador le bloquea crear servicios):
+
+```bash
+cd /home/pi/jdh-speak-wt-probe/experiments/webtransport-jam
+sudo systemd-run --unit=wt-jam-probe --collect \
+  --working-directory="$PWD" /usr/bin/node relay.mjs
+# ver logs:   journalctl -u wt-jam-probe -f
+# parar:      sudo systemctl stop wt-jam-probe
+```
+
+> Nota: el `run-on-pi.sh` copia el cert vivo de Caddy junto al relay. El modo
+> persistente asume que ya lo corriste una vez (o copia el cert a mano antes).
 
 El propio relay sirve **también la página** por HTTPS (mismo cert real), así que
 no hay que tocar la app ni reconstruir su cliente.
