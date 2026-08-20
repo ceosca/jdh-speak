@@ -3193,11 +3193,17 @@ export function useMediasoup() {
       const lossPct = lost + recv > 0 ? (lost / (lost + recv)) * 100 : 0;
       const localT = pairLocalId ? candType.get(pairLocalId) : undefined;
       const remoteT = pairRemoteId ? candType.get(pairRemoteId) : undefined;
-      // In P2P the candidate pair tells us direct vs relay. In SFU the media
-      // always goes via the server by design, so the label would be misleading —
-      // only report it when we actually have a pair (P2P).
+      // IMPORTANT: in SFU every consumer shares ONE recv transport to the server,
+      // so this candidate-pair RTT is OUR leg to the Pi — NOT the path to this
+      // peer. With the Pi on the operator's own LAN that reads ~1 ms and looks
+      // like near-zero latency, which is a lie: the real mouth-to-ear is this leg
+      // PLUS the peer's own leg to the Pi (not visible from here). So in SFU label
+      // it honestly as "al servidor". In P2P the pair really is peer-to-peer, so
+      // direct/relay is meaningful.
       let path = "";
-      if (localT || remoteT) {
+      if (modeRef.current === "sfu") {
+        path = " al servidor";
+      } else if (localT || remoteT) {
         path = localT === "relay" || remoteT === "relay" ? " (relay)" : " (directo)";
       }
       parts.push(
