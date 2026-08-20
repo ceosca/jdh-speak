@@ -1,0 +1,13 @@
+{
+  "name": "webtransport-jam-probe",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "THROWAWAY probe: measure round-trip latency of a WebTransport+WebCodecs audio path vs the current WebRTC/mediasoup network-monitor. Not part of the pnpm workspace; not wired into the app or systemd.",
+  "scripts": {
+    "start": "node relay.mjs"
+  },
+  "dependencies": {
+    "@fails-components/webtransport": "^1.4.0"
+  }
+}

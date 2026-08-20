@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Probe WebTransport + WebCodecs (jam) — DESECHABLE</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 46rem;
+        margin: 1.5rem auto;
+        padding: 0 1rem;
+        line-height: 1.5;
+        background: #111;
+        color: #eee;
+      }
+      h1 {
+        font-size: 1.25rem;
+      }
+      .warn {
+        background: #4a2; color: #000; padding: .4rem .6rem; border-radius: .4rem;
+        font-weight: 700; display: inline-block;
+      }
+      button {
+        font-size: 1rem; padding: .5rem 1rem; margin: .25rem .25rem 0 0;
+        border-radius: .4rem; border: 1px solid #555; background: #222; color: #eee;
+        cursor: pointer;
+      }
+      button:disabled { opacity: .5; cursor: default; }
+      input {
+        font-size: 1rem; padding: .4rem; width: 100%; box-sizing: border-box;
+        background: #000; color: #eee; border: 1px solid #555; border-radius: .4rem;
+      }
+      table { border-collapse: collapse; margin-top: 1rem; width: 100%; }
+      th, td { text-align: left; padding: .3rem .6rem; border-bottom: 1px solid #333; }
+      td.num { font-variant-numeric: tabular-nums; font-size: 1.4rem; }
+      #log { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: .8rem;
+        color: #9c9; margin-top: 1rem; max-height: 10rem; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <h1>Probe WebTransport + WebCodecs — monitoreo de red por QUIC <span class="warn">DESECHABLE</span></h1>
+    <p>
+      Envía tu micrófono como Opus de 10&nbsp;ms (<code>lowdelay</code>) por datagramas
+      WebTransport a un relay que te lo <strong>devuelve</strong> (tu propio retorno, a lo
+      Jamulus, pero saltándose WebRTC/NetEQ). Mide el round-trip y te deja oírlo.
+      <strong>Usa auriculares.</strong>
+    </p>
+
+    <label for="url">URL del relay (WebTransport):</label>
+    <input id="url" value="https://jdh.privatedns.org:4433/echo" />
+
+    <div>
+      <button id="start">Empezar</button>
+      <button id="stop" disabled>Parar</button>
+      <button id="mute" disabled>Silenciar retorno</button>
+    </div>
+
+    <table aria-hidden="false">
+      <tbody>
+        <tr><th>RTT de red (mediana)</th><td class="num" id="rttMed">—</td></tr>
+        <tr><th>RTT de red (mín / p95)</th><td class="num" id="rttMinMax">—</td></tr>
+        <tr><th>Colchón de retorno</th><td class="num" id="cushion">—</td></tr>
+        <tr><th>Cortes (underflows)</th><td class="num" id="under">—</td></tr>
+        <tr><th>Pérdida de datagramas</th><td class="num" id="loss">—</td></tr>
+        <tr><th>Latencia estimada del monitor</th><td class="num" id="est">—</td></tr>
+      </tbody>
+    </table>
+
+    <p id="live" aria-live="polite" role="status" style="min-height: 1.5rem;"></p>
+    <div id="log"></div>
+
+    <script type="module">
+      const $ = (id) => document.getElementById(id);
+      const log = (m) => {
+        $("log").textContent += m + "\n";
+        $("log").scrollTop = $("log").scrollHeight;
+      };
+      const SR = 48000;
+      const FRAME = 480; // 10 ms @ 48k
+
+      let ctx, wtSession, wtWriter, capNode, playNode, encoder, decoder;
+      let micStream;
+      let running = false;
+      let muted = false;
+
+      // Stats
+      let seq = 0;
+      const inflight = new Map(); // seq -> sendTime (for loss accounting)
+      let rtts = []; // recent network RTTs (ms)
+      let sent = 0, echoed = 0;
+      let cushionMs = 0, underflows = 0;
+
+      const percentile = (arr, p) => {
+        if (!arr.length) return NaN;
+        const s = [...arr].sort((a, b) => a - b);
+        return s[Math.min(s.length - 1, Math.floor((p / 100) * s.length))];
+      };
+
+      function updateStats() {
+        const recent = rtts.slice(-200);
+        const med = percentile(recent, 50);
+        const min = recent.length ? Math.min(...recent) : NaN;
+        const p95 = percentile(recent, 95);
+        $("rttMed").textContent = isFinite(med) ? med.toFixed(1) + " ms" : "—";
+        $("rttMinMax").textContent =
+          isFinite(min) ? min.toFixed(1) + " / " + p95.toFixed(1) + " ms" : "—";
+        $("cushion").textContent = cushionMs.toFixed(0) + " ms";
+        $("under").textContent = String(underflows);
+        const lossPct = sent ? (100 * (sent - echoed)) / sent : 0;
+        $("loss").textContent = lossPct.toFixed(1) + " %";
+        // Estimated one-way monitor latency you actually hear:
+        //   half the round-trip network + the 10 ms frame + the receive cushion.
+        const est = isFinite(med) ? med / 2 + 10 + cushionMs : NaN;
+        $("est").textContent = isFinite(est) ? est.toFixed(0) + " ms" : "—";
+      }
+
+      let lastSpoken = 0;
+      function speakMaybe() {
+        const now = performance.now();
+        if (now - lastSpoken < 4000) return;
+        lastSpoken = now;
+        const med = percentile(rtts.slice(-200), 50);
+        if (!isFinite(med)) return;
+        const est = med / 2 + 10 + cushionMs;
+        $("live").textContent =
+          `RTT de red ${med.toFixed(0)} milisegundos, monitor estimado ${est.toFixed(0)} milisegundos, ${underflows} cortes.`;
+      }
+
+      function buildDatagram(type, opusBytes) {
+        const body = opusBytes ? opusBytes.byteLength : 0;
+        const buf = new ArrayBuffer(13 + body);
+        const dv = new DataView(buf);
+        dv.setUint8(0, type);
+        dv.setUint32(1, seq, true);
+        dv.setFloat64(5, performance.now(), true);
+        if (opusBytes) new Uint8Array(buf, 13).set(new Uint8Array(opusBytes));
+        inflight.set(seq, true);
+        seq = (seq + 1) >>> 0;
+        sent++;
+        return new Uint8Array(buf);
+      }
+
+      async function readLoop(reader) {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const dv = new DataView(value.buffer, value.byteOffset, value.byteLength);
+          const type = dv.getUint8(0);
+          const s = dv.getUint32(1, true);
+          const sendTime = dv.getFloat64(5, true);
+          if (inflight.delete(s)) echoed++;
+          rtts.push(performance.now() - sendTime);
+          if (rtts.length > 500) rtts = rtts.slice(-300);
+          if (type === 1 && !muted && decoder && decoder.state === "configured") {
+            const opus = value.slice(13);
+            try {
+              decoder.decode(
+                new EncodedAudioChunk({
+                  type: "key",
+                  timestamp: s * 10000,
+                  data: opus,
+                }),
+              );
+            } catch (e) {
+              /* a lost/garbled frame — ignore, we're measuring */
+            }
+          }
+        }
+      }
+
+      async function start() {
+        try {
+          $("start").disabled = true;
+          const url = $("url").value.trim();
+          log("Conectando WebTransport a " + url + " …");
+          wtSession = new WebTransport(url);
+          await wtSession.ready;
+          log("WebTransport listo.");
+          wtWriter = wtSession.datagrams.writable.getWriter();
+          readLoop(wtSession.datagrams.readable.getReader());
+
+          ctx = new AudioContext({ sampleRate: SR, latencyHint: "interactive" });
+          await ctx.audioWorklet.addModule("./capture-worklet.js");
+          await ctx.audioWorklet.addModule("./playback-worklet.js");
+
+          micStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              channelCount: 1,
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false,
+              // @ts-ignore — lowest capture buffer where supported
+              latency: { ideal: 0 },
+            },
+          });
+
+          // Encoder: Opus 10 ms, restricted low-delay (no FEC/lookahead).
+          encoder = new AudioEncoder({
+            output: (chunk) => {
+              const b = new ArrayBuffer(chunk.byteLength);
+              chunk.copyTo(b);
+              if (running) wtWriter.write(buildDatagram(1, b)).catch(() => {});
+            },
+            error: (e) => log("Encoder error: " + e.message),
+          });
+          encoder.configure({
+            codec: "opus",
+            sampleRate: SR,
+            numberOfChannels: 1,
+            bitrate: 64000,
+            opus: { frameDuration: 10000, application: "lowdelay" },
+          });
+
+          decoder = new AudioDecoder({
+            output: (audioData) => {
+              const n = audioData.numberOfFrames;
+              const pcm = new Float32Array(n);
+              audioData.copyTo(pcm, { planeIndex: 0, format: "f32-planar" });
+              audioData.close();
+              if (playNode) playNode.port.postMessage(pcm, [pcm.buffer]);
+            },
+            error: (e) => log("Decoder error: " + e.message),
+          });
+          decoder.configure({ codec: "opus", sampleRate: SR, numberOfChannels: 1 });
+
+          // Capture graph: mic -> capture worklet (batch to 10 ms -> encode).
+          const src = ctx.createMediaStreamSource(micStream);
+          capNode = new AudioWorkletNode(ctx, "capture-worklet");
+          let acc = new Float32Array(0);
+          let frameIdx = 0;
+          capNode.port.onmessage = (e) => {
+            if (!running) return;
+            const chunk = e.data;
+            const merged = new Float32Array(acc.length + chunk.length);
+            merged.set(acc);
+            merged.set(chunk, acc.length);
+            acc = merged;
+            while (acc.length >= FRAME) {
+              const frame = acc.slice(0, FRAME);
+              acc = acc.slice(FRAME);
+              const ad = new AudioData({
+                format: "f32-planar",
+                sampleRate: SR,
+                numberOfFrames: FRAME,
+                numberOfChannels: 1,
+                timestamp: frameIdx * 10000,
+                data: frame,
+              });
+              frameIdx++;
+              try {
+                encoder.encode(ad);
+              } catch (err) {
+                /* ignore */
+              }
+              ad.close();
+            }
+          };
+          src.connect(capNode);
+          // Capture worklet needs a sink to be pulled by the graph:
+          capNode.connect(ctx.destination); // it outputs nothing, silent
+
+          // Playback graph: play worklet -> speakers.
+          playNode = new AudioWorkletNode(ctx, "playback-worklet", {
+            processorOptions: { capacity: SR }, // 1 s ring
+          });
+          playNode.port.onmessage = (e) => {
+            if (typeof e.data.available === "number") {
+              cushionMs = (e.data.available / SR) * 1000;
+              underflows = e.data.underflows;
+            }
+          };
+          playNode.connect(ctx.destination);
+
+          await ctx.resume();
+          running = true;
+
+          // Pure-network ping every 200 ms (type 0), separate from audio frames.
+          const pingTimer = setInterval(() => {
+            if (running) wtWriter.write(buildDatagram(0, null)).catch(() => {});
+            else clearInterval(pingTimer);
+          }, 200);
+
+          const uiTimer = setInterval(() => {
+            if (!running) return clearInterval(uiTimer);
+            updateStats();
+            speakMaybe();
+          }, 500);
+
+          $("stop").disabled = false;
+          $("mute").disabled = false;
+          log("Corriendo. Habla/toca por el micro y oirás tu retorno por QUIC.");
+          $("live").textContent = "Probe en marcha. Midiendo latencia.";
+        } catch (err) {
+          log("ERROR: " + (err?.message || err));
+          $("live").textContent = "Error: " + (err?.message || err);
+          $("start").disabled = false;
+        }
+      }
+
+      async function stop() {
+        running = false;
+        try { encoder && encoder.close(); } catch {}
+        try { decoder && decoder.close(); } catch {}
+        try { micStream && micStream.getTracks().forEach((t) => t.stop()); } catch {}
+        try { wtWriter && wtWriter.close(); } catch {}
+        try { wtSession && wtSession.close(); } catch {}
+        try { ctx && (await ctx.close()); } catch {}
+        $("start").disabled = false;
+        $("stop").disabled = true;
+        $("mute").disabled = true;
+        log("Parado.");
+        $("live").textContent = "Probe detenido.";
+      }
+
+      $("start").addEventListener("click", start);
+      $("stop").addEventListener("click", stop);
+      $("mute").addEventListener("click", () => {
+        muted = !muted;
+        $("mute").textContent = muted ? "Reactivar retorno" : "Silenciar retorno";
+      });
+
+      if (!("WebTransport" in window)) {
+        $("live").textContent =
+          "Este navegador no soporta WebTransport. Usa Chrome/Edge, o Safari 26.4+.";
+        log("WebTransport NO disponible en este navegador.");
+        $("start").disabled = true;
+      }
+      if (!("AudioEncoder" in window)) {
+        log("WebCodecs (AudioEncoder) NO disponible en este navegador.");
+        $("start").disabled = true;
+      }
+    </script>
+  </body>
+</html>
