@@ -44,23 +44,25 @@ bash run-on-pi.sh
 La primera vez compila el módulo nativo HTTP/3 (unos minutos en la Pi). Deja la
 terminal abierta; imprime `echo probe up`.
 
-### 2. Puerto (solo para prueba entre redes distintas)
+El propio relay sirve **también la página** por HTTPS (mismo cert real), así que
+no hay que tocar la app ni reconstruir su cliente.
 
-- **En la misma LAN / desde la propia Pi:** no hace falta tocar el router.
-- **Con alguien en otra red:** reenvía **UDP 4433 → 192.168.4.2** en el router
-  (igual que el rango 40000–40100 de mediasoup). Es el puerto de la prueba, no
-  pisa nada.
+### 2. Puertos (solo para prueba entre redes distintas)
+
+- **En la misma LAN / desde la propia Pi:** no hace falta tocar el router (por
+  *hairpin* del dominio).
+- **Con alguien en otra red:** reenvía en el router hacia `192.168.4.2`:
+  - **UDP 4433** (el transporte WebTransport/QUIC)
+  - **TCP 8444** (la página HTTPS del probe)
+  Son los puertos de la prueba, no pisan nada de la app.
 
 ### 3. Página probe
 
-Está servida por la app (contexto seguro HTTPS, cert válido):
+Servida por el propio relay (contexto seguro HTTPS, cert válido):
 
 ```
-https://jdh.privatedns.org/webtransport-jam-probe/probe.html
+https://jdh.privatedns.org:8444/probe.html
 ```
-
-> Solo existe en la rama `feat/webtransport-jam`. Para verla, en la Pi hay que
-> estar en esa rama y haber hecho `pnpm --filter client build`.
 
 Abre esa URL, **ponte auriculares**, pulsa **Empezar**, habla/toca y:
 

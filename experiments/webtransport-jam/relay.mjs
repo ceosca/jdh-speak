@@ -21,15 +21,42 @@
 // timing math lives in the browser against its own clock (no clock-sync needed).
 
 import { readFileSync } from "node:fs";
+import { createServer } from "node:https";
+import { extname, join, normalize } from "node:path";
 import { Http3Server } from "@fails-components/webtransport";
 
 const PORT = Number(process.env.WT_PORT || 4433);
+const PAGE_PORT = Number(process.env.PAGE_PORT || 8444);
 const HOST = process.env.WT_HOST || "0.0.0.0";
 const CERT_PATH = process.env.CERT_PATH || "./jdh.privatedns.org.crt";
 const KEY_PATH = process.env.KEY_PATH || "./jdh.privatedns.org.key";
 
 const cert = readFileSync(CERT_PATH, "utf8");
 const privKey = readFileSync(KEY_PATH, "utf8");
+
+// Serve the probe page itself over HTTPS with the SAME real cert, so it's a
+// trusted secure context (WebTransport + WebCodecs both require one) without
+// touching the live app or rebuilding its client. Static, read-only, public/.
+const MIME = { ".html": "text/html", ".js": "text/javascript" };
+const PUBLIC = join(process.cwd(), "public");
+createServer({ cert, key: privKey }, (req, res) => {
+  let rel = normalize(decodeURIComponent((req.url || "/").split("?")[0]));
+  if (rel === "/" || rel === "\\") rel = "/probe.html";
+  const file = join(PUBLIC, rel);
+  if (!file.startsWith(PUBLIC)) {
+    res.writeHead(403).end("no");
+    return;
+  }
+  try {
+    const body = readFileSync(file);
+    res.writeHead(200, { "content-type": MIME[extname(file)] || "application/octet-stream" });
+    res.end(body);
+  } catch {
+    res.writeHead(404).end("not found");
+  }
+}).listen(PAGE_PORT, HOST, () =>
+  console.log(`[relay] probe page at https://jdh.privatedns.org:${PAGE_PORT}/probe.html`),
+);
 
 const server = new Http3Server({
   port: PORT,
