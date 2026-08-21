@@ -48,24 +48,31 @@ const WORKLET_CODE = `
 class JamRing extends AudioWorkletProcessor {
   constructor(o){ super();
     const opt=o.processorOptions||{}; this.channels=opt.channels||1; this.cap=opt.capacity||48000; this.pre=opt.prebuffer||480;
+    this.target=this.pre; this.clean=0; // adaptive cushion + samples since last underflow
     this.buf=[]; for(let c=0;c<this.channels;c++) this.buf.push(new Float32Array(this.cap));
     this.read=0; this.write=0; this.avail=0; this.started=false; this.underflows=0; this._t=0;
     this.port.onmessage=(e)=>{ const ch=e.data; const n=ch[0].length;
       for(let i=0;i<n;i++){ for(let c=0;c<this.channels;c++) this.buf[c][this.write]=ch[c]?ch[c][i]:ch[0][i];
         this.write=(this.write+1)%this.cap; if(this.avail<this.cap) this.avail++; else this.read=(this.read+1)%this.cap; } };
   }
-  _report(){ if(((this._t=(this._t+1))&15)===0) this.port.postMessage({h:{avail:this.avail,underflows:this.underflows}}); }
+  _report(){ if(((this._t=(this._t+1))&15)===0) this.port.postMessage({h:{avail:this.avail,underflows:this.underflows,target:this.target}}); }
   process(_i,outputs){ const out=outputs[0]; const frames=out[0].length;
-    if(!this.started){ if(this.avail>=this.pre) this.started=true; else { for(const o of out) o.fill(0); this._report(); return true; } }
-    // Drift compensation: the sender's clock and our AudioContext clock are never
-    // exactly equal, so over a long session the cushion slowly creeps up (latency
-    // grows) or down (underflows). NetEQ resamples to fix this; our minimal ring
-    // instead drops ONE sample per block when the cushion has grown past 2x target
-    // (shrinks latency) — a single 48kHz sample is inaudible, and it only kicks in
-    // when there's plenty of buffer, so it never causes an underflow.
-    if(this.avail > this.pre*2 + frames){ this.read=(this.read+1)%this.cap; this.avail--; }
+    // Adaptive cushion: start at pre (10ms); each underflow grows the target
+    // (+5ms, cap 60ms) so a jittery stream finds its own stable buffer, exactly
+    // what NetEQ does — but we start far lower and only grow as needed. After a
+    // long clean run we decay it back down (probe for lower latency).
+    if(!this.started){ if(this.avail>=this.target) this.started=true; else { for(const o of out) o.fill(0); this._report(); return true; } }
+    // Drift compensation: sender vs AudioContext clocks differ, so the cushion
+    // creeps over a long session. Drop ONE 48kHz sample (inaudible) per block when
+    // it exceeds 2x the current target — only with ample buffer, never causing an
+    // underflow.
+    if(this.avail > this.target*2 + frames){ this.read=(this.read+1)%this.cap; this.avail--; }
     for(let i=0;i<frames;i++){ if(this.avail>0){ for(let c=0;c<out.length;c++) out[c][i]=this.buf[Math.min(c,this.channels-1)][this.read];
-        this.read=(this.read+1)%this.cap; this.avail--; } else { for(let c=0;c<out.length;c++) out[c][i]=0; this.started=false; this.underflows++; } }
+        this.read=(this.read+1)%this.cap; this.avail--; }
+      else { for(let c=0;c<out.length;c++) out[c][i]=0; this.started=false; this.underflows++;
+        this.target=Math.min(this.target+240, 2880); this.clean=0; break; } }
+    // Decay: ~8s clean -> shave 1ms off the target, never below pre.
+    this.clean+=frames; if(this.clean>384000 && this.target>this.pre){ this.target=Math.max(this.pre, this.target-48); this.clean=0; }
     this._report(); return true; }
 }
 registerProcessor('jam-ring', JamRing);
@@ -94,7 +101,7 @@ export async function setupJamReceiveBypass(
   const ch = channels === 2 ? 2 : 1;
 
   const w = window as unknown as { __jamBypassStats?: Record<string, unknown> };
-  const stats = { channels: ch, framesIn: 0, decoded: 0, cushionMs: 0, underflows: 0 };
+  const stats = { channels: ch, framesIn: 0, decoded: 0, cushionMs: 0, targetMs: 0, underflows: 0 };
   const statId = "r" + Math.random().toString(36).slice(2, 8);
   (w.__jamBypassStats ||= {})[statId] = stats;
 
@@ -117,9 +124,10 @@ export async function setupJamReceiveBypass(
       processorOptions: { channels: ch, capacity: RING_CAPACITY, prebuffer: PREBUFFER_SAMPLES },
     });
     node.port.onmessage = (e: MessageEvent) => {
-      const h = (e.data as { h?: { avail: number; underflows: number } }).h;
+      const h = (e.data as { h?: { avail: number; underflows: number; target: number } }).h;
       if (h) {
         stats.cushionMs = +((h.avail / 48000) * 1000).toFixed(1);
+        stats.targetMs = +((h.target / 48000) * 1000).toFixed(1);
         stats.underflows = h.underflows;
       }
     };
