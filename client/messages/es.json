@@ -296,6 +296,8 @@
   "announce_jam_on": "Modo ensayo activado. Micrófono sin procesar y latencia al mínimo. Escúchate por el monitor directo de tu interfaz, no por el navegador. Funciona mejor con gente cercana y en P2P.",
   "announce_jam_on_sfu": "Modo ensayo activado, pero la sala está en SFU: la latencia no baja porque el audio pasa por el servidor. Para ensayar, usá P2P (que la sala no esté forzada a SFU).",
   "announce_jam_off": "Modo ensayo desactivado",
+  "announce_jam_room_on": "{by} activó el modo ensayo para toda la sala.",
+  "announce_jam_room_off": "{by} desactivó el modo ensayo de la sala.",
   "announce_net_monitor_on": "Monitoreo de red activado. Oís tu propio retorno por el servidor: tocá adelantándote a él para caer en tiempo con todos. Usá auriculares.",
   "announce_net_monitor_off": "Monitoreo de red desactivado",
   "announce_net_monitor_forcing_sfu": "Monitoreo de red activado. Activando SFU en la sala para que tu señal vuelva por el servidor. Usá auriculares.",

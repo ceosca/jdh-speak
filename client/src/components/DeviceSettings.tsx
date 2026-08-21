@@ -194,14 +194,18 @@ export function DeviceSettings() {
       </div>
 
       {/* Jam mode: minimise latency for playing instruments together (unprocessed
-          capture + tiny jitter buffer). Local + persisted, per-user. */}
+          capture + tiny jitter buffer). ROOM-WIDE: toggling it broadcasts to the
+          whole room (all-or-nobody) via onJamToggle; falls back to the local flag
+          before a call is joined. */}
       <div>
         <div className="flex items-start gap-2">
           <input
             type="checkbox"
             id={jamModeId}
             checked={jamMode}
-            onChange={(e) => setJamMode(e.target.checked)}
+            onChange={(e) =>
+              (useRoomStore.getState().onJamToggle ?? setJamMode)(e.target.checked)
+            }
             aria-describedby={jamModeHintId}
             className="mt-0.5 shrink-0 accent-sonic-accent"
           />

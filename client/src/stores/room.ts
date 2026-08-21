@@ -311,6 +311,10 @@ interface RoomState {
   setSpeakerDeviceId: (deviceId: string) => void;
   setVoiceProcessingEnabled: (enabled: boolean) => void;
   setJamMode: (enabled: boolean) => void;
+  // Room-wide jam toggle: registered by useMediasoup so the DeviceSettings
+  // checkbox can broadcast the change to the whole room (all-or-nobody) instead of
+  // flipping only the local flag. Null before a call is joined.
+  onJamToggle: ((enabled: boolean) => void) | null;
   setNetworkMonitor: (enabled: boolean) => void;
   setMicMonitor: (monitor: boolean) => void;
   setSpatialAudio: (enabled: boolean) => void;
@@ -372,6 +376,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   speakerDeviceId: loadString(SPEAKER_DEVICE_KEY),
   voiceProcessingEnabled: loadVoiceProcessing(),
   jamMode: loadString(JAM_MODE_KEY) === "true",
+  onJamToggle: null,
   networkMonitor: loadString(NETWORK_MONITOR_KEY) === "true",
   micMonitor: loadString(MIC_MONITOR_KEY) === "true",
   spatialAudio: false,

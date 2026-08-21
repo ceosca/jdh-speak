@@ -44,6 +44,12 @@ export interface Room {
   // off returns the room to automatic P2P/SFU by size). Handy on a bad
   // connection: on the SFU each client uploads once instead of a full P2P mesh.
   forceSfu: boolean;
+  // Room-wide "jam" (ensayo) mode, toggled via the DeviceSettings checkbox. When
+  // on, EVERY participant runs the low-latency jam send/receive path — it's all or
+  // nobody so the receive-side NetEQ bypass can safely tap every consumer (a mixed
+  // room would leave non-jam peers out). Like forceSfu it also pins the room to the
+  // SFU (the network monitor / bypass need the server in the loop).
+  jamMode: boolean;
   // "Closed" (private) room, toggled live via Ctrl+Alt+B. While closed, a NEW
   // joiner (no member token) is routed to a separate "ghost" room instead — they
   // see an empty room (or each other), never the real group, with NO message. A
@@ -183,6 +189,7 @@ export async function getOrCreateRoom(roomName: string): Promise<Room> {
     mode: "p2p",
     disableP2p: false,
     forceSfu: false,
+    jamMode: false,
     closed: false,
     memberTokens: new Set(),
     casters: new Set(),

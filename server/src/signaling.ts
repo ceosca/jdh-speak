@@ -159,7 +159,8 @@ export function createSignalingServer(
       recordingManager.isRecording(room.name) ||
       room.casters.size > 0 ||
       room.disableP2p ||
-      room.forceSfu
+      room.forceSfu ||
+      room.jamMode
     );
   }
 
@@ -327,6 +328,8 @@ export function createSignalingServer(
           // Manual force-SFU toggle state, so a late joiner's client can toggle
           // it correctly (and knows the room is currently pinned to the SFU).
           forceSfu: room.forceSfu,
+          // Room-wide jam (ensayo) state so a late joiner adopts it immediately.
+          jamMode: room.jamMode,
           // Membership token to persist and present on rejoin (see ghost routing).
           token: myToken,
           // Whether THIS (effective) room is closed. A ghost sees its own ghost
@@ -747,6 +750,21 @@ export function createSignalingServer(
       if (!parsed.success) return cb?.({ ok: false, error: "Invalid value" });
       currentRoom.forceSfu = parsed.data.force;
       socket.to(currentRoom.name).emit("force-sfu", { force: parsed.data.force });
+      applyModeDecision(currentRoom);
+      cb?.({ ok: true });
+    });
+
+    // Room-wide jam (ensayo) mode. All-or-nobody so the receive-side bypass can
+    // safely tap every consumer. Broadcasts to the OTHER members (the presser
+    // applies it locally), pins the room to the SFU, and re-evaluates the mode.
+    socket.on("set-jam-mode", (data: unknown, cb?: (res: unknown) => void) => {
+      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
+      const parsed = z.object({ enabled: z.boolean() }).safeParse(data);
+      if (!parsed.success) return cb?.({ ok: false, error: "Invalid value" });
+      currentRoom.jamMode = parsed.data.enabled;
+      socket
+        .to(currentRoom.name)
+        .emit("jam-mode", { enabled: parsed.data.enabled, by: currentPeer.displayName });
       applyModeDecision(currentRoom);
       cb?.({ ok: true });
     });

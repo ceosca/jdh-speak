@@ -40,6 +40,8 @@ import {
   announce_jam_on,
   announce_jam_on_sfu,
   announce_jam_off,
+  announce_jam_room_on,
+  announce_jam_room_off,
   announce_net_monitor_on,
   announce_net_monitor_off,
   announce_net_monitor_forcing_sfu,
@@ -1746,6 +1748,7 @@ export function useMediasoup() {
           spatialAutoAll?: boolean;
           ambience?: string;
           forceSfu?: boolean;
+          jamMode?: boolean;
           token?: string;
           closed?: boolean;
           ghosted?: boolean;
@@ -1786,6 +1789,9 @@ export function useMediasoup() {
         applyAmbience();
         // Adopt the room's manual force-SFU state (so the toggle is correct).
         store.getState().setForceSfu(joinRes.forceSfu ?? false);
+        // Adopt the room's jam (ensayo) state — it's room-wide, so a late joiner
+        // matches whatever the room is currently running.
+        store.getState().setJamMode(joinRes.jamMode ?? false);
         // Persist our membership token and adopt the room's closed state.
         if (joinRes.token) {
           try {
@@ -1936,6 +1942,25 @@ export function useMediasoup() {
       // transport switch arrives separately via switch-to-sfu / switch-to-p2p.
       socket.on("force-sfu", ({ force }: { force: boolean }) => {
         store.getState().setForceSfu(force);
+      });
+
+      // Someone toggled room-wide jam (ensayo) mode. Adopt it — this drives the
+      // jam send path + receive tuning for everyone — and announce who did it.
+      socket.on("jam-mode", ({ enabled, by }: { enabled: boolean; by?: string }) => {
+        store.getState().setJamMode(enabled);
+        store
+          .getState()
+          .announce(enabled ? announce_jam_room_on({ by: by ?? "" }) : announce_jam_room_off({ by: by ?? "" }));
+      });
+
+      // Wire the DeviceSettings jam checkbox to broadcast room-wide: emit to the
+      // server (which tells everyone else) and apply locally for the presser.
+      useRoomStore.setState({
+        onJamToggle: (enabled: boolean) => {
+          void emit("set-jam-mode", { enabled })
+            .then(() => store.getState().setJamMode(enabled))
+            .catch((err) => console.error("[jam] set-jam-mode failed:", err));
+        },
       });
 
       // Someone closed/opened the room. Adopt the state silently (no
