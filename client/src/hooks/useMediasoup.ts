@@ -11,6 +11,7 @@ import { autoSeat, seatToPoint, type SpatialSeat } from "../lib/spatial";
 import { ambienceName, ambienceIrUrl } from "../lib/ambience";
 import { analyseImpulse, buildReverbImpulse, wetGainFor } from "../lib/ir-analysis";
 import { parseClearKey, type Channel } from "../lib/tv";
+import { setupJamReceiveBypass } from "../lib/jam-neteq-bypass";
 import {
   flattenEpisodes,
   seasonsOf,
@@ -70,6 +71,10 @@ interface PeerAudio {
   airFilter: BiquadFilterNode;
   // SFU-only
   consumer?: Consumer;
+  // Jam mode: when set, this peer's audio is decoded by us (WebCodecs) through a
+  // minimal ring buffer instead of NetEQ (see setupJamReceiveBypass). teardown
+  // restores the normal NetEQ path.
+  jamBypass?: { teardown: () => void } | null;
 }
 
 // One of the two persistent file-audio slots. The source and xfadeGain are
@@ -244,7 +249,30 @@ function createAudioPipeline(track: MediaStreamTrack): Omit<PeerAudio, "consumer
   return { audioEl, gainNode, sourceNode, panner, airFilter };
 }
 
+// Jam mode only: route an SFU consumer's audio around NetEQ (see
+// jam-neteq-bypass). No-op (returns null) unless jam is on. Channels come from the
+// consumer's negotiated codec, so decode never guesses. Always safe: on any
+// failure it returns null and the normal NetEQ pipeline keeps playing.
+async function maybeJamBypass(
+  consumer: Consumer,
+  gainNode: GainNode,
+  jam: boolean,
+): Promise<{ teardown: () => void } | null> {
+  if (!jam) return null;
+  const receiver = consumer.rtpReceiver;
+  if (!receiver) return null;
+  const channels =
+    (consumer.rtpParameters.codecs?.[0] as { channels?: number } | undefined)?.channels ?? 1;
+  try {
+    return await setupJamReceiveBypass(receiver, gainNode, sharedAudioContext, channels);
+  } catch {
+    return null;
+  }
+}
+
 function destroyAudioPipeline(pa: PeerAudio) {
+  // Restore NetEQ + free the decoder/worker BEFORE closing the consumer.
+  pa.jamBypass?.teardown();
   pa.consumer?.close();
   pa.audioEl.srcObject = null;
   pa.audioEl.pause();
@@ -328,7 +356,12 @@ export function useMediasoup() {
   // a Jamulus-style timing reference). SFU-only; keyed by the producer id it
   // follows so a re-produce re-establishes it.
   const netMonitorRef = useRef<
-    (ReturnType<typeof createAudioPipeline> & { consumer?: Consumer; producerId?: string }) | null
+    | (ReturnType<typeof createAudioPipeline> & {
+        consumer?: Consumer;
+        producerId?: string;
+        jamBypass?: { teardown: () => void } | null;
+      })
+    | null
   >(null);
   const peerAudiosRef = useRef<Map<string, PeerAudio>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -1199,7 +1232,14 @@ export function useMediasoup() {
       setReceiverJitterTarget(consumer.rtpReceiver, true);
       const pipeline = createAudioPipeline(consumer.track); // gain → destination
       pipeline.gainNode.gain.value = 1;
-      netMonitorRef.current = { ...pipeline, consumer, producerId: producer.id };
+      // Jam: bypass NetEQ on your OWN return too — this is the timing reference you
+      // play against, so its latency matters most.
+      const jamBypass = await maybeJamBypass(
+        consumer,
+        pipeline.gainNode,
+        useRoomStore.getState().jamMode,
+      );
+      netMonitorRef.current = { ...pipeline, consumer, producerId: producer.id, jamBypass };
     } catch (err) {
       console.error("[net-monitor] self-consume failed:", err);
     }
@@ -1443,7 +1483,13 @@ export function useMediasoup() {
       // doubles up.
       const existingPeerAudio = peerAudiosRef.current.get(peerId);
       if (existingPeerAudio) destroyAudioPipeline(existingPeerAudio);
-      peerAudiosRef.current.set(peerId, { ...pipeline, consumer });
+      // Jam: bypass NetEQ for voice peers (not the music caster — NetEQ handles the
+      // stereo music path fine and the latency there doesn't matter).
+      const jamBypass =
+        source === "music"
+          ? null
+          : await maybeJamBypass(consumer, pipeline.gainNode, useRoomStore.getState().jamMode);
+      peerAudiosRef.current.set(peerId, { ...pipeline, consumer, jamBypass });
       refreshSpatial();
 
       // Flag a music-caster peer (e.g. Ecobox) so the UI shows it as a media
