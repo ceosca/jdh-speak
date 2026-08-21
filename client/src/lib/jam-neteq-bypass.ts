@@ -82,15 +82,17 @@ class JamRing extends AudioWorkletProcessor {
   process(_i, outputs) {
     const out = outputs[0];
     const frames = out[0].length;
-    if (!this.started) { if (this.avail >= this.pre) this.started = true; else { for (const o of out) o.fill(0); return true; } }
+    if (!this.started) { if (this.avail >= this.pre) this.started = true; else { for (const o of out) o.fill(0); this._report(); return true; } }
     for (let i=0;i<frames;i++){
       if (this.avail > 0) {
         for (let c=0;c<out.length;c++) out[c][i] = this.buf[Math.min(c,this.channels-1)][this.read];
         this.read = (this.read + 1) % this.cap; this.avail--;
-      } else { for (let c=0;c<out.length;c++) out[c][i] = 0; this.started = false; }
+      } else { for (let c=0;c<out.length;c++) out[c][i] = 0; this.started = false; this.underflows = (this.underflows||0) + 1; }
     }
+    this._report();
     return true;
   }
+  _report(){ if(((this._t=(this._t||0)+1) & 15)===0){ this.port.postMessage({ h:{ avail:this.avail, underflows:this.underflows||0 } }); } }
 }
 registerProcessor('jam-ring', JamRing);
 `;
@@ -120,6 +122,13 @@ export async function setupJamReceiveBypass(
   let decoder: AudioDecoder | null = null;
   let node: AudioWorkletNode | null = null;
   let workerUrl = "";
+  // Objective self-verification (no ears needed): expose per-stream counters so a
+  // debugger can confirm frames flow, decode succeeds, and read the achieved
+  // cushion / underflow count. Harmless + tiny; lives only on the branch.
+  const w = window as unknown as { __jamBypassStats?: Record<string, unknown> };
+  const stats = { channels: ch, framesIn: 0, decoded: 0, cushionMs: 0, underflows: 0 };
+  const statId = "r" + Math.random().toString(36).slice(2, 8);
+  (w.__jamBypassStats ||= {})[statId] = stats;
   try {
     await ensureWorkletModule(ctx);
 
@@ -129,11 +138,19 @@ export async function setupJamReceiveBypass(
       outputChannelCount: [ch],
       processorOptions: { channels: ch, capacity: RING_CAPACITY, prebuffer: PREBUFFER_SAMPLES },
     });
+    node.port.onmessage = (e: MessageEvent) => {
+      const h = (e.data as { h?: { avail: number; underflows: number } }).h;
+      if (h) {
+        stats.cushionMs = +((h.avail / 48000) * 1000).toFixed(1);
+        stats.underflows = h.underflows;
+      }
+    };
     node.connect(gainNode);
 
     decoder = new AudioDecoder({
       output: (audioData) => {
         try {
+          stats.decoded++;
           const n = audioData.numberOfFrames;
           const planes: Float32Array[] = [];
           for (let c = 0; c < ch; c++) {
@@ -159,6 +176,7 @@ export async function setupJamReceiveBypass(
     worker = new Worker(workerUrl);
     worker.onmessage = (e: MessageEvent) => {
       const { data } = e.data as { ts: number; data: ArrayBuffer };
+      stats.framesIn++;
       if (!decoder || decoder.state !== "configured") return;
       try {
         decoder.decode(
@@ -201,6 +219,11 @@ export async function setupJamReceiveBypass(
           /* already gone */
         }
         if (workerUrl) URL.revokeObjectURL(workerUrl);
+        try {
+          delete (w.__jamBypassStats as Record<string, unknown>)[statId];
+        } catch {
+          /* noop */
+        }
       },
     };
   } catch {
