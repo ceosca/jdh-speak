@@ -251,22 +251,32 @@ function createAudioPipeline(track: MediaStreamTrack): Omit<PeerAudio, "consumer
   return { audioEl, gainNode, sourceNode, panner, airFilter };
 }
 
-// Jam mode only: route an SFU consumer's audio around NetEQ (see
-// jam-neteq-bypass). No-op (returns null) unless jam is on. Channels come from the
-// consumer's negotiated codec, so decode never guesses. Always safe: on any
-// failure it returns null and the normal NetEQ pipeline keeps playing.
-async function maybeJamBypass(
+// Does this browser expose the Encoded Transform tap we use to bypass NetEQ?
+// Chrome/Edge yes; Safari/Firefox no → they just use NetEQ (no bypass, no harm).
+const SUPPORTS_INSERTABLE_STREAMS =
+  typeof RTCRtpReceiver !== "undefined" &&
+  "createEncodedStreams" in (RTCRtpReceiver.prototype as object);
+
+// Tap an SFU consumer's encoded stream. `tap` MUST be true iff the recv PC was
+// created with encodedInsertableStreams — because when it was, Chrome routes every
+// frame through the tap and an UNtapped consumer is silent (that was the outage).
+// So on a flagged transport we tap EVERY consumer: `bypass` ones decode through our
+// minimal ring (low latency), the rest just passthrough to NetEQ. Channels come
+// from the negotiated codec so decode never guesses. Always safe: any failure
+// returns null and the normal pipeline plays.
+async function tapConsumer(
   consumer: Consumer,
   gainNode: GainNode,
-  jam: boolean,
+  tap: boolean,
+  bypass: boolean,
 ): Promise<{ teardown: () => void } | null> {
-  if (!jam) return null;
+  if (!tap) return null;
   const receiver = consumer.rtpReceiver;
   if (!receiver) return null;
   const channels =
     (consumer.rtpParameters.codecs?.[0] as { channels?: number } | undefined)?.channels ?? 1;
   try {
-    return await setupJamReceiveBypass(receiver, gainNode, sharedAudioContext, channels);
+    return await setupJamReceiveBypass(receiver, gainNode, sharedAudioContext, channels, bypass);
   } catch {
     return null;
   }
@@ -353,6 +363,10 @@ export function useMediasoup() {
   const deviceRef = useRef<Device | null>(null);
   const sendTransportRef = useRef<Transport | null>(null);
   const recvTransportRef = useRef<Transport | null>(null);
+  // Whether the current recv transport's PC was created with encodedInsertableStreams
+  // (jam room + Chrome). When true, EVERY consumer on it must be tapped (bypass or
+  // passthrough) or it goes silent — see tapConsumer.
+  const recvInsertableRef = useRef(false);
   const producerRef = useRef<Producer | null>(null);
   // Network-monitor self-consumer (our own producer returned via the server, as
   // a Jamulus-style timing reference). SFU-only; keyed by the producer id it
@@ -1236,9 +1250,10 @@ export function useMediasoup() {
       pipeline.gainNode.gain.value = 1;
       // Jam: bypass NetEQ on your OWN return too — this is the timing reference you
       // play against, so its latency matters most.
-      const jamBypass = await maybeJamBypass(
+      const jamBypass = await tapConsumer(
         consumer,
         pipeline.gainNode,
+        recvInsertableRef.current,
         useRoomStore.getState().jamMode,
       );
       netMonitorRef.current = { ...pipeline, consumer, producerId: producer.id, jamBypass };
@@ -1485,12 +1500,15 @@ export function useMediasoup() {
       // doubles up.
       const existingPeerAudio = peerAudiosRef.current.get(peerId);
       if (existingPeerAudio) destroyAudioPipeline(existingPeerAudio);
-      // Jam: bypass NetEQ for voice peers (not the music caster — NetEQ handles the
-      // stereo music path fine and the latency there doesn't matter).
-      const jamBypass =
-        source === "music"
-          ? null
-          : await maybeJamBypass(consumer, pipeline.gainNode, useRoomStore.getState().jamMode);
+      // On a flagged (jam) transport we MUST tap every consumer: voice peers get the
+      // low-latency bypass; the music caster is passthrough (bypass=false) so NetEQ
+      // plays it untouched — but it still MUST be tapped or it'd be silent.
+      const jamBypass = await tapConsumer(
+        consumer,
+        pipeline.gainNode,
+        recvInsertableRef.current,
+        useRoomStore.getState().jamMode && source !== "music",
+      );
       peerAudiosRef.current.set(peerId, { ...pipeline, consumer, jamBypass });
       refreshSpatial();
 
@@ -1571,17 +1589,18 @@ export function useMediasoup() {
         "create-transport",
         { direction: "recv" },
       );
-      // NOTE: encodedInsertableStreams was REMOVED here. Enabling it PC-wide means
-      // Chrome routes every incoming frame through the insertable-streams pipeline,
-      // and any consumer we don't explicitly tap+pipe (non-jam peers, the music
-      // caster, or any bypass-setup failure) is left SILENT instead of decoding
-      // normally — it broke audio for everyone, not just jam. The NetEQ bypass
-      // needs a safe redesign (tap EVERY consumer and passthrough the non-jam ones)
-      // before this can come back.
+      // Enable Encoded Transform ONLY in a jam room on a browser that supports it.
+      // This is the safe gate learned from the outage: when the flag is on, Chrome
+      // routes every frame through the tap, so EVERY consumer must be tapped (bypass
+      // or passthrough) — which we can only guarantee in an all-or-nobody jam room.
+      // Off for normal calls entirely, so they're byte-for-byte the old path.
+      const useInsertable = SUPPORTS_INSERTABLE_STREAMS && store.getState().jamMode;
+      recvInsertableRef.current = useInsertable;
       const recvTransport = device.createRecvTransport({
         ...(recvRes.params as Parameters<typeof device.createRecvTransport>[0]),
         iceServers: getIceServers(),
-      });
+        ...(useInsertable ? { additionalSettings: { encodedInsertableStreams: true } } : {}),
+      } as Parameters<typeof device.createRecvTransport>[0]);
 
       recvTransport.on("connect", async ({ dtlsParameters }, callback, errback) => {
         try {

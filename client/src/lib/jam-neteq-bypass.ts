@@ -100,6 +100,7 @@ export async function setupJamReceiveBypass(
   gainNode: GainNode,
   ctx: AudioContext,
   channels: number,
+  bypass: boolean,
 ): Promise<BypassHandle | null> {
   if (!jamBypassSupported(receiver)) return null;
   const ch = channels === 2 ? 2 : 1;
@@ -119,6 +120,32 @@ export async function setupJamReceiveBypass(
     const streams = (receiver as unknown as AnyRec).createEncodedStreams();
     const reader: ReadableStreamDefaultReader = streams.readable.getReader();
     const writer: WritableStreamDefaultWriter = streams.writable.getWriter();
+
+    // Passthrough: pipe every frame straight through to the normal decoder/NetEQ.
+    // This is REQUIRED whenever the recv PC has encodedInsertableStreams enabled —
+    // Chrome routes every frame through this pipeline, so a consumer we don't tap
+    // would be SILENT. The music caster and any consumer we choose not to bypass go
+    // through here and play normally (that outage was exactly an untapped consumer).
+    if (!bypass) {
+      delete (w.__jamBypassStats as Record<string, unknown>)[statId];
+      (async () => {
+        for (;;) {
+          let r: ReadableStreamReadResult<AnyRec>;
+          try {
+            r = await reader.read();
+          } catch {
+            break;
+          }
+          if (r.done) break;
+          try {
+            await writer.write(r.value);
+          } catch {
+            break;
+          }
+        }
+      })();
+      return { teardown: () => {} };
+    }
 
     await ensureWorkletModule(ctx);
     node = new AudioWorkletNode(ctx, "jam-ring", {
