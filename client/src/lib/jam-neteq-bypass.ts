@@ -27,10 +27,11 @@
 
 type BypassHandle = { teardown: () => void };
 
-const PREBUFFER_SAMPLES = 240; // 5 ms floor — the adaptive cushion grows per-stream
-// from here as jitter demands, so a clean stream can sit near this while a jittery
-// one climbs on its own. Starting lower squeezes the best case; nothing is lost on
-// jittery streams since the buffer self-tunes up.
+// 10 ms floor. Measured: dropping this to 5 ms did NOT lower steady-state latency —
+// each stream self-tunes to a jitter-bound cushion (~11-14 ms clean, more when
+// jittery) regardless of the floor, and 5 ms only added startup churn. The receive
+// latency here is jitter-bound, not floor-bound; 10 ms is the stable minimum.
+const PREBUFFER_SAMPLES = 480;
 const RING_CAPACITY = 48000; // 1 s
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
