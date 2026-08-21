@@ -27,7 +27,10 @@
 
 type BypassHandle = { teardown: () => void };
 
-const PREBUFFER_SAMPLES = 480; // 10 ms cushion before playback starts
+const PREBUFFER_SAMPLES = 240; // 5 ms floor — the adaptive cushion grows per-stream
+// from here as jitter demands, so a clean stream can sit near this while a jittery
+// one climbs on its own. Starting lower squeezes the best case; nothing is lost on
+// jittery streams since the buffer self-tunes up.
 const RING_CAPACITY = 48000; // 1 s
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
