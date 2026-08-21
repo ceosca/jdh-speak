@@ -4,15 +4,22 @@
 // with `jitterBufferTarget = 0` and a near-perfect stream (verified live: a
 // 1 ms-jitter loopback still held ~30 ms). That floor — not the transport — is the
 // dominant latency in the jam monitor. This bypasses NetEQ ENTIRELY while keeping
-// mediasoup: we tap the encoded Opus frames off the receiver via
-// RTCRtpScriptTransform (which sits BEFORE the jitter buffer/decoder), drop them
-// from the normal decode path, decode them ourselves with WebCodecs, and play them
-// through our own minimal ring buffer — the same trick the WebTransport probe used,
-// but on the existing SFU. Net receive latency ~15 ms instead of ~30-60 ms.
+// mediasoup: we tap the encoded Opus frames off the receiver, drop them from the
+// normal decode path, decode them ourselves with WebCodecs, and play them through
+// our own minimal ring buffer. Net receive latency ~15 ms instead of ~30-60 ms.
+//
+// Why createEncodedStreams and not RTCRtpScriptTransform: measured in the real app
+// that RTCRtpScriptTransform, when attached AFTER mediasoup's receiver is already
+// flowing (the only point we can reach it), delivers ZERO frames — Chrome only
+// wires that transform if set before setRemoteDescription. createEncodedStreams has
+// no such timing constraint (verified: attached 3 s into a live stream, 254 frames
+// flowed), but it requires the RTCPeerConnection to be created with
+// `encodedInsertableStreams: true` — which we do on the recv transport.
 //
 // FAIL-SAFE: only engaged when jam mode is on AND every needed API is present. If
-// setup throws, we never attach the transform, so the normal NetEQ path plays as
-// usual — audio is never lost. Teardown restores NetEQ (`transform = null`).
+// setup throws (e.g. the PC wasn't created with the flag), we never touch the
+// stream, so the normal NetEQ path plays as usual — audio is never lost. Teardown
+// pipes frames back through (passthrough), restoring NetEQ.
 //
 // TRADE-OFF (why jam-only): NetEQ does excellent packet-loss concealment and
 // jitter adaptation; our minimal buffer trades that robustness for latency. Great
@@ -20,79 +27,39 @@
 
 type BypassHandle = { teardown: () => void };
 
-// A tiny cushion (samples @48k) the ring buffer tries to keep so brief jitter
-// doesn't starve playback. 480 = 10 ms. Kept minimal on purpose — this is the
-// whole point. Playback starts once this much has arrived.
-const PREBUFFER_SAMPLES = 480; // 10 ms
+const PREBUFFER_SAMPLES = 480; // 10 ms cushion before playback starts
 const RING_CAPACITY = 48000; // 1 s
 
-export function jamBypassSupported(): boolean {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyRec = any;
+
+export function jamBypassSupported(receiver: RTCRtpReceiver): boolean {
   return (
-    typeof RTCRtpScriptTransform !== "undefined" &&
     typeof AudioDecoder !== "undefined" &&
-    typeof AudioWorkletNode !== "undefined"
+    typeof AudioWorkletNode !== "undefined" &&
+    typeof (receiver as unknown as AnyRec).createEncodedStreams === "function"
   );
 }
 
-// The RTCRtpScriptTransform worker: read encoded frames as they arrive off the
-// network and hand each to the main thread; DO NOT enqueue them back, so the
-// normal decoder/NetEQ receives nothing and the receiver's track goes silent (we
-// play the audio ourselves). Runs one worker per receiver — cheap for jam sizes.
-const WORKER_CODE = `
-self.onrtctransform = (event) => {
-  const t = event.transformer;
-  const reader = t.readable.getReader();
-  (async () => {
-    for (;;) {
-      let r;
-      try { r = await reader.read(); } catch { break; }
-      if (r.done) break;
-      const frame = r.value;
-      const buf = frame.data; // ArrayBuffer of the encoded Opus packet
-      try { self.postMessage({ ts: frame.timestamp, data: buf }, [buf]); } catch {}
-      // intentionally NOT calling controller.enqueue / writable.write -> dropped
-    }
-  })();
-};
-`;
-
-// A ring-buffer AudioWorklet: main thread posts decoded PCM (per channel); this
-// drains it into the output. Underflow -> silence. This is our jitter buffer, and
-// it is as small as PREBUFFER lets it be.
+// Ring-buffer AudioWorklet: main thread posts decoded PCM (per channel); this
+// drains it. Underflow -> silence. This is our jitter buffer, as small as the
+// prebuffer lets it be. Posts back buffer health so latency is measurable.
 const WORKLET_CODE = `
 class JamRing extends AudioWorkletProcessor {
-  constructor(o) {
-    super();
-    const opt = o.processorOptions || {};
-    this.channels = opt.channels || 1;
-    this.cap = opt.capacity || 48000;
-    this.pre = opt.prebuffer || 480;
-    this.buf = []; for (let c=0;c<this.channels;c++) this.buf.push(new Float32Array(this.cap));
-    this.read = 0; this.write = 0; this.avail = 0; this.started = false;
-    this.port.onmessage = (e) => {
-      const ch = e.data; // array of Float32Array, one per channel
-      const n = ch[0].length;
-      for (let i=0;i<n;i++){
-        for (let c=0;c<this.channels;c++) this.buf[c][this.write] = ch[c] ? ch[c][i] : ch[0][i];
-        this.write = (this.write + 1) % this.cap;
-        if (this.avail < this.cap) this.avail++; else this.read = (this.read + 1) % this.cap;
-      }
-    };
+  constructor(o){ super();
+    const opt=o.processorOptions||{}; this.channels=opt.channels||1; this.cap=opt.capacity||48000; this.pre=opt.prebuffer||480;
+    this.buf=[]; for(let c=0;c<this.channels;c++) this.buf.push(new Float32Array(this.cap));
+    this.read=0; this.write=0; this.avail=0; this.started=false; this.underflows=0; this._t=0;
+    this.port.onmessage=(e)=>{ const ch=e.data; const n=ch[0].length;
+      for(let i=0;i<n;i++){ for(let c=0;c<this.channels;c++) this.buf[c][this.write]=ch[c]?ch[c][i]:ch[0][i];
+        this.write=(this.write+1)%this.cap; if(this.avail<this.cap) this.avail++; else this.read=(this.read+1)%this.cap; } };
   }
-  process(_i, outputs) {
-    const out = outputs[0];
-    const frames = out[0].length;
-    if (!this.started) { if (this.avail >= this.pre) this.started = true; else { for (const o of out) o.fill(0); this._report(); return true; } }
-    for (let i=0;i<frames;i++){
-      if (this.avail > 0) {
-        for (let c=0;c<out.length;c++) out[c][i] = this.buf[Math.min(c,this.channels-1)][this.read];
-        this.read = (this.read + 1) % this.cap; this.avail--;
-      } else { for (let c=0;c<out.length;c++) out[c][i] = 0; this.started = false; this.underflows = (this.underflows||0) + 1; }
-    }
-    this._report();
-    return true;
-  }
-  _report(){ if(((this._t=(this._t||0)+1) & 15)===0){ this.port.postMessage({ h:{ avail:this.avail, underflows:this.underflows||0 } }); } }
+  _report(){ if(((this._t=(this._t+1))&15)===0) this.port.postMessage({h:{avail:this.avail,underflows:this.underflows}}); }
+  process(_i,outputs){ const out=outputs[0]; const frames=out[0].length;
+    if(!this.started){ if(this.avail>=this.pre) this.started=true; else { for(const o of out) o.fill(0); this._report(); return true; } }
+    for(let i=0;i<frames;i++){ if(this.avail>0){ for(let c=0;c<out.length;c++) out[c][i]=this.buf[Math.min(c,this.channels-1)][this.read];
+        this.read=(this.read+1)%this.cap; this.avail--; } else { for(let c=0;c<out.length;c++) out[c][i]=0; this.started=false; this.underflows++; } }
+    this._report(); return true; }
 }
 registerProcessor('jam-ring', JamRing);
 `;
@@ -116,22 +83,26 @@ export async function setupJamReceiveBypass(
   ctx: AudioContext,
   channels: number,
 ): Promise<BypassHandle | null> {
-  if (!jamBypassSupported()) return null;
+  if (!jamBypassSupported(receiver)) return null;
   const ch = channels === 2 ? 2 : 1;
-  let worker: Worker | null = null;
-  let decoder: AudioDecoder | null = null;
-  let node: AudioWorkletNode | null = null;
-  let workerUrl = "";
-  // Objective self-verification (no ears needed): expose per-stream counters so a
-  // debugger can confirm frames flow, decode succeeds, and read the achieved
-  // cushion / underflow count. Harmless + tiny; lives only on the branch.
+
   const w = window as unknown as { __jamBypassStats?: Record<string, unknown> };
   const stats = { channels: ch, framesIn: 0, decoded: 0, cushionMs: 0, underflows: 0 };
   const statId = "r" + Math.random().toString(36).slice(2, 8);
   (w.__jamBypassStats ||= {})[statId] = stats;
-  try {
-    await ensureWorkletModule(ctx);
 
+  let decoder: AudioDecoder | null = null;
+  let node: AudioWorkletNode | null = null;
+  let active = true; // false after teardown -> passthrough to NetEQ
+  try {
+    // createEncodedStreams can only be called ONCE per receiver and throws if the
+    // PC wasn't created with encodedInsertableStreams. Do it first: if it throws,
+    // we bail before touching anything, and NetEQ keeps playing.
+    const streams = (receiver as unknown as AnyRec).createEncodedStreams();
+    const reader: ReadableStreamDefaultReader = streams.readable.getReader();
+    const writer: WritableStreamDefaultWriter = streams.writable.getWriter();
+
+    await ensureWorkletModule(ctx);
     node = new AudioWorkletNode(ctx, "jam-ring", {
       numberOfInputs: 0,
       numberOfOutputs: 1,
@@ -147,6 +118,7 @@ export async function setupJamReceiveBypass(
     };
     node.connect(gainNode);
 
+    const ringNode = node;
     decoder = new AudioDecoder({
       output: (audioData) => {
         try {
@@ -158,67 +130,69 @@ export async function setupJamReceiveBypass(
             audioData.copyTo(p, { planeIndex: c, format: "f32-planar" });
             planes.push(p);
           }
-          node?.port.postMessage(planes, planes.map((p) => p.buffer));
+          ringNode.port.postMessage(
+            planes,
+            planes.map((p) => p.buffer),
+          );
         } catch {
-          /* a bad frame — skip */
+          /* bad frame — skip */
         } finally {
           audioData.close();
         }
       },
       error: () => {
-        /* decoder error — the stream just goes quiet on this path; non-fatal */
+        /* decoder error — this path goes quiet; teardown will restore NetEQ */
       },
     });
     decoder.configure({ codec: "opus", sampleRate: 48000, numberOfChannels: ch });
 
-    let tsCounter = 0;
-    workerUrl = URL.createObjectURL(new Blob([WORKER_CODE], { type: "text/javascript" }));
-    worker = new Worker(workerUrl);
-    worker.onmessage = (e: MessageEvent) => {
-      const { data } = e.data as { ts: number; data: ArrayBuffer };
-      stats.framesIn++;
-      if (!decoder || decoder.state !== "configured") return;
-      try {
-        decoder.decode(
-          new EncodedAudioChunk({ type: "key", timestamp: tsCounter, data }),
-        );
-        tsCounter += 20000; // monotonic label only; playback uses sample counts
-      } catch {
-        /* skip */
+    // The pump: read encoded frames. While active, decode+drop (NetEQ starved).
+    // After teardown, write frames straight through so NetEQ takes over again.
+    let ts = 0;
+    (async () => {
+      for (;;) {
+        let r: ReadableStreamReadResult<AnyRec>;
+        try {
+          r = await reader.read();
+        } catch {
+          break;
+        }
+        if (r.done) break;
+        const frame = r.value as { data: ArrayBuffer };
+        if (active) {
+          stats.framesIn++;
+          if (decoder && decoder.state === "configured") {
+            try {
+              decoder.decode(new EncodedAudioChunk({ type: "key", timestamp: ts, data: frame.data }));
+              ts += 20000; // monotonic label only
+            } catch {
+              /* skip */
+            }
+          }
+          // NOT written to `writer` -> dropped from the NetEQ path
+        } else {
+          try {
+            await writer.write(frame as AnyRec);
+          } catch {
+            break;
+          }
+        }
       }
-    };
-
-    // Attaching the transform is the point of no return: from here the receiver's
-    // own decode path is starved, so if anything above had thrown we would already
-    // have bailed WITHOUT touching it (NetEQ still plays). Do it last.
-    (receiver as unknown as { transform: unknown }).transform = new RTCRtpScriptTransform(
-      worker,
-      { channels: ch },
-    );
+    })();
 
     return {
       teardown: () => {
-        try {
-          (receiver as unknown as { transform: unknown }).transform = null;
-        } catch {
-          /* restoring NetEQ failed — nothing else we can do */
-        }
+        active = false; // pump switches to passthrough -> NetEQ restored
         try {
           node?.disconnect();
         } catch {
-          /* already gone */
+          /* gone */
         }
         try {
           if (decoder && decoder.state !== "closed") decoder.close();
         } catch {
-          /* already closed */
+          /* gone */
         }
-        try {
-          worker?.terminate();
-        } catch {
-          /* already gone */
-        }
-        if (workerUrl) URL.revokeObjectURL(workerUrl);
         try {
           delete (w.__jamBypassStats as Record<string, unknown>)[statId];
         } catch {
@@ -227,8 +201,6 @@ export async function setupJamReceiveBypass(
       },
     };
   } catch {
-    // Setup failed — undo anything partial and, crucially, DO NOT leave a transform
-    // attached, so the normal NetEQ path keeps playing. Return null.
     try {
       node?.disconnect();
     } catch {
@@ -240,11 +212,10 @@ export async function setupJamReceiveBypass(
       /* noop */
     }
     try {
-      worker?.terminate();
+      delete (w.__jamBypassStats as Record<string, unknown>)[statId];
     } catch {
       /* noop */
     }
-    if (workerUrl) URL.revokeObjectURL(workerUrl);
     return null;
   }
 }
