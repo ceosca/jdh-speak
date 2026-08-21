@@ -1569,16 +1569,17 @@ export function useMediasoup() {
         "create-transport",
         { direction: "recv" },
       );
+      // NOTE: encodedInsertableStreams was REMOVED here. Enabling it PC-wide means
+      // Chrome routes every incoming frame through the insertable-streams pipeline,
+      // and any consumer we don't explicitly tap+pipe (non-jam peers, the music
+      // caster, or any bypass-setup failure) is left SILENT instead of decoding
+      // normally — it broke audio for everyone, not just jam. The NetEQ bypass
+      // needs a safe redesign (tap EVERY consumer and passthrough the non-jam ones)
+      // before this can come back.
       const recvTransport = device.createRecvTransport({
         ...(recvRes.params as Parameters<typeof device.createRecvTransport>[0]),
         iceServers: getIceServers(),
-        // Enable Encoded Transform (createEncodedStreams) on the recv PC so jam
-        // mode can bypass NetEQ (see jam-neteq-bypass). Just a capability — with
-        // no consumer tapping the stream, decoding proceeds normally, so this is
-        // inert for non-jam calls. MUST be set at PC-creation time; it can't be
-        // turned on later, which is exactly why it lives here and not per-consume.
-        additionalSettings: { encodedInsertableStreams: true },
-      } as Parameters<typeof device.createRecvTransport>[0]);
+      });
 
       recvTransport.on("connect", async ({ dtlsParameters }, callback, errback) => {
         try {
