@@ -57,6 +57,13 @@ class JamRing extends AudioWorkletProcessor {
   _report(){ if(((this._t=(this._t+1))&15)===0) this.port.postMessage({h:{avail:this.avail,underflows:this.underflows}}); }
   process(_i,outputs){ const out=outputs[0]; const frames=out[0].length;
     if(!this.started){ if(this.avail>=this.pre) this.started=true; else { for(const o of out) o.fill(0); this._report(); return true; } }
+    // Drift compensation: the sender's clock and our AudioContext clock are never
+    // exactly equal, so over a long session the cushion slowly creeps up (latency
+    // grows) or down (underflows). NetEQ resamples to fix this; our minimal ring
+    // instead drops ONE sample per block when the cushion has grown past 2x target
+    // (shrinks latency) — a single 48kHz sample is inaudible, and it only kicks in
+    // when there's plenty of buffer, so it never causes an underflow.
+    if(this.avail > this.pre*2 + frames){ this.read=(this.read+1)%this.cap; this.avail--; }
     for(let i=0;i<frames;i++){ if(this.avail>0){ for(let c=0;c<out.length;c++) out[c][i]=this.buf[Math.min(c,this.channels-1)][this.read];
         this.read=(this.read+1)%this.cap; this.avail--; } else { for(let c=0;c<out.length;c++) out[c][i]=0; this.started=false; this.underflows++; } }
     this._report(); return true; }
