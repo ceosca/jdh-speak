@@ -1263,6 +1263,9 @@ export function useMediasoup() {
   }, [emit, store]);
 
   const prevNetMonRef = useRef(networkMonitor);
+  // Did network-monitor auto-force the SFU (so it should release it on off)? Kept
+  // separate from a MANUAL force-SFU (Ctrl+Alt+S) or jam, which we must not undo.
+  const netMonitorForcedSfuRef = useRef(false);
   useEffect(() => {
     void applyNetworkMonitor();
     applyMicMonitor(); // local monitor stands down (or returns) to avoid doubling
@@ -1277,11 +1280,22 @@ export function useMediasoup() {
         void emit("set-force-sfu", { force: true })
           .then(() => store.getState().setForceSfu(true))
           .catch((err) => console.error("[net-monitor] auto force-SFU failed:", err));
+        netMonitorForcedSfuRef.current = true;
         store.getState().announce(announce_net_monitor_forcing_sfu());
       } else {
         store.getState().announce(announce_net_monitor_on());
       }
     } else {
+      // Release the SFU pin we set — but ONLY if WE set it (never undo a manual
+      // Ctrl+Alt+S or jam). The server re-evaluates the mode, so if nothing else
+      // needs the SFU (≤5 peers, no jam/recording/caster) the room returns to P2P,
+      // exactly as it was before network monitoring was turned on.
+      if (netMonitorForcedSfuRef.current) {
+        netMonitorForcedSfuRef.current = false;
+        void emit("set-force-sfu", { force: false })
+          .then(() => store.getState().setForceSfu(false))
+          .catch((err) => console.error("[net-monitor] release force-SFU failed:", err));
+      }
       store.getState().announce(announce_net_monitor_off());
     }
   }, [networkMonitor, applyNetworkMonitor, applyMicMonitor, emit, store]);
