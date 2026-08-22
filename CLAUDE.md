@@ -253,6 +253,33 @@ pinned to **1.4.0** (newer arm64 prebuilds need glibc 2.38; the Pi has 2.36).
   the actual decoded frame size (decaying max) instead of a fixed value — robust to
   whatever frame size a stream uses.
 
+**📏 MEASURED latency budget (so nobody chases the wrong ms).** On Cristian's
+Windows box, live-measured the whole round-trip and found the dominant cost is
+**hidden in the browser's audio I/O buffers, NOT in our stack**:
+- **Output latency ≈ 42 ms** (`AudioContext.outputLatency`, measured with audio
+  actually playing — it reads 0 until then). This is the single biggest number, and
+  it does **not** move with `latencyHint` (`"interactive"`, numeric `0`, `0.001`,
+  `"balanced"` all give 42 ms) or with `setSinkId` to a different card (all ~42 ms;
+  the Focusrite was *worse* at 54 ms — Chrome uses **WASAPI shared mode, not ASIO**).
+- **Capture ≈ 10 ms** (`getUserMedia` `track.getSettings().latency` with
+  `latency:{ideal:0}`), and `baseLatency` ≈ 10 ms — both already near their floor.
+- **WebRTC's native `<audio>` playout** (`media-playout` stat `totalPlayoutDelay`) is
+  ~42 ms total = NetEQ jitter ~19 ms + device output **~23 ms** — i.e. WebRTC's
+  output path is ~19 ms LOWER than AudioContext's on this box. So routing everything
+  through AudioContext (for gain/spatial) *costs* ~19 ms vs a plain element. Possible
+  browser micro-win: play the network-monitor return via a raw `<audio>` element
+  (WebRTC output, no AudioContext) — untested by ear, and it drops the NetEQ bypass,
+  so only worth it if a listening test shows the ~19 ms output saving beats the ~9 ms
+  the bypass saves. Not implemented; flagged for a future A/B.
+
+**The point:** network 1 ms + ptime 10 ms + ring 10 ms are already tiny next to the
+~42 ms output + ~10 ms capture = **~50 ms of browser I/O buffer that JS cannot
+reduce** — it's the WASAPI-shared-mode floor. **The only thing that beats it is
+native audio (ASIO), which takes output to ~3-5 ms — a ~37 ms win, far bigger than
+every browser trick combined.** That is exactly what the Python GUI below is for; do
+not keep grinding browser ms expecting a breakthrough — the breakthrough is leaving
+the browser's audio I/O.
+
 **🔮 Future direction (Cristian + Edu's plan — keep the jam logic intact for it).**
 The plan is a **Python GUI** companion for this platform: Python specifically so
 **ASIO / native low-latency audio** (and other native extras) can be added later —
