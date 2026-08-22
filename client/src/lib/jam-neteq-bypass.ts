@@ -274,3 +274,134 @@ export async function setupJamReceiveBypass(
     return null;
   }
 }
+
+// ── Generator playout for the network monitor (the biggest browser win) ──────
+//
+// Measured on Windows: AudioContext output ≈ 42 ms, but WebRTC/media-element output
+// ≈ 23 ms. Routing the monitor through the AudioContext graph therefore costs ~19 ms
+// of pure output buffer. This path avoids the AudioContext entirely: tap the encoded
+// frames (bypassing NetEQ, ~10 ms cushion of our own), decode with WebCodecs, write
+// the PCM into a MediaStreamTrackGenerator, and play THAT track through a plain
+// <audio> element (WebRTC's low-latency media output) — with setSinkId so it can go
+// out a second card. Net ≈ ring 10 + output 23 ≈ 33 ms vs ~52 ms through the graph.
+// Universal (any Chrome/Edge), no ASIO needed. Mechanism verified in a loopback
+// (generated track plays in real time). FAIL-SAFE: returns null on any failure so
+// the caller keeps the normal AudioContext monitor path.
+
+export function generatorMonitorSupported(receiver: RTCRtpReceiver): boolean {
+  return (
+    jamBypassSupported(receiver) &&
+    typeof (globalThis as AnyRec).MediaStreamTrackGenerator !== "undefined" &&
+    typeof AudioDecoder !== "undefined"
+  );
+}
+
+export type GeneratorMonitorHandle = {
+  teardown: () => void;
+  setDevice: (deviceId: string) => void;
+};
+
+export function setupGeneratorMonitor(
+  receiver: RTCRtpReceiver,
+  deviceId: string,
+  channels: number,
+): GeneratorMonitorHandle | null {
+  if (!generatorMonitorSupported(receiver)) return null;
+  const ch = channels === 2 ? 2 : 1;
+  let decoder: AudioDecoder | null = null;
+  let el: HTMLAudioElement | null = null;
+  try {
+    const streams = (receiver as unknown as AnyRec).createEncodedStreams();
+    const reader: ReadableStreamDefaultReader = streams.readable.getReader();
+    // Frames are read and NOT written back → dropped from NetEQ (we play them).
+    const gen = new (globalThis as AnyRec).MediaStreamTrackGenerator({ kind: "audio" });
+    const w: WritableStreamDefaultWriter = gen.writable.getWriter();
+    decoder = new AudioDecoder({
+      output: (ad) => {
+        // Backpressure-free: the generator paces playout by AudioData timestamps.
+        w.write(ad).catch(() => {
+          try {
+            ad.close();
+          } catch {
+            /* already closed */
+          }
+        });
+      },
+      error: () => {
+        /* stream goes quiet on this path; teardown restores NetEQ */
+      },
+    });
+    decoder.configure({ codec: "opus", sampleRate: 48000, numberOfChannels: ch });
+
+    el = new Audio();
+    el.autoplay = true;
+    (el as unknown as Record<string, boolean>).playsInline = true;
+    el.srcObject = new MediaStream([gen]);
+    const setDevice = (id: string) => {
+      if (el && "setSinkId" in el) {
+        (el as unknown as { setSinkId: (s: string) => Promise<void> })
+          .setSinkId(id || "")
+          .catch(() => {});
+      }
+    };
+    setDevice(deviceId);
+    el.play().catch(() => {});
+
+    let ts = 0;
+    (async () => {
+      for (;;) {
+        let r: ReadableStreamReadResult<AnyRec>;
+        try {
+          r = await reader.read();
+        } catch {
+          break;
+        }
+        if (r.done) break;
+        const buf = (r.value as { data: ArrayBuffer }).data;
+        if (!buf || buf.byteLength === 0) continue; // DTX/comfort-noise → skip
+        if (decoder && decoder.state === "configured") {
+          try {
+            decoder.decode(new EncodedAudioChunk({ type: "key", timestamp: ts, data: buf }));
+            ts += 20000; // monotonic label only
+          } catch {
+            /* skip */
+          }
+        }
+      }
+    })();
+
+    return {
+      teardown: () => {
+        try {
+          if (el) {
+            el.pause();
+            el.srcObject = null;
+          }
+        } catch {
+          /* gone */
+        }
+        try {
+          if (decoder && decoder.state !== "closed") decoder.close();
+        } catch {
+          /* gone */
+        }
+      },
+      setDevice,
+    };
+  } catch {
+    try {
+      if (el) {
+        el.pause();
+        el.srcObject = null;
+      }
+    } catch {
+      /* noop */
+    }
+    try {
+      if (decoder && decoder.state !== "closed") decoder.close();
+    } catch {
+      /* noop */
+    }
+    return null;
+  }
+}

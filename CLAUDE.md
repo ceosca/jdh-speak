@@ -267,10 +267,16 @@ Windows box, live-measured the whole round-trip and found the dominant cost is
   ~42 ms total = NetEQ jitter ~19 ms + device output **~23 ms** — i.e. WebRTC's
   output path is ~19 ms LOWER than AudioContext's on this box. So routing everything
   through AudioContext (for gain/spatial) *costs* ~19 ms vs a plain element. Possible
-  browser micro-win: play the network-monitor return via a raw `<audio>` element
-  (WebRTC output, no AudioContext) — untested by ear, and it drops the NetEQ bypass,
-  so only worth it if a listening test shows the ~19 ms output saving beats the ~9 ms
-  the bypass saves. Not implemented; flagged for a future A/B.
+  browser win, IMPLEMENTED for the monitor: `setupGeneratorMonitor` (jam-neteq-bypass)
+  decodes the tapped frames with WebCodecs and writes them to a
+  **`MediaStreamTrackGenerator` → `<audio>`** (WebRTC's ~23 ms media output) instead
+  of the AudioContext graph — combining our ~10 ms decode ring with the low WebRTC
+  output ≈ **~33 ms vs ~52 ms** through the graph. Used in `applyNetworkMonitor` when
+  jam + Chrome/Edge + a flagged recv (mutually exclusive with the graph+bypass path —
+  `createEncodedStreams` is once-per-receiver). Integrates with the output-card
+  picker (`gen.setDevice`). Fail-safe: returns null → graph path. **Mechanism
+  verified in a loopback (generated track plays in real time); the actual latency win
+  is a human listening test** (no output-latency API for a generated-track element).
 
 **The point:** network 1 ms + ptime 10 ms + ring 10 ms are already tiny next to the
 ~42 ms output + ~10 ms capture = **~50 ms of browser I/O buffer that JS cannot

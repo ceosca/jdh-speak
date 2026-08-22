@@ -11,7 +11,12 @@ import { autoSeat, seatToPoint, type SpatialSeat } from "../lib/spatial";
 import { ambienceName, ambienceIrUrl } from "../lib/ambience";
 import { analyseImpulse, buildReverbImpulse, wetGainFor } from "../lib/ir-analysis";
 import { parseClearKey, type Channel } from "../lib/tv";
-import { setupJamReceiveBypass } from "../lib/jam-neteq-bypass";
+import {
+  setupJamReceiveBypass,
+  setupGeneratorMonitor,
+  generatorMonitorSupported,
+  type GeneratorMonitorHandle,
+} from "../lib/jam-neteq-bypass";
 import {
   flattenEpisodes,
   seasonsOf,
@@ -384,6 +389,15 @@ export function useMediasoup() {
       })
     | null
   >(null);
+  // Alternative monitor playout: our WebCodecs decode written to a
+  // MediaStreamTrackGenerator → <audio> (WebRTC's ~23ms output instead of the
+  // AudioContext graph's ~42ms). Used for the network monitor in jam on Chrome/Edge;
+  // mutually exclusive with netMonitorRef (createEncodedStreams is once-per-receiver).
+  const netMonitorGenRef = useRef<{
+    gen: GeneratorMonitorHandle;
+    consumer: Consumer;
+    producerId: string;
+  } | null>(null);
   const peerAudiosRef = useRef<Map<string, PeerAudio>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
   // True when we joined WITHOUT a microphone (opted out, or none available /
@@ -1215,6 +1229,11 @@ export function useMediasoup() {
   // headphones), or back to the primary output when the picker is "". Live: called
   // both when the monitor is (re)built and when the user changes the device.
   const routeNetMonitorOutput = useCallback((deviceId: string) => {
+    // Generator-playout monitor: just re-point its <audio> element's sink.
+    if (netMonitorGenRef.current) {
+      netMonitorGenRef.current.gen.setDevice(deviceId);
+      return;
+    }
     const nm = netMonitorRef.current;
     if (!nm) return;
     // Drop any previous dedicated output.
@@ -1268,6 +1287,16 @@ export function useMediasoup() {
         destroyAudioPipeline(nm);
         netMonitorRef.current = null;
       }
+      const g = netMonitorGenRef.current;
+      if (g) {
+        g.gen.teardown();
+        try {
+          g.consumer.close();
+        } catch {
+          /* gone */
+        }
+        netMonitorGenRef.current = null;
+      }
     };
     const on = store.getState().networkMonitor;
     if (!on) return tearDown();
@@ -1281,7 +1310,11 @@ export function useMediasoup() {
       return;
     }
     // Already monitoring THIS producer — nothing to do.
-    if (netMonitorRef.current?.producerId === producer.id) return;
+    if (
+      netMonitorRef.current?.producerId === producer.id ||
+      netMonitorGenRef.current?.producerId === producer.id
+    )
+      return;
     tearDown();
 
     try {
@@ -1303,6 +1336,29 @@ export function useMediasoup() {
         (consumer.track as unknown as Record<string, number>).playoutDelayHint = 0;
       }
       setReceiverJitterTarget(consumer.rtpReceiver, true);
+
+      // Lowest-latency monitor (jam + Chrome/Edge + flagged recv): decode the tapped
+      // frames ourselves and play them through a MediaStreamTrackGenerator → <audio>
+      // (WebRTC's ~23ms output) instead of the AudioContext graph (~42ms) — the
+      // biggest browser-side win, no ASIO. Falls through to the graph path if
+      // unsupported/fails (createEncodedStreams is once-per-receiver, so it's this OR
+      // the graph+bypass, never both).
+      const rcv = consumer.rtpReceiver;
+      if (
+        useRoomStore.getState().jamMode &&
+        recvInsertableRef.current &&
+        rcv &&
+        generatorMonitorSupported(rcv)
+      ) {
+        const channels =
+          (consumer.rtpParameters.codecs?.[0] as { channels?: number } | undefined)?.channels ?? 1;
+        const gen = setupGeneratorMonitor(rcv, store.getState().netMonitorDeviceId, channels);
+        if (gen) {
+          netMonitorGenRef.current = { gen, consumer, producerId: producer.id };
+          return;
+        }
+      }
+
       const pipeline = createAudioPipeline(consumer.track); // gain → destination
       pipeline.gainNode.gain.value = 1;
       // Jam: bypass NetEQ on your OWN return too — this is the timing reference you
@@ -1532,6 +1588,10 @@ export function useMediasoup() {
     if (netMonitorRef.current) {
       destroyAudioPipeline(netMonitorRef.current);
       netMonitorRef.current = null;
+    }
+    if (netMonitorGenRef.current) {
+      netMonitorGenRef.current.gen.teardown();
+      netMonitorGenRef.current = null;
     }
     cleanupAllPeerAudio();
   }, [cleanupAllPeerAudio]);
