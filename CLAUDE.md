@@ -286,6 +286,29 @@ every browser trick combined.** That is exactly what the Python GUI below is for
 not keep grinding browser ms expecting a breakthrough — the breakthrough is leaving
 the browser's audio I/O.
 
+**🧪 Jamulus/SonoBus techniques reverse-engineered — what's adaptable to the browser.**
+Studied their internals and tested the enabling primitives live:
+- **Tiny Opus frames (2.5 ms) — ADAPTABLE, confirmed.** Jamulus uses 64/128-sample
+  Opus frames (~1.3-2.7 ms) with a custom encoder; SonoBus uses 2.5 ms. We use 10 ms.
+  **WebCodecs `AudioEncoder` DOES honour `frameDuration:2500`** (verified: 43 frames
+  from 100 ms of audio, ~21 bytes each). Going 10 ms → 2.5 ms cuts ~7.5 ms of send
+  packetisation AND lets the receive buffer floor drop to ~one frame (~2.5 ms) —
+  together ~15 ms. **But WebRTC's own encoder is fixed at 10 ms**, so 2.5 ms frames
+  need a parallel path: **WebCodecs encode → a datagram transport → WebCodecs decode →
+  the MediaStreamTrackGenerator playout above.** The transport can be **mediasoup
+  DataChannels** (SCTP DataProducer/DataConsumer — reuses the SFU, no new ports) or
+  WebTransport. This is essentially the parked `experiments/webtransport-jam` pipeline
+  redone with 2.5 ms frames + the generator output — a real, buildable "Jamulus in the
+  browser" audio path. Not built yet; it's a substantial client+server change for an
+  incremental ~15 ms on top of the generator win.
+- **`AudioContext renderSizeHint` (configurable render quantum) — NO help.** Tested
+  `32`/`64`/`hardware`: `baseLatency` stays 10 ms. Don't chase it.
+- **The immovable floor stays ~33 ms** = capture ~10 ms + output ~23 ms (WASAPI
+  shared, best case with the generator path). Even a perfect browser-Jamulus lands
+  ~40 ms; native (ASIO) reaches ~15-20 ms by beating that I/O floor. So the browser
+  ceiling is ~40 ms, native is the only way under it — but ~40 ms IS playable, and it
+  needs no ASIO (works for Edu/Franco).
+
 **🔮 Future direction (Cristian + Edu's plan — keep the jam logic intact for it).**
 The plan is a **Python GUI** companion for this platform: Python specifically so
 **ASIO / native low-latency audio** (and other native extras) can be added later —
