@@ -299,12 +299,16 @@ export function generatorMonitorSupported(receiver: RTCRtpReceiver): boolean {
 export type GeneratorMonitorHandle = {
   teardown: () => void;
   setDevice: (deviceId: string) => void;
+  // Per-peer volume/deafen: the <audio> element's own volume (0..1). Not used for
+  // the self-monitor (always 1), but the peer playout composes effectiveGain here.
+  setVolume: (v: number) => void;
 };
 
 export function setupGeneratorMonitor(
   receiver: RTCRtpReceiver,
   deviceId: string,
   channels: number,
+  initialVolume = 1,
 ): GeneratorMonitorHandle | null {
   if (!generatorMonitorSupported(receiver)) return null;
   const ch = channels === 2 ? 2 : 1;
@@ -345,6 +349,7 @@ export function setupGeneratorMonitor(
       }
     };
     setDevice(deviceId);
+    el.volume = Math.max(0, Math.min(1, initialVolume));
     el.play().catch(() => {});
 
     let ts = 0;
@@ -370,7 +375,15 @@ export function setupGeneratorMonitor(
       }
     })();
 
+    const elForVol = el;
     return {
+      setVolume: (v: number) => {
+        try {
+          elForVol.volume = Math.max(0, Math.min(1, v));
+        } catch {
+          /* element gone */
+        }
+      },
       teardown: () => {
         try {
           if (el) {
