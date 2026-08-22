@@ -53,9 +53,18 @@ class JamRing extends AudioWorkletProcessor {
   constructor(o){ super();
     const opt=o.processorOptions||{}; this.channels=opt.channels||1; this.cap=opt.capacity||48000; this.pre=opt.prebuffer||480;
     this.target=this.pre; this.clean=0; // adaptive cushion + samples since last underflow
+    this.floorMin=opt.floorMin||144; // absolute lowest cushion (3ms) — never below this
     this.buf=[]; for(let c=0;c<this.channels;c++) this.buf.push(new Float32Array(this.cap));
     this.read=0; this.write=0; this.avail=0; this.started=false; this.underflows=0; this._t=0;
     this.port.onmessage=(e)=>{ const ch=e.data; const n=ch[0].length;
+      // Couple the cushion floor to the ACTUAL frame size: PCM arrives one Opus
+      // frame at a time (480 samples @ ptime=10, 240 @ ptime=5). A cushion smaller
+      // than one frame drains between arrivals and underflows every frame, so the
+      // real floor is ~one frame + 1ms. Tracking it here means lowering ptime to 5
+      // automatically lowers the receive floor to ~5ms, and if the browser ignores
+      // ptime=5 and keeps 10ms frames the floor stays at 10ms — no periodic glitch
+      // either way.
+      if(n>0){ const need=Math.max(this.floorMin, n+48); this.pre = need>this.pre ? need : Math.max(this.floorMin, this.pre-1); if(this.target<this.pre) this.target=this.pre; }
       for(let i=0;i<n;i++){ for(let c=0;c<this.channels;c++) this.buf[c][this.write]=ch[c]?ch[c][i]:ch[0][i];
         this.write=(this.write+1)%this.cap; if(this.avail<this.cap) this.avail++; else this.read=(this.read+1)%this.cap; } };
   }

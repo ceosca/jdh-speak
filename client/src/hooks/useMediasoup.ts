@@ -1641,13 +1641,12 @@ export function useMediasoup() {
           // next call / mode switch. Normal calls keep FEC on for resilience.
           opusFec: !store.getState().jamMode,
           opusMaxPlaybackRate: 48000,
-          // Jam mode: halve packetisation (20ms → 10ms). Default Opus/WebRTC
-          // ptime is 20ms — a full 20ms of samples buffered on the SENDER before
-          // the first packet leaves. This is the biggest lever left on the SFU
-          // path (the network-monitor return goes mic → produce → consume back,
-          // so this cut lands directly on what you hear returning). 10ms is the
-          // proven sweet spot; below it the RTP/UDP/IP header overhead balloons
-          // for no audible gain. Cost here is ~+32kbps of headers — trivial.
+          // Jam mode: 10ms packetisation (default is 20ms — a full 20ms buffered on
+          // the sender before the first packet leaves). MEASURED: pushing ptime to 5
+          // doesn't help — Chrome mixes 5/10ms frames (~8.5ms avg), so the receive
+          // floor (which must cover the LARGEST frame) stays ~10ms while packet rate
+          // rises. 10ms is the sweet spot; the receive-side ring floor auto-tracks
+          // the actual frame size (jam-neteq-bypass) so this stays coupled.
           ...(store.getState().jamMode ? { opusPtime: 10 } : {}),
           // Honour the room's current quality at produce time (a mode switch or
           // late join rebuilds the producer); 128 = original.
