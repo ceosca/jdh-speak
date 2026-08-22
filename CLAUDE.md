@@ -137,6 +137,32 @@ returned via the server as a timing reference, à la Jamulus) and an **all-out
 latency stack**. Two DeviceSettings checkboxes: **"Modo ensayo"** (`jamMode`) and
 **"Monitoreo de red"** (`networkMonitor`).
 
+**⚠️⚠️ WHY JAM RUNS ON THE SFU, NOT P2P — this is the whole logic, do NOT "optimise"
+it away.** It is tempting to think "P2P is lower latency, so jam should use P2P."
+**That is wrong and it breaks the Jamulus model.** The reason is not speed, it's
+that an ensemble needs **one universal, shared timing reference** — a single hub
+everyone relates to. Only the SFU gives that:
+- **SFU (correct for jam):** every stream goes through the server, so there is **one
+  common hub**. Your **network monitor** is your own signal returned *via that hub*.
+  Everyone relates to the same point, at a symmetric server-relayed delay, so there
+  is a single clock to play against — you anticipate your own server-return and
+  everyone's parts line up **at the hub, the same way for everyone**. This is exactly
+  the Jamulus principle (play ahead so your part lands aligned in the common mix).
+- **P2P mesh (wrong for jam, even though it's faster point-to-point):** there is **no
+  common hub**. Each pair has its own latency: A hears B at `lat(A↔B)`, C at
+  `lat(A↔C)`; B hears A at `lat(A↔B)` but C at `lat(B↔C)`. So **the "mix" every
+  person hears is different and skewed** — there is no universal reference to
+  synchronise to, and no way to know how far ahead to play for *everyone* at once.
+  Worse, **the network monitor literally cannot exist in P2P** — no server returns
+  your own signal, so the timing reference you play against isn't there. Lower
+  per-link latency is useless if the ensemble can't share a clock.
+
+So: **jam ⇒ SFU is a correctness requirement, not a performance choice.** `jamMode`
+and `networkMonitor` both pin the room to the SFU on purpose. Never route jam over
+P2P "for speed" — you'd trade a working ensemble for a faster but unsynchronisable
+one. (The bypass work below shaves latency *within* the SFU path; that's the right
+place to optimise, not the transport topology.)
+
 **Room-wide (all-or-nobody).** `jamMode` is a **room-wide** toggle now, mirroring the
 force-SFU pattern exactly: the checkbox calls `onJamToggle` (registered in the store
 by `useMediasoup`) → emits `set-jam-mode {enabled}` → server sets `room.jamMode`,
@@ -208,6 +234,40 @@ WebTransport rewrite is parked. The probe embedded a QUIC echo relay in the main
 server on udp/40059 behind `WT_PROBE`; if `server/src/webtransport-probe.ts` still
 exists it's inert unless `WT_PROBE` is set and needs `@fails-components/webtransport`
 pinned to **1.4.0** (newer arm64 prebuilds need glibc 2.38; the Pi has 2.36).
+
+**More recent details (so nobody re-derives them):**
+- **Separate output card for the return.** The network monitor can play its return
+  out its **own** sound card / headphones while the primary card keeps regular sound
+  (e.g. primary = your local piano, secondary = the server-return so you hear how far
+  behind you are). Store `netMonitorDeviceId` ("" = same as primary); `useMediasoup`'s
+  `routeNetMonitorOutput()` sends the monitor's gain through a
+  `MediaStreamAudioDestinationNode → <audio>.setSinkId(deviceId)`; picker in
+  `DeviceSettings` under the monitor checkbox (Chrome/Edge — `canSelectElementSink`).
+- **ptime is 10 ms, and that was MEASURED, not assumed.** Pushing Opus to `ptime=5`
+  to lower the receive floor was tried in a loopback: Chrome doesn't honour it
+  cleanly (mixes 5/10 ms frames, ~8.5 ms avg), so the receive floor — which must
+  cover the LARGEST frame — stays ~10 ms while packet rate rises. Not worth it. Don't
+  re-try it expecting a win.
+- **The bypass ring floor auto-couples to the frame size.** A cushion can't be smaller
+  than one Opus frame (PCM arrives one frame at a time), so the ring's floor tracks
+  the actual decoded frame size (decaying max) instead of a fixed value — robust to
+  whatever frame size a stream uses.
+
+**🔮 Future direction (Cristian + Edu's plan — keep the jam logic intact for it).**
+The plan is a **Python GUI** companion for this platform: Python specifically so
+**ASIO / native low-latency audio** (and other native extras) can be added later —
+the thing the browser fundamentally can't do (see the "leaving the browser" note in
+the status). The split would be: **the web app for chatting/among everything else,
+and the GUI for the jam (instrument) path**; the *last* link is wiring the GUI into
+this platform's signalling/SFU. **Critically, jam must keep working in BOTH forms —
+web and GUI — at the same time**, because someone who isn't playing should be able
+to **spectate** (over the web) the people who ARE playing (via the GUI). That's the
+whole reason jam can't become GUI-only: web participants need to hear the jam too.
+And it's another reason **jam stays on the SFU** — the SFU is the shared hub that a
+native GUI client and web spectators would both connect to, exchanging the same
+server-relayed streams. **When building toward this, do not "simplify" jam into a
+P2P or GUI-only path — that would break both the Jamulus timing model (above) and
+the web-spectator requirement.**
 
 ### Server-side recording (`server/src/recording.ts` + `recording-util.ts`)
 
