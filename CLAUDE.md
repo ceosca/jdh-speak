@@ -119,6 +119,96 @@ The server's `AudioLevelObserver` watches **voice producers only** — music/cas
 
 A send-only "music caster" peer joins with `role: "caster"` (see `joinSchema`). It produces a stereo track but never consumes or sets up P2P, so its presence forces the room onto the SFU. Voice defaults to **mono ~64 kbps** for everyone; it's a **per-user opt-in** to send **stereo ~128 kbps** ("Hi-fi voice" toggle in `DeviceSettings`, persisted as `jdh-speak:hifiVoice`, default off — `hifiVoiceEnabled` in the store). The flag is read at **call start** — `forceOpusParams(sdp, hifi)` in `client/src/lib/sdp-munger.ts` sets `stereo`/`maxaveragebitrate` on the P2P fmtp, and the SFU `produce` sets `opusStereo`/`opusMaxAverageBitrate`; `microphoneConstraints` captures 1 vs 2 channels to match. It applies on the **next** call (the live producer's codec can't be re-negotiated mid-call). Why opt-in: most mics are mono (so stereo adds nothing audible) and 128k voice costs **every listener** bandwidth in the SFU fan-out. The router's `maxaveragebitrate: 256000` (`mediasoup-config.ts`) is a **ceiling** above even hi-fi voice — it lets the dedicated stereo caster/share/file producers negotiate full hi-fi — **do not lower it to 64000**, that silently clamps music to voice quality.
 
+### Jam mode / "Modo ensayo" (low-latency ensemble) — branch `feat/webtransport-jam`
+
+> **For Edu's Claude (and future me):** this whole feature lives on the branch
+> **`feat/webtransport-jam`**, NOT on `main`. **The Pi's live deployment currently
+> runs this branch** (`git -C /home/pi/jdh-speak branch` to confirm). It's still in
+> testing with real users. Cristian drives the listening tests; when he's away, keep
+> the invariants below — the risky part (the NetEQ bypass) already caused one outage.
+> **⚠️ On THIS Pi the systemd unit is `sonicroom.service`, NOT `jdh-speak.service`**
+> (never renamed here — the migration note at the top is wrong for this box). Deploy
+> a client-only change with `git pull && pnpm --filter client build` (no restart);
+> restart with `sudo systemctl restart sonicroom` only for server-code changes.
+
+**Goal:** let musicians play together in the browser, squeezing latency toward
+Jamulus/SonoBus territory. Two pillars: a **network monitor** (hear your own signal
+returned via the server as a timing reference, à la Jamulus) and an **all-out
+latency stack**. Two DeviceSettings checkboxes: **"Modo ensayo"** (`jamMode`) and
+**"Monitoreo de red"** (`networkMonitor`).
+
+**Room-wide (all-or-nobody).** `jamMode` is a **room-wide** toggle now, mirroring the
+force-SFU pattern exactly: the checkbox calls `onJamToggle` (registered in the store
+by `useMediasoup`) → emits `set-jam-mode {enabled}` → server sets `room.jamMode`,
+broadcasts `jam-mode {enabled, by}` to the others, and re-evaluates the mode. It's
+all-or-nobody **on purpose** — the receive-side NetEQ bypass can only safely tap
+every consumer if the whole room is jam (a mixed room would leave non-jam peers out).
+`room.jamMode` is in `shouldForceSfu` (jam pins the SFU) and in the join response
+(late joiners adopt it). **Symmetry matters:** unchecking jam re-evaluates → returns
+to P2P if ≤5 peers and nothing else forces SFU. Network monitor also auto-forces SFU
+and now **releases its own pin** on disable (`netMonitorForcedSfuRef`) — it must
+never undo a manual Ctrl+Alt+S or jam's pin.
+
+**The latency stack (all jam-gated).** Send side (`useMediasoup` + `sdp-munger.ts`):
+`getUserMedia({ latency:0 })` (minimal capture buffer) · Opus `ptime=10` (halves the
+20 ms packetisation; SFU produce uses `opusPtime:10`, P2P via the munger) · **FEC
+off** (`opusFec:false`/`useinbandfec=0` — FEC holds a packet back) · DTX off ·
+`networkPriority:"high"` (DSCP) · **raw-mic send bypass** (`applyJamSendPath` sends
+the raw mic track via `replaceTrack`, skipping the outgoing Web Audio limiter's
+lookahead). Receive side: `jitterBufferTarget=0` + `playoutDelayHint=0`, **and** the
+NetEQ bypass below.
+
+**The NetEQ bypass — the big win, and the dangerous part.** Measured live: WebRTC's
+NetEQ jitter buffer **won't drop below ~20-30 ms even with `jitterBufferTarget=0`**
+on a 1 ms-jitter loopback — that floor, not the transport, is the dominant latency.
+So we bypass NetEQ while keeping mediasoup: `client/src/lib/jam-neteq-bypass.ts` taps
+the receiver's encoded Opus frames via **`RTCRtpScriptTransform` +
+`createEncodedStreams`** (which sit BEFORE the jitter buffer), decodes with
+**WebCodecs `AudioDecoder`**, and plays through our own **minimal ring AudioWorklet**
+(~10-12 ms). Half NetEQ's latency, on the existing SFU — no WebTransport, no new
+ports.
+- **⚠️ THE SAFETY INVARIANT (an outage taught us this):** enabling
+  `encodedInsertableStreams` on the recv PC makes Chrome route **every** incoming
+  frame through the tap — **any consumer you don't tap+pipe goes SILENT**, not to
+  NetEQ. So: the flag is set **only in a jam room, only on Chrome/Edge**
+  (`recvInsertableRef`, `SUPPORTS_INSERTABLE_STREAMS`), and when it's on, **`tapConsumer`
+  taps EVERY consumer** — voice → `bypass` (decode+ring), the music caster / anything
+  else → **passthrough** (`bypass:false`, pipe frames straight to NetEQ so it plays
+  untouched but is never silent). Normal (non-jam) calls **never set the flag** → the
+  path is byte-for-byte the old NetEQ one, zero risk. Safari/Firefox lack
+  `createEncodedStreams` → they fall back to plain NetEQ automatically.
+- **Never re-enable `encodedInsertableStreams` PC-wide/unconditionally** — that's
+  exactly what silenced non-jam users (commit history: "URGENT — remove
+  encodedInsertableStreams"). Keep it jam-gated + tap-everyone.
+- Known edge: enabling jam while a room is **already** SFU (6+ peers) doesn't rebuild
+  the recv transport, so the bypass engages on the next SFU (re)build. Audio is always
+  correct either way (flag off → plain NetEQ).
+
+**Key files:** `client/src/lib/jam-neteq-bypass.ts` (bypass+passthrough, inline
+Worker+AudioWorklet via Blob URLs, fully fail-safe — any setup failure returns null
+and leaves NetEQ playing); `client/src/hooks/useMediasoup.ts`
+(`applyJamSendPath`/`applyJamSenderPriority`/`applyNetworkMonitor`/`tapConsumer`/
+`setReceiverJitterTarget`, the `jam-mode` socket handler, `onJamToggle` registration);
+`server/src/signaling.ts` (`set-jam-mode` handler, `shouldForceSfu`, join response);
+`server/src/room-manager.ts` (`Room.jamMode`); `client/src/lib/sdp-munger.ts`
+(`forceOpusParams(sdp, kbps, jam)`).
+
+**Status:** send stack + room-wide jam + jitterBufferTarget=0 shipped and safe. The
+NetEQ bypass is re-enabled and mechanism-verified (engages on all consumers, no
+errors; bypass ~12 ms and passthrough validated in isolation) but the **final
+audio-quality/latency confirmation is a human listening test** Cristian still owes.
+If jam audio glitches/doubles/goes silent for someone, unchecking "Modo ensayo"
+restores normal audio instantly (it's opt-in and fail-safe).
+
+**Also on this branch (throwaway):** `experiments/webtransport-jam/` — a Level-1
+feasibility probe of **WebTransport + WebCodecs** (own buffer over QUIC, bypassing
+NetEQ via a different transport). It measured ~15 ms vs NetEQ's ~30 ms. **The
+receive-side bypass above supersedes it** (same win, on the existing stack), so the
+WebTransport rewrite is parked. The probe embedded a QUIC echo relay in the main
+server on udp/40059 behind `WT_PROBE`; if `server/src/webtransport-probe.ts` still
+exists it's inert unless `WT_PROBE` is set and needs `@fails-components/webtransport`
+pinned to **1.4.0** (newer arm64 prebuilds need glibc 2.38; the Pi has 2.36).
+
 ### Server-side recording (`server/src/recording.ts` + `recording-util.ts`)
 
 Recording is server-side and forces SFU. Per producer: a mediasoup `PlainTransport` pushes RTP to a local UDP port (`PortAllocator` hands out P/P+1 pairs since ffmpeg also opens an RTCP socket at port+1) where an ffmpeg process captures it to a streamable Ogg/Opus file with `-c:a copy` (no re-encode). The download endpoint (`/api/recordings/:id/download`) spawns a **second** ffmpeg that `amix`es all captures (with `adelay` to align late joiners, `normalize=0`) and streams to HTTP `pipe:1` — captures keep running, never interrupted. Recordings are keyed by a `recordingId` capability token, not room name. `RecordingManager` takes injected `RecordingDeps` so the logic is unit-testable without real ffmpeg/mediasoup.
