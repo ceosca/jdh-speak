@@ -19,3 +19,11 @@ export function applySpeakerToContext(ctx: AudioContext, deviceId: string): void
     if (deviceId) sinkable.setSinkId!("").catch(() => {});
   });
 }
+
+// Routing ONE audio path to its own device (used for the network-monitor return,
+// so it can play on a second card while the primary context stays on the main one)
+// needs per-ELEMENT sinks: an <audio> fed by a MediaStreamAudioDestinationNode.
+// HTMLMediaElement.setSinkId is the knob; Chrome/Edge have it, Safari doesn't.
+export function canSelectElementSink(): boolean {
+  return typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype;
+}

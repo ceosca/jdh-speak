@@ -3,7 +3,7 @@ import { io, type Socket } from "socket.io-client";
 import { Device } from "mediasoup-client";
 import type { Transport, Producer, Consumer } from "mediasoup-client/types";
 import { forceOpusParams } from "../lib/sdp-munger";
-import { applySpeakerToContext } from "../lib/audio-devices";
+import { applySpeakerToContext, canSelectElementSink } from "../lib/audio-devices";
 import { isIOS, getMicrophoneStream } from "../lib/microphone";
 import { playCue, preloadCueSamples, playTypingTick } from "../lib/sounds";
 import { getIceServers } from "../lib/ice";
@@ -376,6 +376,11 @@ export function useMediasoup() {
         consumer?: Consumer;
         producerId?: string;
         jamBypass?: { teardown: () => void } | null;
+        // Optional dedicated output: when the user picks a second card for the
+        // return, its gain feeds this MediaStreamDestination → <audio> (setSinkId)
+        // instead of the shared context's primary output.
+        monitorDest?: MediaStreamAudioDestinationNode;
+        monitorEl?: HTMLAudioElement;
       })
     | null
   >(null);
@@ -870,6 +875,7 @@ export function useMediasoup() {
   useEffect(() => {
     applySpeakerToContext(sharedAudioContext, speakerDeviceId);
   }, [speakerDeviceId]);
+  const netMonitorDeviceId = useRoomStore((s) => s.netMonitorDeviceId);
 
   // Mid-call mic setting change: re-acquire the mic with the selected device
   // and voice-processing preference, then reroute it into the outgoing graph.
@@ -1205,10 +1211,61 @@ export function useMediasoup() {
   // you anticipate your own return instead of your local sound. SFU-only (P2P has
   // no producer and never returns your audio). Re-established whenever the
   // producer is (re)built, since consuming needs the current producer id.
+  // Route the network-monitor return to its own output device (a second card /
+  // headphones), or back to the primary output when the picker is "". Live: called
+  // both when the monitor is (re)built and when the user changes the device.
+  const routeNetMonitorOutput = useCallback((deviceId: string) => {
+    const nm = netMonitorRef.current;
+    if (!nm) return;
+    // Drop any previous dedicated output.
+    if (nm.monitorEl) {
+      try {
+        nm.monitorEl.pause();
+        nm.monitorEl.srcObject = null;
+      } catch {
+        /* gone */
+      }
+      nm.monitorEl = undefined;
+    }
+    try {
+      nm.gainNode.disconnect(); // clears whatever it fed (dest or primary)
+    } catch {
+      /* not connected */
+    }
+    nm.monitorDest = undefined;
+    if (deviceId && canSelectElementSink()) {
+      // gain → MediaStreamDestination → <audio> pinned to the chosen card.
+      const dest = sharedAudioContext.createMediaStreamDestination();
+      nm.gainNode.connect(dest);
+      const el = new Audio();
+      el.srcObject = dest.stream;
+      (el as unknown as { setSinkId: (id: string) => Promise<void> })
+        .setSinkId(deviceId)
+        .catch(() => {
+          /* stale/unplugged device — the element then plays on default */
+        });
+      el.play().catch(() => {});
+      nm.monitorDest = dest;
+      nm.monitorEl = el;
+    } else {
+      // Default: back to the shared context's primary output.
+      nm.gainNode.connect(sharedAudioContext.destination);
+    }
+  }, []);
+
   const applyNetworkMonitor = useCallback(async () => {
     const tearDown = () => {
-      if (netMonitorRef.current) {
-        destroyAudioPipeline(netMonitorRef.current);
+      const nm = netMonitorRef.current;
+      if (nm) {
+        if (nm.monitorEl) {
+          try {
+            nm.monitorEl.pause();
+            nm.monitorEl.srcObject = null;
+          } catch {
+            /* gone */
+          }
+        }
+        destroyAudioPipeline(nm);
         netMonitorRef.current = null;
       }
     };
@@ -1257,10 +1314,18 @@ export function useMediasoup() {
         useRoomStore.getState().jamMode,
       );
       netMonitorRef.current = { ...pipeline, consumer, producerId: producer.id, jamBypass };
+      // Send the return out the user's chosen card (or the primary if unset).
+      routeNetMonitorOutput(store.getState().netMonitorDeviceId);
     } catch (err) {
       console.error("[net-monitor] self-consume failed:", err);
     }
-  }, [emit, store]);
+  }, [emit, store, routeNetMonitorOutput]);
+
+  // Live re-route of the network-monitor return to its own card when the picker
+  // changes (no-op unless the monitor is currently up).
+  useEffect(() => {
+    routeNetMonitorOutput(netMonitorDeviceId);
+  }, [netMonitorDeviceId, routeNetMonitorOutput]);
 
   const prevNetMonRef = useRef(networkMonitor);
   // Did network-monitor auto-force the SFU (so it should release it on off)? Kept

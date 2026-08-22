@@ -26,6 +26,10 @@ function loadMicGain(): number {
 // micGain: persisted, and carried from the lobby preview into the call.
 const MIC_DEVICE_KEY = "jdh-speak:micDeviceId";
 const SPEAKER_DEVICE_KEY = "jdh-speak:speakerDeviceId";
+// Output device for the network-monitor return only (a second sound card / phones
+// so you can hear your server-return separately from the primary output). "" = same
+// as the primary speaker.
+const NET_MONITOR_DEVICE_KEY = "jdh-speak:netMonitorDeviceId";
 const VOICE_PROCESSING_KEY = "jdh-speak:voiceProcessing";
 const JAM_MODE_KEY = "jdh-speak:jamMode";
 const NETWORK_MONITOR_KEY = "jdh-speak:networkMonitor";
@@ -191,6 +195,7 @@ interface RoomState {
   // and the in-call media graph both follow these (see DeviceSettings).
   micDeviceId: string;
   speakerDeviceId: string;
+  netMonitorDeviceId: string;
   // Browser voice processing (echo cancellation, noise suppression and
   // automatic gain). Defaults OFF everywhere (iPhone/iPad included — they send a
   // clean mono signal instead; see loadVoiceProcessing / microphoneConstraints).
@@ -309,6 +314,7 @@ interface RoomState {
   setMicGain: (gain: number) => void;
   setMicDeviceId: (deviceId: string) => void;
   setSpeakerDeviceId: (deviceId: string) => void;
+  setNetMonitorDeviceId: (deviceId: string) => void;
   setVoiceProcessingEnabled: (enabled: boolean) => void;
   setJamMode: (enabled: boolean) => void;
   // Room-wide jam toggle: registered by useMediasoup so the DeviceSettings
@@ -374,6 +380,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   micGain: loadMicGain(),
   micDeviceId: loadString(MIC_DEVICE_KEY),
   speakerDeviceId: loadString(SPEAKER_DEVICE_KEY),
+  netMonitorDeviceId: loadString(NET_MONITOR_DEVICE_KEY),
   voiceProcessingEnabled: loadVoiceProcessing(),
   jamMode: loadString(JAM_MODE_KEY) === "true",
   onJamToggle: null,
@@ -470,6 +477,10 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setSpeakerDeviceId: (speakerDeviceId) => {
     saveString(SPEAKER_DEVICE_KEY, speakerDeviceId);
     set({ speakerDeviceId });
+  },
+  setNetMonitorDeviceId: (netMonitorDeviceId) => {
+    saveString(NET_MONITOR_DEVICE_KEY, netMonitorDeviceId);
+    set({ netMonitorDeviceId });
   },
   setVoiceProcessingEnabled: (voiceProcessingEnabled) => {
     saveString(VOICE_PROCESSING_KEY, String(voiceProcessingEnabled));

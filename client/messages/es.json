@@ -202,6 +202,8 @@
   "settings_jam_hint": "Latencia al mínimo para tocar en vivo: micrófono sin procesar (sin cancelación de eco ni supresión de ruido) y buffer mínimo. Usa una interfaz de audio y escúchate por su monitor directo por hardware, no por el navegador.",
   "settings_net_monitor_label": "Monitoreo de red (oír tu propio retorno)",
   "settings_net_monitor_hint": "En vez del monitor local, oís tu propia señal de vuelta por el servidor (a lo Jamulus), a la latencia de la red. Te guiás por ese retorno para tocar en tiempo con todos: te adelantás a tu propio rebote. Requiere auriculares.",
+  "settings_net_monitor_device_label": "Placa de salida del retorno",
+  "settings_net_monitor_device_same": "La misma que los altavoces",
   "settings_share_monitor_label": "Oír el audio compartido en tu dispositivo",
   "settings_share_monitor_hint": "Al compartir pestaña/pantalla, reproduce ese audio también por tu dispositivo de salida elegido. Puede generar eco si la pestaña ya suena en ese mismo dispositivo.",
   "settings_secondary_hint": "Mezcla un segundo dispositivo de grabación (otro micro o un loopback) en tu audio. Al silenciar, solo se silencia tu micro principal.",

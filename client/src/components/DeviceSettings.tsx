@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useState } from "react";
 import { useRoomStore } from "../stores/room";
-import { canSelectSpeaker } from "../lib/audio-devices";
+import { canSelectSpeaker, canSelectElementSink } from "../lib/audio-devices";
 import { m } from "../paraglide/messages.js";
 
 // Mic/speaker pickers. This component only reads/writes the store — the
@@ -27,6 +27,8 @@ export function DeviceSettings() {
   const setShareMonitor = useRoomStore((s) => s.setShareMonitor);
   const setJamMode = useRoomStore((s) => s.setJamMode);
   const setNetworkMonitor = useRoomStore((s) => s.setNetworkMonitor);
+  const netMonitorDeviceId = useRoomStore((s) => s.netMonitorDeviceId);
+  const setNetMonitorDeviceId = useRoomStore((s) => s.setNetMonitorDeviceId);
 
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
   const [speakers, setSpeakers] = useState<MediaDeviceInfo[]>([]);
@@ -43,6 +45,7 @@ export function DeviceSettings() {
   const jamModeHintId = useId();
   const netMonitorId = useId();
   const netMonitorHintId = useId();
+  const netMonitorSelectId = useId();
 
   const refresh = useCallback(async () => {
     try {
@@ -237,6 +240,36 @@ export function DeviceSettings() {
         <p id={netMonitorHintId} className="mt-1 text-xs text-sonic-400">
           {m.settings_net_monitor_hint()}
         </p>
+        {/* Dedicated output card for the return: play it on a SECOND device (e.g.
+            headphones) while your primary card keeps the regular sound (your local
+            piano). Only when the monitor is on and the browser supports per-element
+            sinks. */}
+        {networkMonitor && canSelectElementSink() && (
+          <div className="mt-2">
+            <label
+              htmlFor={netMonitorSelectId}
+              className="mb-1 block text-xs font-medium text-sonic-300"
+            >
+              {m.settings_net_monitor_device_label()}
+            </label>
+            <select
+              id={netMonitorSelectId}
+              value={
+                speakers.some((d) => d.deviceId === netMonitorDeviceId) ? netMonitorDeviceId : ""
+              }
+              onChange={(e) => setNetMonitorDeviceId(e.target.value)}
+              onFocus={() => void refresh()}
+              className={selectClass}
+            >
+              <option value="">{m.settings_net_monitor_device_same()}</option>
+              {speakers.map((d, i) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {d.label || m.settings_speaker_fallback({ n: i + 1 })}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       {/* Browsers hide device names until mic permission is granted (e.g. in
