@@ -114,6 +114,53 @@ const sharedAudioContext = new AudioContext({
   latencyHint: "interactive",
 });
 
+// Master output bus. Every peer pipeline connects here instead of straight to the
+// context destination, so ONE node decides how the whole mix reaches the speaker:
+//  - normal: masterBus → context.destination (Chrome's AudioContext output, measured
+//    ~42 ms on Windows/WASAPI-shared with USB devices — playbackStats confirmed).
+//  - jam: masterBus → MediaStreamAudioDestinationNode → <audio> element, which uses
+//    Chrome's MEDIA output path (~23 ms measured via WebRTC's media-playout stat).
+//    That ~19 ms is the browser's accessible slice of the WASAPI bottleneck — the
+//    same "lower the output buffer" Jamulus gets from ASIO, minus what the sandbox
+//    won't give (exclusive mode / IAudioClient3, which USB devices can't use anyway).
+// Fail-safe: if per-element sinks aren't supported (Safari/Firefox), stays on the
+// plain destination, so nothing breaks.
+const masterBus = sharedAudioContext.createGain();
+masterBus.connect(sharedAudioContext.destination);
+let jamOutEl: HTMLAudioElement | null = null;
+let jamOutDest: MediaStreamAudioDestinationNode | null = null;
+function routeMasterOutput(jam: boolean, speakerDeviceId: string) {
+  try {
+    masterBus.disconnect();
+  } catch {
+    /* not connected */
+  }
+  if (jam && canSelectElementSink()) {
+    if (!jamOutDest) jamOutDest = sharedAudioContext.createMediaStreamDestination();
+    masterBus.connect(jamOutDest);
+    if (!jamOutEl) {
+      jamOutEl = new Audio();
+      jamOutEl.autoplay = true;
+      (jamOutEl as unknown as Record<string, boolean>).playsInline = true;
+    }
+    jamOutEl.srcObject = jamOutDest.stream;
+    (jamOutEl as unknown as { setSinkId: (s: string) => Promise<void> })
+      .setSinkId(speakerDeviceId || "")
+      .catch(() => {});
+    jamOutEl.play().catch(() => {});
+  } else {
+    masterBus.connect(sharedAudioContext.destination);
+    if (jamOutEl) {
+      try {
+        jamOutEl.pause();
+        jamOutEl.srcObject = null;
+      } catch {
+        /* gone */
+      }
+    }
+  }
+}
+
 // Probe once for any operator-provided cue samples (/sounds/<cue>.<ext>) so the
 // first join/leave already uses them; cues with no file fall back to the synth.
 preloadCueSamples(sharedAudioContext);
@@ -251,7 +298,8 @@ function createAudioPipeline(track: MediaStreamTrack): Omit<PeerAudio, "consumer
   airFilter.Q.value = 0.7;
 
   // Start non-spatial; applySpatialLayout inserts the panner when it's enabled.
-  gainNode.connect(sharedAudioContext.destination);
+  // Output goes to the master bus (which routes to the plain or low-latency sink).
+  gainNode.connect(masterBus);
 
   return { audioEl, gainNode, sourceNode, panner, airFilter };
 }
@@ -353,9 +401,9 @@ function applySpatialLayout(
     if (spatial) {
       pa.gainNode.connect(pa.airFilter);
       pa.airFilter.connect(pa.panner);
-      pa.panner.connect(sharedAudioContext.destination);
+      pa.panner.connect(masterBus);
     } else {
-      pa.gainNode.connect(sharedAudioContext.destination);
+      pa.gainNode.connect(masterBus);
     }
     // Wet send (survives the disconnect above): tapped post-volume/deafen, so a
     // quieted or deafened peer contributes nothing to the reverb either.
@@ -889,6 +937,14 @@ export function useMediasoup() {
   useEffect(() => {
     applySpeakerToContext(sharedAudioContext, speakerDeviceId);
   }, [speakerDeviceId]);
+
+  // Route the whole mix through the low-latency media output when jam is on (the
+  // ~19 ms WASAPI win), or the plain context destination otherwise. Re-applied when
+  // jam toggles or the speaker changes.
+  useEffect(() => {
+    routeMasterOutput(jamMode, speakerDeviceId);
+  }, [jamMode, speakerDeviceId]);
+
   const netMonitorDeviceId = useRoomStore((s) => s.netMonitorDeviceId);
 
   // Mid-call mic setting change: re-acquire the mic with the selected device
@@ -1267,8 +1323,9 @@ export function useMediasoup() {
       nm.monitorDest = dest;
       nm.monitorEl = el;
     } else {
-      // Default: back to the shared context's primary output.
-      nm.gainNode.connect(sharedAudioContext.destination);
+      // Default: back to the primary output via the master bus (so the monitor
+      // rides the same low-latency media sink as the peers in jam).
+      nm.gainNode.connect(masterBus);
     }
   }, []);
 
