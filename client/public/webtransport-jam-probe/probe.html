@@ -77,7 +77,7 @@
         $("log").scrollTop = $("log").scrollHeight;
       };
       const SR = 48000;
-      const FRAME = 480; // 10 ms @ 48k
+      const FRAME = 120; // 2.5 ms @ 48k (Jamulus/SonoBus frame size)
 
       let ctx, wtSession, wtWriter, capNode, playNode, encoder, decoder;
       let micStream;
@@ -214,7 +214,7 @@
             // are the two low-latency knobs WebCodecs actually exposes for Opus;
             // "lowdelay/RESTRICTED_LOWDELAY" application mode is NOT settable via
             // the standard API, so we don't pretend to set it.
-            opus: { frameDuration: 10000, useinbandfec: false },
+            opus: { frameDuration: 2500, useinbandfec: false },
           });
 
           decoder = new AudioDecoder({
@@ -249,7 +249,7 @@
                 sampleRate: SR,
                 numberOfFrames: FRAME,
                 numberOfChannels: 1,
-                timestamp: frameIdx * 10000,
+                timestamp: frameIdx * 2500,
                 data: frame,
               });
               frameIdx++;
@@ -267,7 +267,7 @@
 
           // Playback graph: play worklet -> speakers.
           playNode = new AudioWorkletNode(ctx, "playback-worklet", {
-            processorOptions: { capacity: SR }, // 1 s ring
+            processorOptions: { capacity: SR, prebuffer: 120 }, // 2.5 ms cushion
           });
           playNode.port.onmessage = (e) => {
             if (typeof e.data.available === "number") {
