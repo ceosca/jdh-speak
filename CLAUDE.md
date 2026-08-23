@@ -226,6 +226,23 @@ audio-quality/latency confirmation is a human listening test** Cristian still ow
 If jam audio glitches/doubles/goes silent for someone, unchecking "Modo ensayo"
 restores normal audio instantly (it's opt-in and fail-safe).
 
+**✅ Master output bus → media-element sink (EAR-VALIDATED).** Measured with
+`AudioContext.playbackStats` (the accurate API, not the `outputLatency` estimate):
+the AudioContext output is a real ~42 ms on Windows with USB devices — which can't
+use WASAPI's IAudioClient3 low-latency path. Chrome's MEDIA output path is ~23 ms.
+So all peer pipelines now feed one `masterBus` (`useMediasoup.ts`) which, in jam,
+routes the whole mix through a `MediaStreamAudioDestinationNode → <audio>` (media
+output ~23 ms) instead of `AudioContext.destination` (~42 ms) — the browser's
+accessible slice of the WASAPI bottleneck, **~19 ms lower for hearing everyone**.
+`routeMasterOutput(jam, speakerDeviceId)` on a jamMode/speaker effect. **Confirmed
+live with Cristian+Edu+Franco: with jam on, everyone still hears everyone** (no
+silence) — the master-bus media path works for the full mesh, not just the monitor.
+Normal (non-jam) calls: `masterBus → destination`, a unity-gain passthrough, the old
+path byte-for-byte. Safari/Firefox (no per-element sink) stay on destination.
+**Device tip that's real, not code:** a NON-USB output (a laptop's built-in
+audio/jack, e.g. Edu's/Franco's) can reach IAudioClient3 → ~22 ms lower still; USB
+interfaces (Cristian's Maonocaster/Focusrite) are locked out of it.
+
 **Also on this branch (throwaway):** `experiments/webtransport-jam/` — a Level-1
 feasibility probe of **WebTransport + WebCodecs** (own buffer over QUIC, bypassing
 NetEQ via a different transport). It measured ~15 ms vs NetEQ's ~30 ms. **The
