@@ -17,6 +17,7 @@ import {
   generatorMonitorSupported,
   type GeneratorMonitorHandle,
 } from "../lib/jam-neteq-bypass";
+import { setupWtMonitor, wtMonitorSupported, type WtMonitorHandle } from "../lib/jam-wt-monitor";
 import {
   flattenEpisodes,
   seasonsOf,
@@ -335,6 +336,24 @@ async function tapConsumer(
   }
 }
 
+// Cached /api/wt-probe result (the embedded QUIC echo relay's URL + self-signed
+// cert hash) for the WebTransport 2.5 ms monitor. Fetched once per session.
+let wtProbeInfoCache: {
+  enabled: boolean;
+  url: string | null;
+  certHash: { value: number[] } | null;
+} | null = null;
+async function fetchWtProbeInfo() {
+  if (wtProbeInfoCache) return wtProbeInfoCache;
+  try {
+    const r = await fetch("/api/wt-probe");
+    wtProbeInfoCache = await r.json();
+  } catch {
+    wtProbeInfoCache = { enabled: false, url: null, certHash: null };
+  }
+  return wtProbeInfoCache!;
+}
+
 function destroyAudioPipeline(pa: PeerAudio) {
   // Restore NetEQ + free the decoder/worker BEFORE closing the consumer.
   pa.jamBypass?.teardown();
@@ -446,6 +465,9 @@ export function useMediasoup() {
     consumer: Consumer;
     producerId: string;
   } | null>(null);
+  // WebTransport 2.5 ms monitor (Jamulus-frame-size self-return over QUIC, bypassing
+  // WebRTC's audio path). Mutually exclusive with the two refs above.
+  const netMonitorWtRef = useRef<{ handle: WtMonitorHandle; producerId: string } | null>(null);
   const peerAudiosRef = useRef<Map<string, PeerAudio>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
   // True when we joined WITHOUT a microphone (opted out, or none available /
@@ -1285,6 +1307,11 @@ export function useMediasoup() {
   // headphones), or back to the primary output when the picker is "". Live: called
   // both when the monitor is (re)built and when the user changes the device.
   const routeNetMonitorOutput = useCallback((deviceId: string) => {
+    // WebTransport 2.5 ms monitor: re-point its <audio> sink.
+    if (netMonitorWtRef.current) {
+      netMonitorWtRef.current.handle.setDevice(deviceId);
+      return;
+    }
     // Generator-playout monitor: just re-point its <audio> element's sink.
     if (netMonitorGenRef.current) {
       netMonitorGenRef.current.gen.setDevice(deviceId);
@@ -1354,6 +1381,11 @@ export function useMediasoup() {
         }
         netMonitorGenRef.current = null;
       }
+      const w = netMonitorWtRef.current;
+      if (w) {
+        w.handle.teardown();
+        netMonitorWtRef.current = null;
+      }
     };
     const on = store.getState().networkMonitor;
     if (!on) return tearDown();
@@ -1369,10 +1401,35 @@ export function useMediasoup() {
     // Already monitoring THIS producer — nothing to do.
     if (
       netMonitorRef.current?.producerId === producer.id ||
-      netMonitorGenRef.current?.producerId === producer.id
+      netMonitorGenRef.current?.producerId === producer.id ||
+      netMonitorWtRef.current?.producerId === producer.id
     )
       return;
     tearDown();
+
+    // Lowest-latency return (jam + Chrome/Edge + relay up): 2.5 ms Opus frames over
+    // WebTransport, echoed by the relay — bypasses WebRTC's audio path entirely for
+    // the timing reference. Falls through to the mediasoup self-consume if the relay
+    // is off or anything fails.
+    if (store.getState().jamMode && wtMonitorSupported()) {
+      const micTrack = localStreamRef.current?.getAudioTracks()[0];
+      if (micTrack) {
+        const info = await fetchWtProbeInfo();
+        if (info.enabled && info.url) {
+          const handle = await setupWtMonitor(
+            micTrack,
+            info.url,
+            info.certHash?.value ?? null,
+            store.getState().netMonitorDeviceId,
+            1,
+          );
+          if (handle) {
+            netMonitorWtRef.current = { handle, producerId: producer.id };
+            return;
+          }
+        }
+      }
+    }
 
     try {
       const res = await emit<ConsumeResult>("consume", {
@@ -1649,6 +1706,10 @@ export function useMediasoup() {
     if (netMonitorGenRef.current) {
       netMonitorGenRef.current.gen.teardown();
       netMonitorGenRef.current = null;
+    }
+    if (netMonitorWtRef.current) {
+      netMonitorWtRef.current.handle.teardown();
+      netMonitorWtRef.current = null;
     }
     cleanupAllPeerAudio();
   }, [cleanupAllPeerAudio]);
