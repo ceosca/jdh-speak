@@ -59,7 +59,15 @@ function shouldDrop(p: { startMs: number; written: number }, ad: any): boolean {
   if (p.startMs === 0) p.startMs = now;
   const played = ((now - p.startMs) / 1000) * 48000;
   const buffered = p.written - played;
-  if (buffered > MAX_BUFFER_SAMPLES) return true; // ahead of realtime → drop
+  // Lightweight live stat so the bounded-buffer behaviour can be verified in a real
+  // session (window.__jamMeshStats.bufferedMs / drops). Harmless; throwaway-branch aid.
+  const g = globalThis as unknown as { __jamMeshStats?: { bufferedMs: number; drops: number } };
+  const s = (g.__jamMeshStats ||= { bufferedMs: 0, drops: 0 });
+  s.bufferedMs = +((buffered / 48000) * 1000).toFixed(0);
+  if (buffered > MAX_BUFFER_SAMPLES) {
+    s.drops++;
+    return true; // ahead of realtime → drop
+  }
   p.written += ad.numberOfFrames;
   return false;
 }
