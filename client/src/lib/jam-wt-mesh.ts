@@ -196,7 +196,7 @@ export async function setupWtMesh(
       sampleRate: 48000,
       numberOfChannels: ch,
       bitrate: 64000,
-      opus: { frameDuration: 2500, useinbandfec: false },
+      opus: { frameDuration: 2500, useinbandfec: false, usedtx: false },
     });
 
     const proc = new (globalThis as AnyRec).MediaStreamTrackProcessor({ track: micTrack });
