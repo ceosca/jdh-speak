@@ -29,9 +29,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 type CertHash = { algorithm: "sha-256"; value: number[] };
-let info: { enabled: boolean; url: string | null; certHash: CertHash | null } = {
+let info: {
+  enabled: boolean;
+  url: string | null;
+  jamUrl: string | null;
+  certHash: CertHash | null;
+} = {
   enabled: false,
   url: null,
+  jamUrl: null,
   certHash: null,
 };
 
@@ -135,35 +141,47 @@ export async function startWebTransportProbe(): Promise<void> {
     server.startServer();
     await server.ready;
 
-    info = { enabled: true, url: `https://${publicHost}:${port}/echo`, certHash };
+    info = {
+      enabled: true,
+      url: `https://${publicHost}:${port}/echo`,
+      jamUrl: `https://${publicHost}:${port}/jam`,
+      certHash,
+    };
     console.log(
-      `[wt-probe] HTTP/3 echo relay on udp/${port} (path /echo) — ${info.url}` +
+      `[wt-probe] HTTP/3 relay on udp/${port} (/echo monitor + /jam routed mesh) — ${info.url}` +
         (certHash ? " [self-signed + hash]" : " [trusted cert]"),
     );
 
-    void acceptLoop(server);
+    void acceptLoop(server, "/echo", (s) => void handleSession(s));
+    void acceptLoop(server, "/jam", (s) => void handleJamSession(s));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[wt-probe] not started (probe stays off, server unaffected): ${msg}`);
-    info = { enabled: false, url: null, certHash: null };
+    info = { enabled: false, url: null, jamUrl: null, certHash: null };
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function acceptLoop(server: any): Promise<void> {
+async function acceptLoop(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  server: any,
+  path: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  handler: (session: any) => void,
+): Promise<void> {
   try {
-    const reader = server.sessionStream("/echo").getReader();
+    const reader = server.sessionStream(path).getReader();
     for (;;) {
       const { done, value: session } = await reader.read();
       if (done) break;
-      void handleSession(session);
+      handler(session);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[wt-probe] accept loop ended: ${msg}`);
+    console.warn(`[wt-probe] accept loop (${path}) ended: ${msg}`);
   }
 }
 
+// --- /echo: pure self-echo (the network monitor's timing reference). ---
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function handleSession(session: any): Promise<void> {
   try {
@@ -179,5 +197,78 @@ async function handleSession(session: any): Promise<void> {
     }
   } catch {
     /* session error — ignore, it's a throwaway echo */
+  }
+}
+
+// --- /jam: ROUTED relay so peers hear each other over the 2.5 ms QUIC path. ---
+// Wire format (little-endian):
+//   hello (client→relay): [0x00][utf8 room name]           → relay replies [0x00][id:u16]
+//   audio (client→relay): [0x01][seq:4][sendTime:8][opus]
+//   audio (relay→client): [0x01][senderId:u16][seq:4][sendTime:8][opus]  (senderId prepended)
+// The relay forwards each audio datagram to EVERY session in the same room INCLUDING
+// the sender (so senderId===yourId is your own network-monitor return, for free).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type JamPeer = { id: number; room: string; writer: any };
+const jamRooms = new Map<string, Map<number, JamPeer>>();
+let jamIdSeq = 1;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function handleJamSession(session: any): Promise<void> {
+  let me: JamPeer | null = null;
+  try {
+    await session.ready;
+    const writer = session.datagrams.writable.getWriter();
+    const dgReader = session.datagrams.readable.getReader();
+    for (;;) {
+      const { done, value } = await dgReader.read();
+      if (done) break;
+      const buf = value as Uint8Array;
+      if (!buf || buf.byteLength < 1) continue;
+      const type = buf[0];
+
+      if (type === 0x00) {
+        // hello — register into the room and hand back a 2-byte id.
+        const room = new TextDecoder().decode(buf.subarray(1)).slice(0, 64);
+        if (!room) continue;
+        const id = (jamIdSeq++ & 0xffff) || 1;
+        me = { id, room, writer };
+        let group = jamRooms.get(room);
+        if (!group) {
+          group = new Map();
+          jamRooms.set(room, group);
+        }
+        group.set(id, me);
+        const ack = new Uint8Array(3);
+        ack[0] = 0x00;
+        new DataView(ack.buffer).setUint16(1, id, true);
+        writer.write(ack).catch(() => {});
+        console.log(`[wt-jam] peer ${id} joined room "${room}" (${group.size} in room)`);
+        continue;
+      }
+
+      if (type === 0x01 && me) {
+        // audio — prepend senderId and fan out to everyone in the room (incl. self).
+        const out = new Uint8Array(buf.byteLength + 2);
+        out[0] = 0x01;
+        new DataView(out.buffer).setUint16(1, me.id, true);
+        out.set(buf.subarray(1), 3);
+        const group = jamRooms.get(me.room);
+        if (group) {
+          for (const peer of group.values()) {
+            peer.writer.write(out).catch(() => {});
+          }
+        }
+      }
+    }
+  } catch {
+    /* session error — drop it */
+  } finally {
+    if (me) {
+      const group = jamRooms.get(me.room);
+      if (group) {
+        group.delete(me.id);
+        if (group.size === 0) jamRooms.delete(me.room);
+      }
+    }
   }
 }

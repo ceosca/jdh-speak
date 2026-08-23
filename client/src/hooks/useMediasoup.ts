@@ -18,6 +18,7 @@ import {
   type GeneratorMonitorHandle,
 } from "../lib/jam-neteq-bypass";
 import { setupWtMonitor, wtMonitorSupported, type WtMonitorHandle } from "../lib/jam-wt-monitor";
+import { setupWtMesh, wtMeshSupported, type WtMeshHandle } from "../lib/jam-wt-mesh";
 import {
   flattenEpisodes,
   seasonsOf,
@@ -341,6 +342,7 @@ async function tapConsumer(
 let wtProbeInfoCache: {
   enabled: boolean;
   url: string | null;
+  jamUrl?: string | null;
   certHash: { value: number[] } | null;
 } | null = null;
 async function fetchWtProbeInfo() {
@@ -468,6 +470,9 @@ export function useMediasoup() {
   // WebTransport 2.5 ms monitor (Jamulus-frame-size self-return over QUIC, bypassing
   // WebRTC's audio path). Mutually exclusive with the two refs above.
   const netMonitorWtRef = useRef<{ handle: WtMonitorHandle; producerId: string } | null>(null);
+  // Jam PEER mesh over WebTransport (2.5 ms frames, routed between clients). While
+  // it's up, masterBus is muted so the mediasoup peer audio doesn't double it.
+  const wtMeshRef = useRef<WtMeshHandle | null>(null);
   const peerAudiosRef = useRef<Map<string, PeerAudio>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
   // True when we joined WITHOUT a microphone (opted out, or none available /
@@ -966,6 +971,48 @@ export function useMediasoup() {
   useEffect(() => {
     routeMasterOutput(jamMode, speakerDeviceId);
   }, [jamMode, speakerDeviceId]);
+
+  // Jam PEER mesh over WebTransport: hear the others at 2.5 ms Opus over QUIC instead
+  // of mediasoup's 10 ms path. When it's up we mute masterBus so the mediasoup peer
+  // audio doesn't play the same voices twice. Fail-safe: if the relay/mic/APIs aren't
+  // there, the mesh stays off and mediasoup peer audio plays as usual.
+  const applyJamMesh = useCallback(async () => {
+    const stopMesh = () => {
+      if (wtMeshRef.current) {
+        wtMeshRef.current.teardown();
+        wtMeshRef.current = null;
+      }
+      masterBus.gain.value = 1; // mediasoup peer audio audible again
+    };
+    if (!store.getState().jamMode || !wtMeshSupported()) return stopMesh();
+    if (wtMeshRef.current) return; // already meshing
+    const micTrack = localStreamRef.current?.getAudioTracks()[0];
+    const room = store.getState().roomName;
+    if (!micTrack || !room) return stopMesh();
+    const probe = await fetchWtProbeInfo();
+    const jamUrl = probe.jamUrl;
+    if (!probe.enabled || !jamUrl) return stopMesh();
+    const handle = await setupWtMesh(
+      micTrack,
+      jamUrl,
+      probe.certHash?.value ?? null,
+      room,
+      store.getState().speakerDeviceId,
+      1,
+    );
+    if (handle) {
+      wtMeshRef.current = handle;
+      masterBus.gain.value = 0; // silence the mediasoup peer mix — the mesh plays it
+    } else {
+      masterBus.gain.value = 1;
+    }
+  }, [store]);
+
+  useEffect(() => {
+    void applyJamMesh();
+    // Keep the mesh peers on the chosen speaker.
+    if (wtMeshRef.current) wtMeshRef.current.setDevice(speakerDeviceId);
+  }, [jamMode, speakerDeviceId, applyJamMesh]);
 
   const netMonitorDeviceId = useRoomStore((s) => s.netMonitorDeviceId);
 
@@ -1710,6 +1757,11 @@ export function useMediasoup() {
     if (netMonitorWtRef.current) {
       netMonitorWtRef.current.handle.teardown();
       netMonitorWtRef.current = null;
+    }
+    if (wtMeshRef.current) {
+      wtMeshRef.current.teardown();
+      wtMeshRef.current = null;
+      masterBus.gain.value = 1;
     }
     cleanupAllPeerAudio();
   }, [cleanupAllPeerAudio]);
