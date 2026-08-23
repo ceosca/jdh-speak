@@ -55,7 +55,10 @@ function postToHost(type: string, payload?: Record<string, unknown>) {
 
 export function Room() {
   const params = useParams<{ roomName: string }>();
-  const roomName = params.roomName || DEFAULT_ROOM;
+  // Room names are case-insensitive: lowercase the URL segment so `/RAL` and `/ral`
+  // (e.g. a browser that auto-capitalises) are the SAME room — matches the server's
+  // normalisation, and keeps the title/display/storage key consistent.
+  const roomName = (params.roomName || DEFAULT_ROOM).toLowerCase();
   const [searchParams] = useSearchParams();
   const p2pStorageKey = `jdh-speak:p2p-off:${roomName}`;
   const disableP2p =

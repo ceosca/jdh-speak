@@ -38,7 +38,11 @@ const roomNameSchema = z
   .string()
   .min(1)
   .max(64)
-  .regex(/^[a-zA-Z0-9_-]+$/, "Room name must be alphanumeric, hyphens, or underscores");
+  .regex(/^[a-zA-Z0-9_-]+$/, "Room name must be alphanumeric, hyphens, or underscores")
+  // Room names are CASE-INSENSITIVE: normalise to lowercase so `/RAL` and `/ral`
+  // (e.g. a phone/Chrome that auto-capitalises the URL) resolve to the SAME room.
+  // Applied server-side so it holds no matter what any client sends.
+  .transform((s) => s.toLowerCase());
 
 const displayNameSchema = z
   .string()
