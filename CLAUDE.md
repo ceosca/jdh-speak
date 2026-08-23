@@ -316,8 +316,13 @@ Studied their internals and tested the enabling primitives live:
   DataChannels** (SCTP DataProducer/DataConsumer — reuses the SFU, no new ports) or
   WebTransport. This is essentially the parked `experiments/webtransport-jam` pipeline
   redone with 2.5 ms frames + the generator output — a real, buildable "Jamulus in the
-  browser" audio path. Not built yet; it's a substantial client+server change for an
-  incremental ~15 ms on top of the generator win.
+  browser" audio path. **BUILT for the network monitor** (`client/src/lib/jam-wt-monitor.ts`,
+  wired in `applyNetworkMonitor` via `netMonitorWtRef`): mic → `MediaStreamTrackProcessor`
+  → WebCodecs Opus `frameDuration:2500` → QUIC datagrams to the `WT_PROBE` echo relay
+  (udp/40059) → decode → `MediaStreamTrackGenerator` → `<audio>`. Verified engaging in
+  production (WebTransport `created`+`ready`, no errors, needs a live mic). Fail-safe:
+  null → the mediasoup self-consume monitor. Extending 2.5 ms to hearing PEERS (not just
+  the self-return) needs the relay to route between clients — the remaining bigger build.
 - **`AudioContext renderSizeHint` (configurable render quantum) — NO help.** Tested
   `32`/`64`/`hardware`: `baseLatency` stays 10 ms. Don't chase it.
 - **The immovable floor stays ~33 ms** = capture ~10 ms + output ~23 ms (WASAPI
