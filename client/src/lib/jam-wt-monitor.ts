@@ -18,6 +18,8 @@
 // falls back to the normal mediasoup self-consume monitor. Monitor-only (the self
 // return); the room's real audio is untouched.
 
+import { encodeMono } from "./jam-wt-mesh";
+
 export type WtMonitorHandle = {
   teardown: () => void;
   setDevice: (deviceId: string) => void;
@@ -101,11 +103,7 @@ export async function setupWtMonitor(
         }
         if (r.done) break;
         const audioData = r.value;
-        try {
-          if (encoder && encoder.state === "configured") encoder.encode(audioData);
-        } catch {
-          /* skip */
-        }
+        if (encoder) encodeMono(encoder, audioData);
         try {
           audioData.close();
         } catch {

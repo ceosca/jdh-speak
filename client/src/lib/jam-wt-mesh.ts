@@ -27,6 +27,40 @@ export type WtMeshHandle = {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyRec = any;
 
+// The mic often captures STEREO (channelCount:2 on desktop), but our Opus encoder is
+// mono — encoding a stereo AudioData into a mono encoder throws ("Input audio buffer
+// is incompatible with codec") and NOTHING gets sent. So downmix to mono first. Voice
+// is mono anyway (half the bytes). Called for every captured chunk on both the mesh
+// and the WT monitor.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function encodeMono(encoder: AudioEncoder, ad: any): void {
+  if (encoder.state !== "configured") return;
+  try {
+    if (ad.numberOfChannels > 1) {
+      const n = ad.numberOfFrames as number;
+      const a = new Float32Array(n);
+      const b = new Float32Array(n);
+      ad.copyTo(a, { planeIndex: 0, format: "f32-planar" });
+      ad.copyTo(b, { planeIndex: 1, format: "f32-planar" });
+      for (let i = 0; i < n; i++) a[i] = (a[i] + b[i]) * 0.5;
+      const mono = new AudioData({
+        format: "f32-planar",
+        sampleRate: ad.sampleRate,
+        numberOfFrames: n,
+        numberOfChannels: 1,
+        timestamp: ad.timestamp,
+        data: a,
+      });
+      encoder.encode(mono);
+      mono.close();
+    } else {
+      encoder.encode(ad);
+    }
+  } catch {
+    /* skip a bad frame */
+  }
+}
+
 export function wtMeshSupported(): boolean {
   return (
     typeof WebTransport !== "undefined" &&
@@ -210,11 +244,7 @@ export async function setupWtMesh(
           break;
         }
         if (r.done) break;
-        try {
-          if (encoder && encoder.state === "configured") encoder.encode(r.value);
-        } catch {
-          /* skip */
-        }
+        if (encoder) encodeMono(encoder, r.value);
         try {
           r.value.close();
         } catch {
