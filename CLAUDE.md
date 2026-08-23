@@ -322,7 +322,15 @@ Studied their internals and tested the enabling primitives live:
   (udp/40059) → decode → `MediaStreamTrackGenerator` → `<audio>`. Verified engaging in
   production (WebTransport `created`+`ready`, no errors, needs a live mic). Fail-safe:
   null → the mediasoup self-consume monitor. Extending 2.5 ms to hearing PEERS (not just
-  the self-return) needs the relay to route between clients — the remaining bigger build.
+  the self-return) is BUILT: the relay grew a `/jam` path (`handleJamSession`) that
+  routes each client's 2.5 ms frames to everyone else in the room (senderId prepended)
+  + echoes to self; `client/src/lib/jam-wt-mesh.ts` sends the mic and plays each peer
+  via its own decoder → generator → `<audio>`. `applyJamMesh` (`useMediasoup`) starts
+  it on the jamMode effect and mutes `masterBus.gain=0` so the mediasoup peer mix
+  doesn't double it (restored on stop/fail). Relay routing VERIFIED (A's frame reaches
+  B with senderId===A) + client mesh VERIFIED engaging (WebTransport /jam created+ready,
+  no errors); the full-band audio-by-ear test is the remaining confirmation. Jam-gated
+  + fail-safe (null → mediasoup peers play). Needs the `WT_PROBE` relay up (it is).
 - **`AudioContext renderSizeHint` (configurable render quantum) — NO help.** Tested
   `32`/`64`/`hardware`: `baseLatency` stays 10 ms. Don't chase it.
 - **The immovable floor stays ~33 ms** = capture ~10 ms + output ~23 ms (WASAPI
