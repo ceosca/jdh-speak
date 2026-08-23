@@ -37,7 +37,32 @@ export function wtMeshSupported(): boolean {
   );
 }
 
-type MeshPeer = { decoder: AudioDecoder; el: HTMLAudioElement; ts: number };
+type MeshPeer = {
+  decoder: AudioDecoder;
+  el: HTMLAudioElement;
+  ts: number;
+  // Anti-creep clock: written-audio-samples vs wall-clock, to drop when we get ahead.
+  startMs: number;
+  written: number;
+};
+
+// Bound the playout buffer so latency can't creep. The sender's 48 kHz capture clock
+// and our playout clock drift; if we write faster than realtime the generator queues
+// unboundedly and the delay grows forever (exactly the "delay keeps growing" bug). So
+// before writing a decoded frame, estimate the buffer = samplesWritten − samplesPlayed
+// (wall-clock × 48000); if it exceeds the cap, DROP this frame to catch up. Keeps the
+// added latency pinned near the target instead of climbing.
+const MAX_BUFFER_SAMPLES = 48000 * 0.045; // ~45 ms cap
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function shouldDrop(p: { startMs: number; written: number }, ad: any): boolean {
+  const now = performance.now();
+  if (p.startMs === 0) p.startMs = now;
+  const played = ((now - p.startMs) / 1000) * 48000;
+  const buffered = p.written - played;
+  if (buffered > MAX_BUFFER_SAMPLES) return true; // ahead of realtime → drop
+  p.written += ad.numberOfFrames;
+  return false;
+}
 
 export async function setupWtMesh(
   micTrack: MediaStreamTrack,
@@ -94,8 +119,18 @@ export async function setupWtMesh(
       try {
         const gen = new (globalThis as AnyRec).MediaStreamTrackGenerator({ kind: "audio" });
         const gw: WritableStreamDefaultWriter = gen.writable.getWriter();
+        // `p` is assigned just below; the output closure reads its clock fields.
         const decoder = new AudioDecoder({
           output: (ad) => {
+            const self = peers.get(id);
+            if (self && shouldDrop(self, ad)) {
+              try {
+                ad.close();
+              } catch {
+                /* already closed */
+              }
+              return;
+            }
             gw.write(ad).catch(() => {
               try {
                 ad.close();
@@ -119,7 +154,7 @@ export async function setupWtMesh(
             .catch(() => {});
         }
         el.play().catch(() => {});
-        p = { decoder, el, ts: 0 };
+        p = { decoder, el, ts: 0, startMs: 0, written: 0 };
         peers.set(id, p);
         return p;
       } catch {

@@ -320,9 +320,25 @@ export function setupGeneratorMonitor(
     // Frames are read and NOT written back → dropped from NetEQ (we play them).
     const gen = new (globalThis as AnyRec).MediaStreamTrackGenerator({ kind: "audio" });
     const w: WritableStreamDefaultWriter = gen.writable.getWriter();
+    // Anti-creep: the generator queue would grow forever under sender/receiver clock
+    // drift (the "delay keeps growing" bug). Drop a frame when we're > ~45 ms of audio
+    // ahead of wall-clock, so latency stays pinned at the minimum.
+    const clk = { startMs: 0, written: 0 };
+    const MAX_BUF = 48000 * 0.045;
     decoder = new AudioDecoder({
       output: (ad) => {
-        // Backpressure-free: the generator paces playout by AudioData timestamps.
+        const now = performance.now();
+        if (clk.startMs === 0) clk.startMs = now;
+        const buffered = clk.written - ((now - clk.startMs) / 1000) * 48000;
+        if (buffered > MAX_BUF) {
+          try {
+            ad.close();
+          } catch {
+            /* already closed */
+          }
+          return;
+        }
+        clk.written += ad.numberOfFrames;
         w.write(ad).catch(() => {
           try {
             ad.close();
