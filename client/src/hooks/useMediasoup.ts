@@ -1963,6 +1963,10 @@ export function useMediasoup() {
       void applyNetworkMonitor();
       void applyJamSenderPriority();
       void applyJamSendPath();
+      // The mic/producer is now live — (re)start the jam mesh if we joined a room
+      // that was ALREADY in jam (the jamMode effect may have run before the mic was
+      // ready and bailed). Idempotent: no-op if the mesh is already up.
+      void applyJamMesh();
 
       // Share audio and file audio both mix directly into outDest (no separate
       // producer for either — no rebuild needed on SFU setup).
@@ -1985,6 +1989,7 @@ export function useMediasoup() {
       applyNetworkMonitor,
       applyJamSenderPriority,
       applyJamSendPath,
+      applyJamMesh,
       store,
     ],
   );
