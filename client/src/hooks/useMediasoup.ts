@@ -999,6 +999,8 @@ export function useMediasoup() {
       room,
       store.getState().speakerDeviceId,
       1,
+      store.getState().localPeerId ?? "",
+      (peerId: string) => effectiveGain(peerId),
     );
     if (handle) {
       wtMeshRef.current = handle;
@@ -1006,7 +1008,7 @@ export function useMediasoup() {
     } else {
       masterBus.gain.value = 1;
     }
-  }, [store]);
+  }, [store, effectiveGain]);
 
   useEffect(() => {
     void applyJamMesh();

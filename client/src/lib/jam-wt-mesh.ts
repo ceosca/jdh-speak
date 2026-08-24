@@ -76,7 +76,51 @@ type MeshPeer = {
   el: HTMLAudioElement;
   ts: number;
   buf: AdaptiveJitterBuffer;
+  appId: string; // the sender's app peerId (store key) → per-peer volume lookup
 };
+
+// Soft knee above 0.8 so a >1.0 boost doesn't hard-clip into buzz on loud samples.
+// Below the knee it's exactly linear (transparent), matching the pre-jam AudioContext
+// gain for normal levels.
+function softclip(x: number): number {
+  const t = 0.8;
+  if (x > t) return t + (1 - t) * Math.tanh((x - t) / (1 - t));
+  if (x < -t) return -t + (1 - t) * Math.tanh((x + t) / (1 - t));
+  return x;
+}
+
+// Apply the per-peer playback gain (0..4) to a decoded PCM frame BEFORE it reaches the
+// generator. The mesh plays peers through raw <audio> elements whose `.volume` is capped
+// at 1.0 and, worse, was never wired to the per-peer slider at all — so every peer
+// played at unity and any voice you'd boosted above 1.0 came out quieter than before
+// jam. Scaling the samples here restores the full 0..4 range (with a soft knee) at zero
+// added latency and no AudioContext. gain===1 is a no-op (no copy).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function scaleAudio(ad: any, gain: number): any {
+  if (gain === 1) return ad;
+  const ch = ad.numberOfChannels as number;
+  const n = ad.numberOfFrames as number;
+  const out = new Float32Array(n * ch);
+  const tmp = new Float32Array(n);
+  for (let c = 0; c < ch; c++) {
+    ad.copyTo(tmp, { planeIndex: c, format: "f32-planar" });
+    for (let i = 0; i < n; i++) out[c * n + i] = gain === 0 ? 0 : softclip(tmp[i] * gain);
+  }
+  const scaled = new AudioData({
+    format: "f32-planar",
+    sampleRate: ad.sampleRate,
+    numberOfFrames: n,
+    numberOfChannels: ch,
+    timestamp: ad.timestamp,
+    data: out,
+  });
+  try {
+    ad.close();
+  } catch {
+    /* already closed */
+  }
+  return scaled;
+}
 
 // ── Jamulus-style ADAPTIVE jitter buffer (replaces the old fixed 45 ms cap). ──────
 //
@@ -176,9 +220,12 @@ export async function setupWtMesh(
   room: string,
   deviceId: string,
   channels: number,
+  localPeerId: string,
+  getGain: (peerId: string) => number,
 ): Promise<WtMeshHandle | null> {
   if (!wtMeshSupported()) return null;
   const ch = channels === 2 ? 2 : 1;
+  const localIdBytes = new TextEncoder().encode(localPeerId).slice(0, 255);
   let wt: AnyRec = null;
   let encoder: AudioEncoder | null = null;
   const peers = new Map<number, MeshPeer>();
@@ -236,9 +283,12 @@ export async function setupWtMesh(
               }
               return;
             }
-            gw.write(ad).catch(() => {
+            // Apply this peer's per-slider volume (0..4) to the PCM — the <audio>
+            // element can't (capped at 1.0), so do it digitally with a soft knee.
+            const scaled = scaleAudio(ad, self ? getGain(self.appId) : 1);
+            gw.write(scaled).catch(() => {
               try {
-                ad.close();
+                scaled.close();
               } catch {
                 /* already closed */
               }
@@ -259,7 +309,7 @@ export async function setupWtMesh(
             .catch(() => {});
         }
         el.play().catch(() => {});
-        p = { decoder, el, ts: 0, buf: new AdaptiveJitterBuffer(2.5) };
+        p = { decoder, el, ts: 0, buf: new AdaptiveJitterBuffer(2.5), appId: "" };
         peers.set(id, p);
         return p;
       } catch {
@@ -272,14 +322,26 @@ export async function setupWtMesh(
     encoder = new AudioEncoder({
       output: (chunk) => {
         try {
-          const buf = new ArrayBuffer(chunk.byteLength + 13);
+          // [0x01][idLen:u8][appId][seq:4][sendTime:8][opus]. The relay prepends our
+          // senderId and forwards the rest verbatim, so stamping our peerId here lets
+          // receivers map the stream to the app peer (for per-peer volume) with no
+          // relay/server change.
+          const idLen = localIdBytes.length;
+          const headLen = 1 + 1 + idLen + 4 + 8;
+          const buf = new ArrayBuffer(headLen + chunk.byteLength);
           const dv = new DataView(buf);
+          const u8 = new Uint8Array(buf);
           dv.setUint8(0, 0x01);
-          dv.setUint32(1, seq, true);
-          dv.setFloat64(5, performance.now(), true);
-          chunk.copyTo(new Uint8Array(buf, 13));
+          dv.setUint8(1, idLen);
+          u8.set(localIdBytes, 2);
+          let o = 2 + idLen;
+          dv.setUint32(o, seq, true);
+          o += 4;
+          dv.setFloat64(o, performance.now(), true);
+          o += 8;
+          chunk.copyTo(new Uint8Array(buf, o));
           seq = (seq + 1) >>> 0;
-          writer.write(new Uint8Array(buf)).catch(() => {});
+          writer.write(u8).catch(() => {});
         } catch {
           /* skip */
         }
@@ -335,18 +397,25 @@ export async function setupWtMesh(
           myId = dv.getUint16(1, true);
           continue;
         }
-        if (type === 0x01 && v.byteLength > 15) {
+        if (type === 0x01 && v.byteLength > 4) {
+          // [0x01][senderId:u16][idLen:u8][appId][seq:4][sendTime:8][opus]
           const senderId = dv.getUint16(1, true);
           if (senderId === myId) continue; // our own return → the /echo monitor's job
+          const idLen = v[3];
+          const opusOffset = 4 + idLen + 12; // idLen + seq(4) + sendTime(8)
+          if (v.byteLength <= opusOffset) continue;
           const p = ensurePeer(senderId);
-          if (p && p.decoder.state === "configured") {
-            try {
-              p.decoder.decode(
-                new EncodedAudioChunk({ type: "key", timestamp: p.ts, data: v.slice(15) }),
-              );
-              p.ts += 2500;
-            } catch {
-              /* skip */
+          if (p) {
+            if (idLen > 0) p.appId = new TextDecoder().decode(v.subarray(4, 4 + idLen));
+            if (p.decoder.state === "configured") {
+              try {
+                p.decoder.decode(
+                  new EncodedAudioChunk({ type: "key", timestamp: p.ts, data: v.slice(opusOffset) }),
+                );
+                p.ts += 2500;
+              } catch {
+                /* skip */
+              }
             }
           }
         }
