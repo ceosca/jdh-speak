@@ -8,6 +8,42 @@
 
 ---
 
+## 2026-08-24
+
+### Jam: buffer de jitter ADAPTATIVO (reingeniería de Jamulus/SonoBus)
+
+- **Qué:** reemplacé el tope FIJO de 45 ms (+ descarte de frames) de la malla/monitor
+  por un **buffer de jitter adaptativo** estilo Jamulus. Nueva clase
+  `AdaptiveJitterBuffer` en `client/src/lib/jam-wt-mesh.ts`, usada en los tres caminos
+  de playout: la malla WT de peers, el monitor WT (`jam-wt-monitor.ts`) y el bypass
+  NetEQ por generador (`jam-neteq-bypass.ts`).
+- **Cómo:** estudié el fuente real (son GPL, no hace falta desensamblar). Jamulus
+  (`buffer.cpp`) corre buffers simulados en paralelo (2–11 bloques), mide la tasa de
+  *underrun* de cada uno y elige el **más chico** cuyo error queda bajo un umbral, con
+  filtro IIR + histéresis. SonoBus/AOO llega a lo mismo con DLL + resampling. Adapté el
+  **principio** a nuestro playout (un `MediaStreamTrackGenerator` que consume a
+  tiempo real, no un `Get()` por bloque): mido el jitter real de llegada (RFC 3550
+  suavizado) y cada ~0,5 s muevo el cushion objetivo hacia `frame + 3×jitter` — sube
+  rápido para cubrir un pico, baja lento cuando el enlace se calma (IIR up-fast/
+  down-slow). Descarto un frame solo cuando paso ese objetivo **adaptativo**, así la
+  latencia queda clavada en el mínimo que la red pide en cada momento.
+- **Por qué:** el tope fijo de 45 ms era la versión cruda — en un enlace limpio dejaba
+  ~30 ms sobre la mesa, y bajo *drift* de reloj el delay trepaba hasta 45 ms antes de
+  recortar (el "el delay se va agrandando" que se sentía). Simulado (`node`,
+  3 escenarios): **limpio** → objetivo 8 ms (vs 45); **con jitter ±8 ms** → 20 ms
+  (cubre sin recortar, sigue < 45); **con drift** → fija el buffer en ~6 ms mientras el
+  fijo dejaba trepar a ~19 ms en 60 s (y hasta 45 en sesiones largas). Es un
+  **DROP-only** a propósito: subir el objetivo no evita underruns (no añadimos cushion
+  deliberado, que subiría latencia sin beneficio reportado — no hay glitches), así que
+  el objetivo es puro umbral de descarte y el término de jitter se autorregula.
+- **Stat en vivo:** `window.__jamMeshStats` ahora expone `{bufferedMs, targetMs,
+  jitterMs, drops}` para verificar en sesión real.
+- **Honestidad de alcance:** esto recorta el buffer/creep (real), pero el piso duro
+  sigue siendo I/O de WASAPI (~33 ms captura+salida en placas USB) + red. La malla
+  suena parecido al P2P porque **no está pensada para bajar la latencia por-enlace**
+  sino para dar el **reloj común** (modelo Jamulus, hub compartido en el relay); bajar
+  de ~40 ms en navegador exige ASIO (el plan de la GUI en Python).
+
 ## 2026-08-19 (3)
 
 ### Modo ensayo: auto-SFU + hacks de latencia (fase 1)

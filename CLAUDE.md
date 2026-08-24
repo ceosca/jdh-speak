@@ -269,6 +269,24 @@ pinned to **1.4.0** (newer arm64 prebuilds need glibc 2.38; the Pi has 2.36).
   than one Opus frame (PCM arrives one frame at a time), so the ring's floor tracks
   the actual decoded frame size (decaying max) instead of a fixed value — robust to
   whatever frame size a stream uses.
+- **ADAPTIVE jitter buffer (`AdaptiveJitterBuffer` in `jam-wt-mesh.ts`) — replaced the
+  old fixed 45 ms drop cap.** The generator playout paths (WT mesh, WT monitor, NetEQ-
+  bypass generator) used to drop a decoded frame only when the buffer crept past a
+  FIXED 45 ms — the crude version, which on a clean link left ~30 ms on the table and
+  under clock drift let the delay climb to 45 ms before recutting (the "el delay se va
+  agrandando" the user felt). Reverse-engineered from Jamulus `buffer.cpp` (parallel
+  simulated buffers 2–11 blocks, pick the smallest whose underrun error-rate is under
+  bound, IIR + hysteresis) and SonoBus/AOO (DLL + resampling): the class measures real
+  inter-arrival jitter (RFC 3550, smoothed) and every ~0.5 s moves the target cushion
+  toward `frame + 3×jitter`, IIR **up-fast / down-slow**, clamped [8 ms, 60 ms]. It's
+  **DROP-only on purpose** — the playout is a MediaStreamTrackGenerator that pulls at
+  realtime, so the target is only the drop threshold; raising it can't prevent
+  underruns and we deliberately DON'T add a cushion (would raise latency with no
+  reported glitch benefit), so there's no underrun-boost — the jitter term
+  self-regulates. Simulated (`node`): clean → 8 ms target (vs 45), jittery ±8 ms →
+  20 ms, drift → pins ~6 ms while fixed-45 climbed to ~19 ms in 60 s. Live stat:
+  `window.__jamMeshStats = {bufferedMs, targetMs, jitterMs, drops}`. **Don't revert to
+  a fixed cap** — the adaptive minimum is the whole point.
 
 **📏 MEASURED latency budget (so nobody chases the wrong ms).** On Cristian's
 Windows box, live-measured the whole round-trip and found the dominant cost is

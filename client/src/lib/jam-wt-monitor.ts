@@ -18,7 +18,7 @@
 // falls back to the normal mediasoup self-consume monitor. Monitor-only (the self
 // return); the room's real audio is untouched.
 
-import { encodeMono } from "./jam-wt-mesh";
+import { encodeMono, AdaptiveJitterBuffer } from "./jam-wt-mesh";
 
 export type WtMonitorHandle = {
   teardown: () => void;
@@ -115,17 +115,13 @@ export async function setupWtMonitor(
     // --- Receive: echoed datagram → WebCodecs decode → generator → <audio>. ---
     const gen = new (globalThis as AnyRec).MediaStreamTrackGenerator({ kind: "audio" });
     const gw: WritableStreamDefaultWriter = gen.writable.getWriter();
-    // Anti-creep: bound the playout buffer (sender/receiver clock drift would grow the
-    // delay forever otherwise). Drop a frame when we're > ~45 ms of audio ahead of
-    // wall-clock so latency stays pinned near the minimum.
-    const clock = { startMs: 0, written: 0 };
-    const MAX_BUFFER_SAMPLES = 48000 * 0.045;
+    // Anti-creep: a Jamulus-style ADAPTIVE jitter buffer bounds the playout (sender/
+    // receiver clock drift would grow the delay forever otherwise) AND pins it to the
+    // minimum the network needs, not a fixed guess. See AdaptiveJitterBuffer.
+    const jbuf = new AdaptiveJitterBuffer(2.5);
     decoder = new AudioDecoder({
       output: (ad) => {
-        const now = performance.now();
-        if (clock.startMs === 0) clock.startMs = now;
-        const buffered = clock.written - ((now - clock.startMs) / 1000) * 48000;
-        if (buffered > MAX_BUFFER_SAMPLES) {
+        if (jbuf.shouldDrop(ad.numberOfFrames)) {
           try {
             ad.close();
           } catch {
@@ -133,7 +129,6 @@ export async function setupWtMonitor(
           }
           return;
         }
-        clock.written += ad.numberOfFrames;
         gw.write(ad).catch(() => {
           try {
             ad.close();

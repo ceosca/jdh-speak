@@ -25,6 +25,8 @@
 // jitter adaptation; our minimal buffer trades that robustness for latency. Great
 // on a clean network (a jam session), not something to impose on normal calls.
 
+import { AdaptiveJitterBuffer } from "./jam-wt-mesh";
+
 type BypassHandle = { teardown: () => void };
 
 // 10 ms floor. Measured: dropping this to 5 ms did NOT lower steady-state latency —
@@ -320,17 +322,13 @@ export function setupGeneratorMonitor(
     // Frames are read and NOT written back → dropped from NetEQ (we play them).
     const gen = new (globalThis as AnyRec).MediaStreamTrackGenerator({ kind: "audio" });
     const w: WritableStreamDefaultWriter = gen.writable.getWriter();
-    // Anti-creep: the generator queue would grow forever under sender/receiver clock
-    // drift (the "delay keeps growing" bug). Drop a frame when we're > ~45 ms of audio
-    // ahead of wall-clock, so latency stays pinned at the minimum.
-    const clk = { startMs: 0, written: 0 };
-    const MAX_BUF = 48000 * 0.045;
+    // Anti-creep: a Jamulus-style ADAPTIVE jitter buffer (mediasoup frames are 10 ms
+    // here). Bounds the generator queue against clock drift AND pins latency to the
+    // minimum the network needs, not a fixed cap. See AdaptiveJitterBuffer.
+    const jbuf = new AdaptiveJitterBuffer(10);
     decoder = new AudioDecoder({
       output: (ad) => {
-        const now = performance.now();
-        if (clk.startMs === 0) clk.startMs = now;
-        const buffered = clk.written - ((now - clk.startMs) / 1000) * 48000;
-        if (buffered > MAX_BUF) {
+        if (jbuf.shouldDrop(ad.numberOfFrames)) {
           try {
             ad.close();
           } catch {
@@ -338,7 +336,6 @@ export function setupGeneratorMonitor(
           }
           return;
         }
-        clk.written += ad.numberOfFrames;
         w.write(ad).catch(() => {
           try {
             ad.close();
