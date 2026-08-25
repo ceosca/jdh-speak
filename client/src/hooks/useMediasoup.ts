@@ -18,7 +18,12 @@ import {
   type GeneratorMonitorHandle,
 } from "../lib/jam-neteq-bypass";
 import { setupWtMonitor, wtMonitorSupported, type WtMonitorHandle } from "../lib/jam-wt-monitor";
-import { setupWtMesh, wtMeshSupported, type WtMeshHandle } from "../lib/jam-wt-mesh";
+import {
+  setupWtMesh,
+  wtMeshSupported,
+  type WtMeshHandle,
+  type JamBufferBounds,
+} from "../lib/jam-wt-mesh";
 import {
   flattenEpisodes,
   seasonsOf,
@@ -473,6 +478,13 @@ export function useMediasoup() {
   // Jam PEER mesh over WebTransport (2.5 ms frames, routed between clients). While
   // it's up, masterBus is muted so the mediasoup peer audio doesn't double it.
   const wtMeshRef = useRef<WtMeshHandle | null>(null);
+  // Live jitter-buffer bounds (ms) for every jam playout path — a SHARED object the
+  // sliders mutate in place, so the running buffers pick up new min/max without a
+  // rebuild. Seeded from the persisted store values.
+  const jamBoundsRef = useRef<JamBufferBounds>({
+    minMs: useRoomStore.getState().jamBufferMinMs,
+    maxMs: useRoomStore.getState().jamBufferMaxMs,
+  });
   const peerAudiosRef = useRef<Map<string, PeerAudio>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
   // True when we joined WITHOUT a microphone (opted out, or none available /
@@ -1001,6 +1013,7 @@ export function useMediasoup() {
       1,
       store.getState().localPeerId ?? "",
       (peerId: string) => effectiveGain(peerId),
+      jamBoundsRef.current,
     );
     if (handle) {
       wtMeshRef.current = handle;
@@ -1015,6 +1028,16 @@ export function useMediasoup() {
     // Keep the mesh peers on the chosen speaker.
     if (wtMeshRef.current) wtMeshRef.current.setDevice(speakerDeviceId);
   }, [jamMode, speakerDeviceId, applyJamMesh]);
+
+  // Jitter-buffer sliders: mutate the SHARED bounds object in place so every running
+  // jam buffer (mesh peers, WT monitor, generator monitor) adopts the new min/max live,
+  // no rebuild and no dropped audio.
+  const jamBufferMinMs = useRoomStore((s) => s.jamBufferMinMs);
+  const jamBufferMaxMs = useRoomStore((s) => s.jamBufferMaxMs);
+  useEffect(() => {
+    jamBoundsRef.current.minMs = jamBufferMinMs;
+    jamBoundsRef.current.maxMs = jamBufferMaxMs;
+  }, [jamBufferMinMs, jamBufferMaxMs]);
 
   const netMonitorDeviceId = useRoomStore((s) => s.netMonitorDeviceId);
 
@@ -1471,6 +1494,7 @@ export function useMediasoup() {
             info.certHash?.value ?? null,
             store.getState().netMonitorDeviceId,
             1,
+            jamBoundsRef.current,
           );
           if (handle) {
             netMonitorWtRef.current = { handle, producerId: producer.id };
@@ -1515,7 +1539,13 @@ export function useMediasoup() {
       ) {
         const channels =
           (consumer.rtpParameters.codecs?.[0] as { channels?: number } | undefined)?.channels ?? 1;
-        const gen = setupGeneratorMonitor(rcv, store.getState().netMonitorDeviceId, channels);
+        const gen = setupGeneratorMonitor(
+          rcv,
+          store.getState().netMonitorDeviceId,
+          channels,
+          1,
+          jamBoundsRef.current,
+        );
         if (gen) {
           netMonitorGenRef.current = { gen, consumer, producerId: producer.id };
           return;

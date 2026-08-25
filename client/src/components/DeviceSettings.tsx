@@ -29,6 +29,10 @@ export function DeviceSettings() {
   const setNetworkMonitor = useRoomStore((s) => s.setNetworkMonitor);
   const netMonitorDeviceId = useRoomStore((s) => s.netMonitorDeviceId);
   const setNetMonitorDeviceId = useRoomStore((s) => s.setNetMonitorDeviceId);
+  const jamBufferMinMs = useRoomStore((s) => s.jamBufferMinMs);
+  const jamBufferMaxMs = useRoomStore((s) => s.jamBufferMaxMs);
+  const setJamBufferMinMs = useRoomStore((s) => s.setJamBufferMinMs);
+  const setJamBufferMaxMs = useRoomStore((s) => s.setJamBufferMaxMs);
 
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
   const [speakers, setSpeakers] = useState<MediaDeviceInfo[]>([]);
@@ -43,6 +47,10 @@ export function DeviceSettings() {
   const shareMonitorHintId = useId();
   const jamModeId = useId();
   const jamModeHintId = useId();
+  const jamBufMinId = useId();
+  const jamBufMaxId = useId();
+  const jamBufHintId = useId();
+  const jamBufLiveId = useId();
   const netMonitorId = useId();
   const netMonitorHintId = useId();
   const netMonitorSelectId = useId();
@@ -64,6 +72,31 @@ export function DeviceSettings() {
     navigator.mediaDevices?.addEventListener("devicechange", refresh);
     return () => navigator.mediaDevices?.removeEventListener("devicechange", refresh);
   }, [refresh]);
+
+  // Live jitter-buffer readout (the actual buffered ms / drops the jam playout is
+  // running at) so the sliders can be tuned by ear+eye. Polled from the shared stat the
+  // buffers publish; only while jam is on.
+  const [liveBuf, setLiveBuf] = useState<{
+    bufferedMs: number;
+    jitterMs: number;
+    drops: number;
+  } | null>(null);
+  useEffect(() => {
+    if (!jamMode) {
+      setLiveBuf(null);
+      return;
+    }
+    const id = window.setInterval(() => {
+      const s = (
+        window as unknown as {
+          __jamMeshStats?: { bufferedMs: number; jitterMs: number; drops: number };
+        }
+      ).__jamMeshStats;
+      if (s)
+        setLiveBuf({ bufferedMs: s.bufferedMs, jitterMs: s.jitterMs, drops: s.drops });
+    }, 500);
+    return () => window.clearInterval(id);
+  }, [jamMode]);
 
   // A stored device that's gone (unplugged) renders as Default; the media
   // constraints use `ideal`, so capture falls back to the default device too.
@@ -219,6 +252,75 @@ export function DeviceSettings() {
         <p id={jamModeHintId} className="mt-1 text-xs text-sonic-400">
           {m.settings_jam_hint()}
         </p>
+
+        {/* Jamulus-style jitter-buffer faders: each user tunes their own min (floor
+            cushion = latency / crackle tolerance) and max (latency ceiling + drift cap).
+            Live, per-user, no rebuild. Only shown while jam is on. */}
+        {jamMode && (
+          <div className="mt-3 rounded-lg border border-sonic-600 bg-sonic-800/40 p-2.5">
+            <p id={jamBufHintId} className="mb-2 text-xs text-sonic-400">
+              {m.settings_jam_buffer_hint()}
+            </p>
+            <div className="space-y-2.5">
+              <div>
+                <div className="mb-1 flex items-center justify-between">
+                  <label htmlFor={jamBufMinId} className="text-xs font-medium text-sonic-300">
+                    {m.settings_jam_buffer_min_label()}
+                  </label>
+                  <span className="text-xs tabular-nums text-sonic-200">{jamBufferMinMs} ms</span>
+                </div>
+                <input
+                  type="range"
+                  id={jamBufMinId}
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={jamBufferMinMs}
+                  onChange={(e) => setJamBufferMinMs(Number(e.target.value))}
+                  aria-describedby={jamBufHintId}
+                  aria-valuetext={`${jamBufferMinMs} ms`}
+                  className="w-full accent-sonic-accent"
+                />
+              </div>
+              <div>
+                <div className="mb-1 flex items-center justify-between">
+                  <label htmlFor={jamBufMaxId} className="text-xs font-medium text-sonic-300">
+                    {m.settings_jam_buffer_max_label()}
+                  </label>
+                  <span className="text-xs tabular-nums text-sonic-200">{jamBufferMaxMs} ms</span>
+                </div>
+                <input
+                  type="range"
+                  id={jamBufMaxId}
+                  min={10}
+                  max={200}
+                  step={5}
+                  value={jamBufferMaxMs}
+                  onChange={(e) => setJamBufferMaxMs(Number(e.target.value))}
+                  aria-describedby={jamBufHintId}
+                  aria-valuetext={`${jamBufferMaxMs} ms`}
+                  className="w-full accent-sonic-accent"
+                />
+              </div>
+            </div>
+            {/* Live readout — the actual buffer/jitter/drops right now, so you can tune
+                by ear AND eye. aria-live polite so a screen reader can poll it on focus
+                without chattering. */}
+            {liveBuf && (
+              <p
+                id={jamBufLiveId}
+                aria-live="polite"
+                className="mt-2 text-xs tabular-nums text-sonic-400"
+              >
+                {m.settings_jam_buffer_live({
+                  buffered: liveBuf.bufferedMs,
+                  jitter: liveBuf.jitterMs,
+                  drops: liveBuf.drops,
+                })}
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Network monitoring: hear your own return via the server (Jamulus-style

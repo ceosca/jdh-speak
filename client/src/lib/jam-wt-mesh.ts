@@ -122,94 +122,149 @@ function scaleAudio(ad: any, gain: number): any {
   return scaled;
 }
 
-// ── Jamulus-style ADAPTIVE jitter buffer (replaces the old fixed 45 ms cap). ──────
+// ── Jamulus-style jitter buffer with USER-CONTROLLED min/max (the fader sliders). ──
 //
-// Reverse-engineered from Jamulus' buffer.cpp: it runs parallel simulated buffers of
-// sizes 2..11 blocks, tracks each one's underrun ERROR-RATE, and picks the SMALLEST
-// buffer whose error-rate stays under a bound — IIR-filtered with hysteresis (up fast,
-// down slow) so it settles at the true minimum the network needs instead of a fixed
-// guess. SonoBus/AOO reach the same end with a DLL + resampling. A fixed 45 ms cap is
-// the crude version: on a clean link it wastes ~30 ms it never needed.
+// Reverse-engineered from Jamulus' buffer.cpp: it sizes the jitter buffer to the
+// smallest that keeps the underrun error-rate under a bound, IIR-filtered. Jamulus
+// exposes this as a slider (buffer size in blocks) + an Auto checkbox. We mirror BOTH:
+// each user drags a min and a max (ms); the buffer floats between them, auto-picking a
+// target from the measured jitter, and if they set min==max it's a fixed buffer.
 //
-// We can't clone the C++ verbatim (our playout is a MediaStreamTrackGenerator that
-// pulls at realtime, not a block Get()), so this is the faithful *principle* adapted to
-// our path: estimate the live buffer from written-samples vs wall-clock (the generator
-// plays at realtime — verified: <audio>.currentTime tracks wall-clock), measure real
-// inter-arrival jitter (RFC 3550-style) and near-underruns, and every ~0.5 s move the
-// target cushion toward `frame + 3×jitter` — snapping UP fast when underruns appear,
-// drifting DOWN slowly when the link is stable. Drop a frame only when we're past the
-// *adaptive* target, so latency pins to the minimum the network currently allows.
+//   • min = the floor CUSHION, prebuffered with real frames before playout starts, so
+//     it's genuine added latency AND genuine jitter tolerance. Lower = tighter/lower
+//     latency but crackles sooner on a jittery link; raise it if it crackles.
+//   • max = the drop ceiling (also the anti-creep cap): the buffer may grow to here
+//     under jitter/burst before it starts dropping, and clock-drift is always cut back
+//     to it so the delay can't run away.
+//
+// Playout is a MediaStreamTrackGenerator that pulls at realtime, so we estimate the
+// live buffer from written-samples vs wall-clock (verified: <audio>.currentTime tracks
+// wall-clock). We PREBUFFER to `min` with real audio (no synthetic silence — same
+// proven write path), then play; measure RFC 3550 jitter and every ~0.5 s move the
+// drop target toward `frame + 3×jitter` (clamped to [min,max], IIR up-fast/down-slow);
+// drop above the target; and on a true underrun re-prebuffer to rebuild the cushion.
 const SR = 48000;
-const MIN_TARGET_MS = 8; // never below ~3 frames of cushion (sample-rate offset safety)
-const MAX_TARGET_MS = 60; // hard ceiling so a bad link can't creep forever
-const ADAPT_EVERY = 200; // frames between re-decisions (~0.5 s at 2.5 ms/frame)
+const MIN_TARGET_MS = 8; // default floor when no user bounds are wired
+const MAX_TARGET_MS = 60; // default ceiling when no user bounds are wired
+
+export type JamBufferBounds = { minMs: number; maxMs: number };
+// The generator writer only needs these two members of AudioData, so the buffer is
+// unit-testable with a plain stub (no real WebCodecs AudioData).
+export type JamFrame = { numberOfFrames: number; close: () => void };
 
 export class AdaptiveJitterBuffer {
   private startMs = 0;
-  private written = 0; // samples handed to the generator
+  private written = 0; // samples handed to the generator since (re)start
   private lastArrival = 0;
-  private jitterMs = 0; // smoothed RFC 3550 jitter
-  private frames = 0;
-  private targetSamples = SR * 0.02; // start at 20 ms, adapt from there
+  private jitterMs = 0; // smoothed RFC 3550 jitter (for the live readout only)
+  private prebuffering = true; // filling the floor cushion before playout starts
+  private pending: JamFrame[] = [];
+  private pendingSamples = 0;
   private readonly nominalMs: number;
-  private readonly minS = SR * (MIN_TARGET_MS / 1000);
-  private readonly maxS = SR * (MAX_TARGET_MS / 1000);
+  private readonly bounds: JamBufferBounds | null;
   // Live stat for verifying the buffer in a real session (window.__jamMeshStats).
   private readonly stat: { bufferedMs: number; targetMs: number; jitterMs: number; drops: number };
 
-  constructor(nominalMs = 2.5) {
+  // `bounds` is a LIVE shared object: the caller mutates its minMs/maxMs from the
+  // sliders and this buffer reads the new values on the fly — no rebuild.
+  constructor(nominalMs = 2.5, bounds?: JamBufferBounds) {
     this.nominalMs = nominalMs;
+    this.bounds = bounds ?? null;
     const g = globalThis as unknown as {
       __jamMeshStats?: { bufferedMs: number; targetMs: number; jitterMs: number; drops: number };
     };
     this.stat = g.__jamMeshStats ||= { bufferedMs: 0, targetMs: 20, jitterMs: 0, drops: 0 };
   }
 
-  // true ⇒ DROP this frame (we're already past the adaptive target).
-  shouldDrop(numberOfFrames: number): boolean {
+  private minSamples(): number {
+    return SR * ((this.bounds ? this.bounds.minMs : MIN_TARGET_MS) / 1000);
+  }
+  private maxSamples(): number {
+    // Guard max ≥ min so a crossed pair can't invert the buffer.
+    return Math.max(this.minSamples(), SR * ((this.bounds ? this.bounds.maxMs : MAX_TARGET_MS) / 1000));
+  }
+
+  private updateStat(bufSamples: number, ceilingS: number): void {
+    this.stat.bufferedMs = +((bufSamples / SR) * 1000).toFixed(0);
+    this.stat.targetMs = +((ceilingS / SR) * 1000).toFixed(0);
+    this.stat.jitterMs = +this.jitterMs.toFixed(1);
+  }
+
+  // Feed one decoded (already gain-scaled) frame. The buffer prebuffers/plays/drops and
+  // calls `write` for frames that should reach the generator now; frames it drops (or
+  // holds and later discards) are close()d so nothing leaks.
+  //
+  // Manual, Jamulus-style: PREBUFFER to `min` (the floor cushion — real latency AND
+  // jitter tolerance), play, DROP above `max` (latency ceiling + clock-drift creep cap;
+  // dropping while we're AHEAD is inaudible — it's just catching up), and on a true
+  // underrun re-prebuffer to rebuild the cushion. The user IS the adaptation: lower min
+  // for less latency, raise it if it crackles; lower max to cap latency/drift.
+  push(ad: JamFrame, write: (f: JamFrame) => void): void {
     const now = performance.now();
-    if (this.startMs === 0) {
-      this.startMs = now;
-      this.lastArrival = now;
-    }
-    // RFC 3550 jitter: smoothed |interarrival − nominal|.
+    if (this.lastArrival === 0) this.lastArrival = now;
     const d = Math.abs(now - this.lastArrival - this.nominalMs);
     this.lastArrival = now;
     this.jitterMs += (d - this.jitterMs) / 16;
-    this.frames++;
+
+    const minS = this.minSamples();
+    const maxS = this.maxSamples();
+
+    if (this.prebuffering) {
+      // Hold real frames until the floor cushion (min) is filled, then flush & play.
+      // min 0 ⇒ threshold 0 ⇒ flush the first frame immediately (tightest possible).
+      this.pending.push(ad);
+      this.pendingSamples += ad.numberOfFrames;
+      if (this.pendingSamples >= minS) {
+        this.startMs = now;
+        this.written = this.pendingSamples;
+        for (const f of this.pending) write(f);
+        this.pending = [];
+        this.prebuffering = false;
+      }
+      this.updateStat(this.pendingSamples, maxS);
+      return;
+    }
 
     const played = ((now - this.startMs) / 1000) * SR;
     const buffered = this.written - played;
 
-    if (this.frames % ADAPT_EVERY === 0) {
-      // Smallest cushion that covers the measured jitter (Jamulus: the min buffer whose
-      // error-rate stays under bound; here the jitter estimate IS that bound). 3×jitter
-      // ≈ P99 of a roughly-normal arrival spread — enough that legitimate jitter bursts
-      // aren't clipped, but drift past it IS dropped. This is a DROP-only playout, so
-      // the target is purely the drop threshold; raising it can't prevent underruns, so
-      // there's no underrun-boost — the jitter term self-regulates (clean→low, jittery→
-      // higher) and drift is always capped at this adaptive minimum, never a fixed 45.
-      const wantS =
-        SR *
-        (Math.min(MAX_TARGET_MS, Math.max(MIN_TARGET_MS, this.nominalMs + 3 * this.jitterMs)) /
-          1000);
-      // IIR up-fast / down-slow (Jamulus: down filtering slower than up) so it snaps to
-      // cover a jitter spike quickly but reclaims latency gently as the link settles.
-      const k = wantS > this.targetSamples ? 0.5 : 0.08;
-      this.targetSamples += (wantS - this.targetSamples) * k;
-      this.targetSamples = Math.max(this.minS, Math.min(this.maxS, this.targetSamples));
+    if (buffered < 0) {
+      // True underrun: the queue drained and the generator output a gap. Re-prebuffer
+      // so we refill to the cushion before playing again.
+      this.prebuffering = true;
+      this.pending = [ad];
+      this.pendingSamples = ad.numberOfFrames;
+      this.updateStat(this.pendingSamples, maxS);
+      return;
     }
 
-    this.stat.bufferedMs = +((buffered / SR) * 1000).toFixed(0);
-    this.stat.targetMs = +((this.targetSamples / SR) * 1000).toFixed(0);
-    this.stat.jitterMs = +this.jitterMs.toFixed(1);
+    this.updateStat(buffered, maxS);
 
-    if (buffered > this.targetSamples) {
+    if (buffered > maxS) {
+      // Past the ceiling (drift/early burst) → drop to cap latency. Inaudible: we're
+      // ahead, so skipping a frame just lets playout catch up.
       this.stat.drops++;
-      return true;
+      try {
+        ad.close();
+      } catch {
+        /* already closed */
+      }
+      return;
     }
-    this.written += numberOfFrames;
-    return false;
+    this.written += ad.numberOfFrames;
+    write(ad);
+  }
+
+  // Close any frames still held in the prebuffer (call on teardown).
+  dispose(): void {
+    for (const f of this.pending) {
+      try {
+        f.close();
+      } catch {
+        /* already closed */
+      }
+    }
+    this.pending = [];
   }
 }
 
@@ -222,6 +277,7 @@ export async function setupWtMesh(
   channels: number,
   localPeerId: string,
   getGain: (peerId: string) => number,
+  bounds: JamBufferBounds,
 ): Promise<WtMeshHandle | null> {
   if (!wtMeshSupported()) return null;
   const ch = channels === 2 ? 2 : 1;
@@ -245,6 +301,7 @@ export async function setupWtMesh(
       } catch {
         /* gone */
       }
+      p.buf.dispose();
     }
     peers.clear();
   };
@@ -275,24 +332,19 @@ export async function setupWtMesh(
         const decoder = new AudioDecoder({
           output: (ad) => {
             const self = peers.get(id);
-            if (self && self.buf.shouldDrop(ad.numberOfFrames)) {
-              try {
-                ad.close();
-              } catch {
-                /* already closed */
-              }
-              return;
-            }
             // Apply this peer's per-slider volume (0..4) to the PCM — the <audio>
             // element can't (capped at 1.0), so do it digitally with a soft knee.
             const scaled = scaleAudio(ad, self ? getGain(self.appId) : 1);
-            gw.write(scaled).catch(() => {
-              try {
-                scaled.close();
-              } catch {
-                /* already closed */
-              }
-            });
+            const writeOut = (f: JamFrame) =>
+              gw.write(f as unknown as AudioData).catch(() => {
+                try {
+                  f.close();
+                } catch {
+                  /* already closed */
+                }
+              });
+            if (self) self.buf.push(scaled, writeOut);
+            else writeOut(scaled);
           },
           error: () => {
             /* skip */
@@ -309,7 +361,7 @@ export async function setupWtMesh(
             .catch(() => {});
         }
         el.play().catch(() => {});
-        p = { decoder, el, ts: 0, buf: new AdaptiveJitterBuffer(2.5), appId: "" };
+        p = { decoder, el, ts: 0, buf: new AdaptiveJitterBuffer(2.5, bounds), appId: "" };
         peers.set(id, p);
         return p;
       } catch {

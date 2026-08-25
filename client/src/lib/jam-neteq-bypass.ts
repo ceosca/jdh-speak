@@ -25,7 +25,7 @@
 // jitter adaptation; our minimal buffer trades that robustness for latency. Great
 // on a clean network (a jam session), not something to impose on normal calls.
 
-import { AdaptiveJitterBuffer } from "./jam-wt-mesh";
+import { AdaptiveJitterBuffer, type JamBufferBounds, type JamFrame } from "./jam-wt-mesh";
 
 type BypassHandle = { teardown: () => void };
 
@@ -311,6 +311,7 @@ export function setupGeneratorMonitor(
   deviceId: string,
   channels: number,
   initialVolume = 1,
+  bounds?: JamBufferBounds,
 ): GeneratorMonitorHandle | null {
   if (!generatorMonitorSupported(receiver)) return null;
   const ch = channels === 2 ? 2 : 1;
@@ -325,24 +326,18 @@ export function setupGeneratorMonitor(
     // Anti-creep: a Jamulus-style ADAPTIVE jitter buffer (mediasoup frames are 10 ms
     // here). Bounds the generator queue against clock drift AND pins latency to the
     // minimum the network needs, not a fixed cap. See AdaptiveJitterBuffer.
-    const jbuf = new AdaptiveJitterBuffer(10);
+    const jbuf = new AdaptiveJitterBuffer(10, bounds);
     decoder = new AudioDecoder({
       output: (ad) => {
-        if (jbuf.shouldDrop(ad.numberOfFrames)) {
-          try {
-            ad.close();
-          } catch {
-            /* already closed */
-          }
-          return;
-        }
-        w.write(ad).catch(() => {
-          try {
-            ad.close();
-          } catch {
-            /* already closed */
-          }
-        });
+        jbuf.push(ad as unknown as JamFrame, (f) =>
+          (w.write(f as unknown as AudioData) as Promise<void>).catch(() => {
+            try {
+              f.close();
+            } catch {
+              /* already closed */
+            }
+          }),
+        );
       },
       error: () => {
         /* stream goes quiet on this path; teardown restores NetEQ */
@@ -411,6 +406,7 @@ export function setupGeneratorMonitor(
         } catch {
           /* gone */
         }
+        jbuf.dispose();
       },
       setDevice,
     };

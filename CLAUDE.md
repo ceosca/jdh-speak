@@ -269,24 +269,28 @@ pinned to **1.4.0** (newer arm64 prebuilds need glibc 2.38; the Pi has 2.36).
   than one Opus frame (PCM arrives one frame at a time), so the ring's floor tracks
   the actual decoded frame size (decaying max) instead of a fixed value — robust to
   whatever frame size a stream uses.
-- **ADAPTIVE jitter buffer (`AdaptiveJitterBuffer` in `jam-wt-mesh.ts`) — replaced the
-  old fixed 45 ms drop cap.** The generator playout paths (WT mesh, WT monitor, NetEQ-
-  bypass generator) used to drop a decoded frame only when the buffer crept past a
-  FIXED 45 ms — the crude version, which on a clean link left ~30 ms on the table and
-  under clock drift let the delay climb to 45 ms before recutting (the "el delay se va
-  agrandando" the user felt). Reverse-engineered from Jamulus `buffer.cpp` (parallel
-  simulated buffers 2–11 blocks, pick the smallest whose underrun error-rate is under
-  bound, IIR + hysteresis) and SonoBus/AOO (DLL + resampling): the class measures real
-  inter-arrival jitter (RFC 3550, smoothed) and every ~0.5 s moves the target cushion
-  toward `frame + 3×jitter`, IIR **up-fast / down-slow**, clamped [8 ms, 60 ms]. It's
-  **DROP-only on purpose** — the playout is a MediaStreamTrackGenerator that pulls at
-  realtime, so the target is only the drop threshold; raising it can't prevent
-  underruns and we deliberately DON'T add a cushion (would raise latency with no
-  reported glitch benefit), so there's no underrun-boost — the jitter term
-  self-regulates. Simulated (`node`): clean → 8 ms target (vs 45), jittery ±8 ms →
-  20 ms, drift → pins ~6 ms while fixed-45 climbed to ~19 ms in 60 s. Live stat:
-  `window.__jamMeshStats = {bufferedMs, targetMs, jitterMs, drops}`. **Don't revert to
-  a fixed cap** — the adaptive minimum is the whole point.
+- **USER-CONTROLLED jitter buffer (`AdaptiveJitterBuffer` in `jam-wt-mesh.ts`) with
+  Jamulus-style min/max sliders — replaced the old fixed 45 ms cap AND the short-lived
+  auto-adaptive target.** History: fixed 45 ms cap → auto "adaptive minimum" (RFC-3550
+  jitter, target `frame+3×jitter`) → **manual min/max** (current). Why the last move:
+  the auto target, sitting right at the floor, **eroded the cushion** under jitter
+  (sim: min=20 decayed to ~11 ms avg, near-underrun). The user asked for Jamulus-style
+  faders, so the buffer is now MANUAL and the human is the adaptation:
+  - **min** (0–100 ms) = the floor cushion, **prebuffered with real frames** before
+    playout starts → genuine latency AND jitter tolerance. Lower = less latency, raise
+    if it crackles.
+  - **max** (10–200 ms) = the drop ceiling (latency cap + clock-drift creep cap).
+    Dropping while AHEAD is inaudible (just catching up), so max only caps latency.
+  - On a true underrun it **re-prebuffers** to rebuild the cushion.
+  The three generator playout paths (WT mesh, WT monitor, NetEQ-bypass generator) all
+  use it via `push(frame, write)`. Bounds are a **live shared object** (`jamBoundsRef`
+  in `useMediasoup`) the sliders mutate in place → running buffers adopt new min/max
+  with no rebuild. Store: `jamBufferMinMs`/`jamBufferMaxMs` (per-user, persisted,
+  cross-clamped min≤max); UI in `DeviceSettings` (shown only while jam is on) + a live
+  readout from `window.__jamMeshStats = {bufferedMs, targetMs, jitterMs, drops}`. Sim
+  (`node`, 6 cases): min=8 holds 8 ms, min=30 holds ~28, drift+max=25 pins ≤25, jitter
+  ±10 ms+min=20 → zero underruns/drops, 300 ms gap → recovers. **Don't re-add an auto
+  target that clamps to min** — it erodes the cushion; the sliders are the control now.
 
 **📏 MEASURED latency budget (so nobody chases the wrong ms).** On Cristian's
 Windows box, live-measured the whole round-trip and found the dominant cost is

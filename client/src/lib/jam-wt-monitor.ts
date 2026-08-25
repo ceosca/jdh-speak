@@ -18,7 +18,7 @@
 // falls back to the normal mediasoup self-consume monitor. Monitor-only (the self
 // return); the room's real audio is untouched.
 
-import { encodeMono, AdaptiveJitterBuffer } from "./jam-wt-mesh";
+import { encodeMono, AdaptiveJitterBuffer, type JamBufferBounds, type JamFrame } from "./jam-wt-mesh";
 
 export type WtMonitorHandle = {
   teardown: () => void;
@@ -44,6 +44,7 @@ export async function setupWtMonitor(
   certHash: number[] | null,
   deviceId: string,
   channels: number,
+  bounds: JamBufferBounds,
 ): Promise<WtMonitorHandle | null> {
   if (!wtMonitorSupported()) return null;
   const ch = channels === 2 ? 2 : 1;
@@ -118,24 +119,18 @@ export async function setupWtMonitor(
     // Anti-creep: a Jamulus-style ADAPTIVE jitter buffer bounds the playout (sender/
     // receiver clock drift would grow the delay forever otherwise) AND pins it to the
     // minimum the network needs, not a fixed guess. See AdaptiveJitterBuffer.
-    const jbuf = new AdaptiveJitterBuffer(2.5);
+    const jbuf = new AdaptiveJitterBuffer(2.5, bounds);
     decoder = new AudioDecoder({
       output: (ad) => {
-        if (jbuf.shouldDrop(ad.numberOfFrames)) {
-          try {
-            ad.close();
-          } catch {
-            /* already closed */
-          }
-          return;
-        }
-        gw.write(ad).catch(() => {
-          try {
-            ad.close();
-          } catch {
-            /* already closed */
-          }
-        });
+        jbuf.push(ad as unknown as JamFrame, (f) =>
+          (gw.write(f as unknown as AudioData) as Promise<void>).catch(() => {
+            try {
+              f.close();
+            } catch {
+              /* already closed */
+            }
+          }),
+        );
       },
       error: () => {
         /* skip */
@@ -202,6 +197,7 @@ export async function setupWtMonitor(
         } catch {
           /* gone */
         }
+        jbuf.dispose();
         try {
           wt.close();
         } catch {

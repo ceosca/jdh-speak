@@ -32,6 +32,8 @@ const SPEAKER_DEVICE_KEY = "jdh-speak:speakerDeviceId";
 const NET_MONITOR_DEVICE_KEY = "jdh-speak:netMonitorDeviceId";
 const VOICE_PROCESSING_KEY = "jdh-speak:voiceProcessing";
 const JAM_MODE_KEY = "jdh-speak:jamMode";
+const JAM_BUF_MIN_KEY = "jdh-speak:jamBufferMinMs";
+const JAM_BUF_MAX_KEY = "jdh-speak:jamBufferMaxMs";
 const NETWORK_MONITOR_KEY = "jdh-speak:networkMonitor";
 const SECONDARY_ENABLED_KEY = "jdh-speak:secondaryEnabled";
 const SECONDARY_DEVICE_KEY = "jdh-speak:secondaryDeviceId";
@@ -60,6 +62,24 @@ function loadFileVolume(): number {
     // localStorage unavailable — fall back to unity.
   }
   return 1;
+}
+
+// Jam jitter-buffer bounds (ms). Per-user, local, persisted. The adaptive buffer
+// floats between these; lowering the min chases lower latency, raising the max gives
+// more cushion when the link crackles. Absolute limits keep a bad value from breaking
+// audio entirely (min can go to 0 = "as tight as possible"; max caps at 200 ms).
+export const JAM_BUF_MIN_LIMIT = 0;
+export const JAM_BUF_MAX_LIMIT = 200;
+const JAM_BUF_MIN_DEFAULT = 8;
+const JAM_BUF_MAX_DEFAULT = 60;
+function loadJamBufferMs(key: string, def: number): number {
+  try {
+    const v = parseFloat(localStorage.getItem(key) ?? "");
+    if (Number.isFinite(v)) return Math.min(JAM_BUF_MAX_LIMIT, Math.max(JAM_BUF_MIN_LIMIT, v));
+  } catch {
+    // localStorage unavailable — use the default.
+  }
+  return def;
 }
 
 function loadString(key: string): string {
@@ -203,6 +223,11 @@ interface RoomState {
   // Jam ("modo ensayo"): minimise latency for playing instruments together —
   // unprocessed capture + tiny jitter buffer. Per-user, local, persisted.
   jamMode: boolean;
+  // Jam jitter-buffer bounds (ms) — Jamulus-style sliders. The adaptive buffer floats
+  // between these; each user tunes their own min (lower = less latency) and max (higher
+  // = more cushion if it crackles). Per-user, local, persisted, live (no rebuild).
+  jamBufferMinMs: number;
+  jamBufferMaxMs: number;
   // Network monitoring ("a lo Jamulus"): hear your OWN signal returned via the
   // server (consume your own producer) as a timing reference. SFU-only. Local,
   // persisted.
@@ -317,6 +342,8 @@ interface RoomState {
   setNetMonitorDeviceId: (deviceId: string) => void;
   setVoiceProcessingEnabled: (enabled: boolean) => void;
   setJamMode: (enabled: boolean) => void;
+  setJamBufferMinMs: (ms: number) => void;
+  setJamBufferMaxMs: (ms: number) => void;
   // Room-wide jam toggle: registered by useMediasoup so the DeviceSettings
   // checkbox can broadcast the change to the whole room (all-or-nobody) instead of
   // flipping only the local flag. Null before a call is joined.
@@ -383,6 +410,8 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   netMonitorDeviceId: loadString(NET_MONITOR_DEVICE_KEY),
   voiceProcessingEnabled: loadVoiceProcessing(),
   jamMode: loadString(JAM_MODE_KEY) === "true",
+  jamBufferMinMs: loadJamBufferMs(JAM_BUF_MIN_KEY, JAM_BUF_MIN_DEFAULT),
+  jamBufferMaxMs: loadJamBufferMs(JAM_BUF_MAX_KEY, JAM_BUF_MAX_DEFAULT),
   onJamToggle: null,
   networkMonitor: loadString(NETWORK_MONITOR_KEY) === "true",
   micMonitor: loadString(MIC_MONITOR_KEY) === "true",
@@ -489,6 +518,22 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setJamMode: (jamMode) => {
     saveString(JAM_MODE_KEY, String(jamMode));
     set({ jamMode });
+  },
+  setJamBufferMinMs: (ms) => {
+    const min = Math.min(JAM_BUF_MAX_LIMIT, Math.max(JAM_BUF_MIN_LIMIT, Math.round(ms)));
+    // Keep min ≤ max: push max up if the min crossed it.
+    const max = Math.max(min, get().jamBufferMaxMs);
+    saveString(JAM_BUF_MIN_KEY, String(min));
+    if (max !== get().jamBufferMaxMs) saveString(JAM_BUF_MAX_KEY, String(max));
+    set({ jamBufferMinMs: min, jamBufferMaxMs: max });
+  },
+  setJamBufferMaxMs: (ms) => {
+    const max = Math.min(JAM_BUF_MAX_LIMIT, Math.max(JAM_BUF_MIN_LIMIT, Math.round(ms)));
+    // Keep min ≤ max: pull min down if the max crossed it.
+    const min = Math.min(max, get().jamBufferMinMs);
+    saveString(JAM_BUF_MAX_KEY, String(max));
+    if (min !== get().jamBufferMinMs) saveString(JAM_BUF_MIN_KEY, String(min));
+    set({ jamBufferMaxMs: max, jamBufferMinMs: min });
   },
   setNetworkMonitor: (networkMonitor) => {
     saveString(NETWORK_MONITOR_KEY, String(networkMonitor));

@@ -8,6 +8,34 @@
 
 ---
 
+## 2026-08-24 (2)
+
+### Jam: barras deslizantes de buffer por-usuario (a lo Jamulus)
+
+- **Qué:** dos sliders en Ajustes de audio (visibles con Modo ensayo activo) — **Buffer
+  mínimo** (0–100 ms) y **Buffer máximo** (10–200 ms) — para que **cada uno** controle
+  su jitter buffer, más un lector en vivo (`{buffered} ms · jitter · descartes`). Por
+  usuario, local, persistido, y **en vivo** (sin reconstruir nada).
+- **Cómo:** convertí `AdaptiveJitterBuffer` (jam-wt-mesh.ts) de "auto-mínimo fijo" a un
+  buffer manual estilo Jamulus: **prebufferea a `min`** con frames reales (cushion real
+  = latencia y tolerancia a jitter), reproduce, **descarta por encima de `max`** (techo
+  de latencia + corta el creep de drift; descartar estando adelantado es inaudible), y
+  **re-prebufferea ante un underrun** para reconstruir el cushion. El usuario ES la
+  adaptación: bajás el mínimo para menos latencia, lo subís si hay cortes/crackling; el
+  máximo pone el techo. Bounds vía un objeto compartido vivo (`jamBoundsRef` en
+  useMediasoup) que los sliders mutan → los tres caminos de playout (malla de peers,
+  monitor WT, generador NetEQ-bypass) lo leen al vuelo. Store: `jamBufferMinMs/MaxMs`
+  con cross-clamp (min ≤ max). i18n en es.json.
+- **Por qué el rediseño:** el target adaptativo anterior, al quedar pegado al `min`,
+  **erosionaba** el cushion bajo jitter (simulado: con min=20 el buffer caía a ~11 ms
+  promedio y rozaba underrun). El modelo manual lo arregla: simulado (`node`, 6 casos)
+  → min=8 mantiene 8 ms; min=30 mantiene ~28; drift con max=25 queda clavado ≤25;
+  jitter ±10 ms con min=20 aguanta sin un solo underrun ni descarte; recupera de un
+  corte de 300 ms re-prebuffereando. Cero descartes/erosión donde antes había ambos.
+- **Verificado en navegador** (además de types/lint/build): sliders aparecen solo con
+  jam, valor actualiza+persiste, cross-clamp en ambos sentidos, `aria-valuetext` para
+  lectores de pantalla, lector en vivo oculto sin datos.
+
 ## 2026-08-24
 
 ### Jam: buffer de jitter ADAPTATIVO (reingeniería de Jamulus/SonoBus)
