@@ -50,6 +50,8 @@ export function DeviceSettings() {
   const jamBufMinId = useId();
   const jamBufMaxId = useId();
   const jamBufHintId = useId();
+  const jamBufMinDescId = useId();
+  const jamBufMaxDescId = useId();
   const jamBufLiveId = useId();
   const netMonitorId = useId();
   const netMonitorHintId = useId();
@@ -277,10 +279,13 @@ export function DeviceSettings() {
                   step={1}
                   value={jamBufferMinMs}
                   onChange={(e) => setJamBufferMinMs(Number(e.target.value))}
-                  aria-describedby={jamBufHintId}
+                  aria-describedby={jamBufMinDescId}
                   aria-valuetext={`${jamBufferMinMs} ms`}
                   className="w-full accent-sonic-accent"
                 />
+                <p id={jamBufMinDescId} className="mt-1 text-xs text-sonic-400">
+                  {m.settings_jam_buffer_min_desc()}
+                </p>
               </div>
               <div>
                 <div className="mb-1 flex items-center justify-between">
@@ -297,10 +302,13 @@ export function DeviceSettings() {
                   step={5}
                   value={jamBufferMaxMs}
                   onChange={(e) => setJamBufferMaxMs(Number(e.target.value))}
-                  aria-describedby={jamBufHintId}
+                  aria-describedby={jamBufMaxDescId}
                   aria-valuetext={`${jamBufferMaxMs} ms`}
                   className="w-full accent-sonic-accent"
                 />
+                <p id={jamBufMaxDescId} className="mt-1 text-xs text-sonic-400">
+                  {m.settings_jam_buffer_max_desc()}
+                </p>
               </div>
             </div>
             {/* Live readout — the actual buffer/jitter/drops right now, so you can tune
