@@ -89,182 +89,238 @@ function softclip(x: number): number {
   return x;
 }
 
-// Apply the per-peer playback gain (0..4) to a decoded PCM frame BEFORE it reaches the
-// generator. The mesh plays peers through raw <audio> elements whose `.volume` is capped
-// at 1.0 and, worse, was never wired to the per-peer slider at all — so every peer
-// played at unity and any voice you'd boosted above 1.0 came out quieter than before
-// jam. Scaling the samples here restores the full 0..4 range (with a soft knee) at zero
-// added latency and no AudioContext. gain===1 is a no-op (no copy).
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function scaleAudio(ad: any, gain: number): any {
-  if (gain === 1) return ad;
-  const ch = ad.numberOfChannels as number;
-  const n = ad.numberOfFrames as number;
-  const out = new Float32Array(n * ch);
-  const tmp = new Float32Array(n);
-  for (let c = 0; c < ch; c++) {
-    ad.copyTo(tmp, { planeIndex: c, format: "f32-planar" });
-    for (let i = 0; i < n; i++) out[c * n + i] = gain === 0 ? 0 : softclip(tmp[i] * gain);
-  }
-  const scaled = new AudioData({
-    format: "f32-planar",
-    sampleRate: ad.sampleRate,
-    numberOfFrames: n,
-    numberOfChannels: ch,
-    timestamp: ad.timestamp,
-    data: out,
-  });
-  try {
-    ad.close();
-  } catch {
-    /* already closed */
-  }
-  return scaled;
-}
-
-// ── Jamulus-style jitter buffer with USER-CONTROLLED min/max (the fader sliders). ──
-//
-// Reverse-engineered from Jamulus' buffer.cpp: it sizes the jitter buffer to the
-// smallest that keeps the underrun error-rate under a bound, IIR-filtered. Jamulus
-// exposes this as a slider (buffer size in blocks) + an Auto checkbox. We mirror BOTH:
-// each user drags a min and a max (ms); the buffer floats between them, auto-picking a
-// target from the measured jitter, and if they set min==max it's a fixed buffer.
-//
-//   • min = the floor CUSHION, prebuffered with real frames before playout starts, so
-//     it's genuine added latency AND genuine jitter tolerance. Lower = tighter/lower
-//     latency but crackles sooner on a jittery link; raise it if it crackles.
-//   • max = the drop ceiling (also the anti-creep cap): the buffer may grow to here
-//     under jitter/burst before it starts dropping, and clock-drift is always cut back
-//     to it so the delay can't run away.
-//
-// Playout is a MediaStreamTrackGenerator that pulls at realtime, so we estimate the
-// live buffer from written-samples vs wall-clock (verified: <audio>.currentTime tracks
-// wall-clock). We PREBUFFER to `min` with real audio (no synthetic silence — same
-// proven write path), then play; measure RFC 3550 jitter and every ~0.5 s move the
-// drop target toward `frame + 3×jitter` (clamped to [min,max], IIR up-fast/down-slow);
-// drop above the target; and on a true underrun re-prebuffer to rebuild the cushion.
 const SR = 48000;
-const MIN_TARGET_MS = 8; // default floor when no user bounds are wired
-const MAX_TARGET_MS = 60; // default ceiling when no user bounds are wired
+const DEFAULT_JITTER_MS = 8; // cushion when no user slider is wired
+const SAFETY_MS = 250; // drop ceiling ABOVE the cushion — resampler should never reach it
+const TAU_SMOOTH = 2; // s — how heavily the buffer level is smoothed for the controller
+const TAU_CORRECT = 4; // s — how fast the resampler pulls the buffer back to target
+const MAX_ADJ = 0.02; // ±2 % max playback-speed nudge (drift is normally <0.03 %)
 
 export type JamBufferBounds = { minMs: number; maxMs: number };
-// The generator writer only needs these two members of AudioData, so the buffer is
-// unit-testable with a plain stub (no real WebCodecs AudioData).
-export type JamFrame = { numberOfFrames: number; close: () => void };
+// Minimal shape the buffer needs from a decoded frame (real WebCodecs AudioData
+// satisfies it; a plain stub satisfies it in tests).
+export type JamFrame = {
+  numberOfFrames: number;
+  numberOfChannels: number;
+  copyTo: (dest: Float32Array, opts: { planeIndex: number; format: "f32-planar" }) => void;
+  close: () => void;
+};
 
+// ── Streaming linear resampler (the drift-compensation engine). ────────────────────
+// Plays the incoming sample stream back at a variable speed `s`: s>1 = play faster =
+// emit FEWER samples = drain the downstream queue; s<1 = slower = emit more = fill it.
+// Linear interpolation with a fractional read cursor carried across frames, so there's
+// no discontinuity at frame boundaries. Verified in isolation: at s=1 it's transparent,
+// at ±1 % it shifts pitch ±1 % with no added clicks (max sample step = the signal's own).
+class StreamResampler {
+  private pending: Float32Array[];
+  private readPos = 0;
+  constructor(private readonly ch: number) {
+    this.pending = Array.from({ length: ch }, () => new Float32Array(0));
+  }
+  process(input: Float32Array[], s: number): Float32Array[] {
+    for (let c = 0; c < this.ch; c++) {
+      const merged = new Float32Array(this.pending[c].length + input[c].length);
+      merged.set(this.pending[c], 0);
+      merged.set(input[c], this.pending[c].length);
+      this.pending[c] = merged;
+    }
+    const len = this.pending[0].length;
+    const out: number[][] = Array.from({ length: this.ch }, () => []);
+    while (this.readPos + 1 < len) {
+      const i = Math.floor(this.readPos);
+      const frac = this.readPos - i;
+      for (let c = 0; c < this.ch; c++) {
+        const a = this.pending[c][i];
+        out[c].push(a + (this.pending[c][i + 1] - a) * frac);
+      }
+      this.readPos += s;
+    }
+    const drop = Math.floor(this.readPos);
+    if (drop > 0) {
+      for (let c = 0; c < this.ch; c++) this.pending[c] = this.pending[c].slice(drop);
+      this.readPos -= drop;
+    }
+    return out.map((a) => Float32Array.from(a));
+  }
+}
+
+// ── Jamulus/SonoBus-style jitter buffer with SMOOTH drift compensation. ─────────────
+//
+// The buffer is now ONLY for jitter: the user's single slider sets the cushion (`min`).
+// Clock drift (why the delay used to grow over hours) is absorbed the "pro" way — like
+// SonoBus/AOO's DLL + resampler — instead of by dropping frames at a ceiling:
+//   • PREBUFFER to the cushion with real audio, then play.
+//   • A slow controller measures the heavily-smoothed buffer level and nudges the
+//     playback SPEED (resampler `s`) by a fraction of a percent so the buffer sits at
+//     the cushion forever — drift in either direction is cancelled continuously, with
+//     no clicks and no growth. On a true underrun it re-prebuffers.
+//   • A drop ceiling `cushion + 250 ms` stays only as a catastrophic-desync safety; the
+//     resampler should never let the buffer get near it.
+// Playout is a MediaStreamTrackGenerator that pulls at realtime, so the buffer level is
+// written-samples − wall-clock×SR (verified: <audio>.currentTime tracks wall-clock).
 export class AdaptiveJitterBuffer {
   private startMs = 0;
-  private written = 0; // samples handed to the generator since (re)start
+  private written = 0; // OUTPUT samples handed to the generator since (re)start
   private lastArrival = 0;
-  private jitterMs = 0; // smoothed RFC 3550 jitter (for the live readout only)
-  private prebuffering = true; // filling the floor cushion before playout starts
-  private pending: JamFrame[] = [];
+  private jitterMs = 0; // smoothed RFC 3550 jitter (live readout only)
+  private prebuffering = true;
+  private pendingOut: Float32Array[][] = []; // resampled planes held during prebuffer
   private pendingSamples = 0;
+  private outTs = 0; // running output timestamp (µs), monotonic
+  private bufSmoothed = -1; // heavily-smoothed buffer level for the controller (−1 = init)
+  private speed = 1; // current resampler speed
   private readonly nominalMs: number;
+  private readonly ch: number;
   private readonly bounds: JamBufferBounds | null;
-  // Live stat for verifying the buffer in a real session (window.__jamMeshStats).
-  private readonly stat: { bufferedMs: number; targetMs: number; jitterMs: number; drops: number };
+  private readonly resampler: StreamResampler;
+  private readonly smoothA: number;
+  private readonly stat: {
+    bufferedMs: number;
+    targetMs: number;
+    jitterMs: number;
+    drops: number;
+    ppm: number;
+  };
 
-  // `bounds` is a LIVE shared object: the caller mutates its minMs/maxMs from the
-  // sliders and this buffer reads the new values on the fly — no rebuild.
-  constructor(nominalMs = 2.5, bounds?: JamBufferBounds) {
+  // `bounds` is a LIVE shared object: the slider mutates its minMs and this buffer reads
+  // the new cushion on the fly — no rebuild. (maxMs is ignored now; drift is resampled,
+  // not capped, so only the cushion is user-facing.)
+  constructor(nominalMs = 2.5, channels = 1, bounds?: JamBufferBounds) {
     this.nominalMs = nominalMs;
+    this.ch = channels;
     this.bounds = bounds ?? null;
+    this.resampler = new StreamResampler(channels);
+    this.smoothA = nominalMs / 1000 / TAU_SMOOTH;
     const g = globalThis as unknown as {
-      __jamMeshStats?: { bufferedMs: number; targetMs: number; jitterMs: number; drops: number };
+      __jamMeshStats?: {
+        bufferedMs: number;
+        targetMs: number;
+        jitterMs: number;
+        drops: number;
+        ppm: number;
+      };
     };
-    this.stat = g.__jamMeshStats ||= { bufferedMs: 0, targetMs: 20, jitterMs: 0, drops: 0 };
+    this.stat = g.__jamMeshStats ||= {
+      bufferedMs: 0,
+      targetMs: 8,
+      jitterMs: 0,
+      drops: 0,
+      ppm: 0,
+    };
   }
 
-  private minSamples(): number {
-    return SR * ((this.bounds ? this.bounds.minMs : MIN_TARGET_MS) / 1000);
-  }
-  private maxSamples(): number {
-    // Guard max ≥ min so a crossed pair can't invert the buffer.
-    return Math.max(this.minSamples(), SR * ((this.bounds ? this.bounds.maxMs : MAX_TARGET_MS) / 1000));
+  private cushionSamples(): number {
+    return SR * ((this.bounds ? this.bounds.minMs : DEFAULT_JITTER_MS) / 1000);
   }
 
-  private updateStat(bufSamples: number, ceilingS: number): void {
+  private updateStat(bufSamples: number, target: number): void {
     this.stat.bufferedMs = +((bufSamples / SR) * 1000).toFixed(0);
-    this.stat.targetMs = +((ceilingS / SR) * 1000).toFixed(0);
+    this.stat.targetMs = +((target / SR) * 1000).toFixed(0);
     this.stat.jitterMs = +this.jitterMs.toFixed(1);
+    this.stat.ppm = +((this.speed - 1) * 1e6).toFixed(0);
   }
 
-  // Feed one decoded (already gain-scaled) frame. The buffer prebuffers/plays/drops and
-  // calls `write` for frames that should reach the generator now; frames it drops (or
-  // holds and later discards) are close()d so nothing leaks.
-  //
-  // Manual, Jamulus-style: PREBUFFER to `min` (the floor cushion — real latency AND
-  // jitter tolerance), play, DROP above `max` (latency ceiling + clock-drift creep cap;
-  // dropping while we're AHEAD is inaudible — it's just catching up), and on a true
-  // underrun re-prebuffer to rebuild the cushion. The user IS the adaptation: lower min
-  // for less latency, raise it if it crackles; lower max to cap latency/drift.
-  push(ad: JamFrame, write: (f: JamFrame) => void): void {
+  // Feed one decoded frame + its per-peer gain (0..4; 1 = passthrough). The buffer
+  // applies the gain, drift-resamples, prebuffers/plays, and calls `write` with the
+  // generator-ready AudioData it produces.
+  push(ad: JamFrame, gain: number, write: (f: AudioData) => void): void {
     const now = performance.now();
     if (this.lastArrival === 0) this.lastArrival = now;
-    const d = Math.abs(now - this.lastArrival - this.nominalMs);
+    this.jitterMs += (Math.abs(now - this.lastArrival - this.nominalMs) - this.jitterMs) / 16;
     this.lastArrival = now;
-    this.jitterMs += (d - this.jitterMs) / 16;
 
-    const minS = this.minSamples();
-    const maxS = this.maxSamples();
+    // Extract input planes, applying the per-peer gain (soft knee) while we copy.
+    const n = ad.numberOfFrames;
+    const inPlanes: Float32Array[] = [];
+    const tmp = new Float32Array(n);
+    for (let c = 0; c < this.ch; c++) {
+      ad.copyTo(tmp, { planeIndex: c, format: "f32-planar" });
+      const p = new Float32Array(n);
+      if (gain === 1) p.set(tmp);
+      else for (let i = 0; i < n; i++) p[i] = gain === 0 ? 0 : softclip(tmp[i] * gain);
+      inPlanes.push(p);
+    }
+    try {
+      ad.close();
+    } catch {
+      /* already closed */
+    }
+
+    const target = this.cushionSamples();
+    const ceilS = target + (SR * SAFETY_MS) / 1000;
+
+    // Controller (only while playing): steer the speed so the buffer holds at `target`.
+    if (!this.prebuffering) {
+      const buffered = this.written - ((now - this.startMs) / 1000) * SR;
+      if (buffered < 0) {
+        // Underrun — the queue drained. Re-prebuffer to rebuild the cushion.
+        this.prebuffering = true;
+        this.pendingOut = [];
+        this.pendingSamples = 0;
+        this.bufSmoothed = -1;
+        this.speed = 1;
+      } else {
+        if (this.bufSmoothed < 0) this.bufSmoothed = buffered;
+        this.bufSmoothed += (buffered - this.bufSmoothed) * this.smoothA;
+        const s = 1 + (this.bufSmoothed - target) / (SR * TAU_CORRECT);
+        this.speed = Math.max(1 - MAX_ADJ, Math.min(1 + MAX_ADJ, s));
+      }
+    }
+
+    const outPlanes = this.resampler.process(inPlanes, this.prebuffering ? 1 : this.speed);
+    const outLen = outPlanes[0].length;
 
     if (this.prebuffering) {
-      // Hold real frames until the floor cushion (min) is filled, then flush & play.
-      // min 0 ⇒ threshold 0 ⇒ flush the first frame immediately (tightest possible).
-      this.pending.push(ad);
-      this.pendingSamples += ad.numberOfFrames;
-      if (this.pendingSamples >= minS) {
+      if (outLen > 0) {
+        this.pendingOut.push(outPlanes);
+        this.pendingSamples += outLen;
+      }
+      if (this.pendingSamples >= target) {
         this.startMs = now;
         this.written = this.pendingSamples;
-        for (const f of this.pending) write(f);
-        this.pending = [];
+        this.bufSmoothed = this.pendingSamples;
+        for (const planes of this.pendingOut) this.emit(planes, write);
+        this.pendingOut = [];
         this.prebuffering = false;
       }
-      this.updateStat(this.pendingSamples, maxS);
+      this.updateStat(this.pendingSamples, target);
       return;
     }
 
-    const played = ((now - this.startMs) / 1000) * SR;
-    const buffered = this.written - played;
-
-    if (buffered < 0) {
-      // True underrun: the queue drained and the generator output a gap. Re-prebuffer
-      // so we refill to the cushion before playing again.
-      this.prebuffering = true;
-      this.pending = [ad];
-      this.pendingSamples = ad.numberOfFrames;
-      this.updateStat(this.pendingSamples, maxS);
-      return;
-    }
-
-    this.updateStat(buffered, maxS);
-
-    if (buffered > maxS) {
-      // Past the ceiling (drift/early burst) → drop to cap latency. Inaudible: we're
-      // ahead, so skipping a frame just lets playout catch up.
+    const buffered = this.written - ((now - this.startMs) / 1000) * SR;
+    this.updateStat(buffered, target);
+    if (buffered > ceilS) {
+      // Safety only (should never fire while the resampler is holding target).
       this.stat.drops++;
-      try {
-        ad.close();
-      } catch {
-        /* already closed */
-      }
       return;
     }
-    this.written += ad.numberOfFrames;
-    write(ad);
+    if (outLen > 0) {
+      this.written += outLen;
+      this.emit(outPlanes, write);
+    }
   }
 
-  // Close any frames still held in the prebuffer (call on teardown).
+  private emit(planes: Float32Array[], write: (f: AudioData) => void): void {
+    const outLen = planes[0].length;
+    if (outLen === 0) return;
+    const data = new Float32Array(outLen * this.ch);
+    for (let c = 0; c < this.ch; c++) data.set(planes[c], c * outLen);
+    const out = new AudioData({
+      format: "f32-planar",
+      sampleRate: SR,
+      numberOfFrames: outLen,
+      numberOfChannels: this.ch,
+      timestamp: this.outTs,
+      data,
+    });
+    this.outTs += Math.round((outLen / SR) * 1e6);
+    write(out);
+  }
+
+  // Nothing to close (input frames are closed on entry, output planes are plain arrays).
   dispose(): void {
-    for (const f of this.pending) {
-      try {
-        f.close();
-      } catch {
-        /* already closed */
-      }
-    }
-    this.pending = [];
+    this.pendingOut = [];
   }
 }
 
@@ -332,19 +388,23 @@ export async function setupWtMesh(
         const decoder = new AudioDecoder({
           output: (ad) => {
             const self = peers.get(id);
-            // Apply this peer's per-slider volume (0..4) to the PCM — the <audio>
-            // element can't (capped at 1.0), so do it digitally with a soft knee.
-            const scaled = scaleAudio(ad, self ? getGain(self.appId) : 1);
-            const writeOut = (f: JamFrame) =>
-              gw.write(f as unknown as AudioData).catch(() => {
+            const writeOut = (f: AudioData) =>
+              gw.write(f).catch(() => {
                 try {
                   f.close();
                 } catch {
                   /* already closed */
                 }
               });
-            if (self) self.buf.push(scaled, writeOut);
-            else writeOut(scaled);
+            // The buffer applies this peer's per-slider volume (the <audio> element
+            // can't go above 1.0), drift-resamples, and writes generator-ready frames.
+            if (self) self.buf.push(ad as unknown as JamFrame, getGain(self.appId), writeOut);
+            else
+              try {
+                ad.close();
+              } catch {
+                /* already closed */
+              }
           },
           error: () => {
             /* skip */
@@ -361,7 +421,7 @@ export async function setupWtMesh(
             .catch(() => {});
         }
         el.play().catch(() => {});
-        p = { decoder, el, ts: 0, buf: new AdaptiveJitterBuffer(2.5, bounds), appId: "" };
+        p = { decoder, el, ts: 0, buf: new AdaptiveJitterBuffer(2.5, ch, bounds), appId: "" };
         peers.set(id, p);
         return p;
       } catch {

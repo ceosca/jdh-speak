@@ -30,9 +30,7 @@ export function DeviceSettings() {
   const netMonitorDeviceId = useRoomStore((s) => s.netMonitorDeviceId);
   const setNetMonitorDeviceId = useRoomStore((s) => s.setNetMonitorDeviceId);
   const jamBufferMinMs = useRoomStore((s) => s.jamBufferMinMs);
-  const jamBufferMaxMs = useRoomStore((s) => s.jamBufferMaxMs);
   const setJamBufferMinMs = useRoomStore((s) => s.setJamBufferMinMs);
-  const setJamBufferMaxMs = useRoomStore((s) => s.setJamBufferMaxMs);
 
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
   const [speakers, setSpeakers] = useState<MediaDeviceInfo[]>([]);
@@ -48,10 +46,8 @@ export function DeviceSettings() {
   const jamModeId = useId();
   const jamModeHintId = useId();
   const jamBufMinId = useId();
-  const jamBufMaxId = useId();
   const jamBufHintId = useId();
   const jamBufMinDescId = useId();
-  const jamBufMaxDescId = useId();
   const jamBufLiveId = useId();
   const netMonitorId = useId();
   const netMonitorHintId = useId();
@@ -255,8 +251,9 @@ export function DeviceSettings() {
           {m.settings_jam_hint()}
         </p>
 
-        {/* Jamulus-style jitter-buffer faders: each user tunes their own min (floor
-            cushion = latency / crackle tolerance) and max (latency ceiling + drift cap).
+        {/* ONE Jamulus-style fader: the jitter cushion. Clock drift is now cancelled by
+            resampling inside the buffer (no growing delay, no dropped-frame clicks), so
+            the old "max" ceiling is gone — this slider is purely the jitter reserve.
             Live, per-user, no rebuild. Only shown while jam is on. */}
         {jamMode && (
           <div
@@ -267,53 +264,28 @@ export function DeviceSettings() {
             <p id={jamBufHintId} className="mb-2 text-xs text-sonic-400">
               {m.settings_jam_buffer_hint()}
             </p>
-            <div className="space-y-2.5">
-              <div>
-                <div className="mb-1 flex items-center justify-between">
-                  <label htmlFor={jamBufMinId} className="text-xs font-medium text-sonic-300">
-                    {m.settings_jam_buffer_min_label()}
-                  </label>
-                  <span className="text-xs tabular-nums text-sonic-200">{jamBufferMinMs} ms</span>
-                </div>
-                <input
-                  type="range"
-                  id={jamBufMinId}
-                  min={0}
-                  max={100}
-                  step={1}
-                  value={jamBufferMinMs}
-                  onChange={(e) => setJamBufferMinMs(Number(e.target.value))}
-                  aria-describedby={jamBufMinDescId}
-                  aria-valuetext={`${jamBufferMinMs} ms`}
-                  className="w-full accent-sonic-accent"
-                />
-                <p id={jamBufMinDescId} className="mt-1 text-xs text-sonic-400">
-                  {m.settings_jam_buffer_min_desc()}
-                </p>
+            <div>
+              <div className="mb-1 flex items-center justify-between">
+                <label htmlFor={jamBufMinId} className="text-xs font-medium text-sonic-300">
+                  {m.settings_jam_buffer_label()}
+                </label>
+                <span className="text-xs tabular-nums text-sonic-200">{jamBufferMinMs} ms</span>
               </div>
-              <div>
-                <div className="mb-1 flex items-center justify-between">
-                  <label htmlFor={jamBufMaxId} className="text-xs font-medium text-sonic-300">
-                    {m.settings_jam_buffer_max_label()}
-                  </label>
-                  <span className="text-xs tabular-nums text-sonic-200">{jamBufferMaxMs} ms</span>
-                </div>
-                <input
-                  type="range"
-                  id={jamBufMaxId}
-                  min={10}
-                  max={200}
-                  step={5}
-                  value={jamBufferMaxMs}
-                  onChange={(e) => setJamBufferMaxMs(Number(e.target.value))}
-                  aria-describedby={jamBufMaxDescId}
-                  aria-valuetext={`${jamBufferMaxMs} ms`}
-                  className="w-full accent-sonic-accent"
-                />
-                <p id={jamBufMaxDescId} className="mt-1 text-xs text-sonic-400">
-                  {m.settings_jam_buffer_max_desc()}
-                </p>
-              </div>
+              <input
+                type="range"
+                id={jamBufMinId}
+                min={0}
+                max={100}
+                step={1}
+                value={jamBufferMinMs}
+                onChange={(e) => setJamBufferMinMs(Number(e.target.value))}
+                aria-describedby={jamBufMinDescId}
+                aria-valuetext={`${jamBufferMinMs} ms`}
+                className="w-full accent-sonic-accent"
+              />
+              <p id={jamBufMinDescId} className="mt-1 text-xs text-sonic-400">
+                {m.settings_jam_buffer_desc()}
+              </p>
             </div>
             {/* Live readout — the actual buffer/jitter/drops right now. NOT an aria-live
                 region: it updates every second, so announcing each change would flood a

@@ -323,14 +323,13 @@ export function setupGeneratorMonitor(
     // Frames are read and NOT written back → dropped from NetEQ (we play them).
     const gen = new (globalThis as AnyRec).MediaStreamTrackGenerator({ kind: "audio" });
     const w: WritableStreamDefaultWriter = gen.writable.getWriter();
-    // Anti-creep: a Jamulus-style ADAPTIVE jitter buffer (mediasoup frames are 10 ms
-    // here). Bounds the generator queue against clock drift AND pins latency to the
-    // minimum the network needs, not a fixed cap. See AdaptiveJitterBuffer.
-    const jbuf = new AdaptiveJitterBuffer(10, bounds);
+    // Jitter cushion + SMOOTH drift compensation (mediasoup frames are 10 ms here).
+    // See AdaptiveJitterBuffer.
+    const jbuf = new AdaptiveJitterBuffer(10, ch, bounds);
     decoder = new AudioDecoder({
       output: (ad) => {
-        jbuf.push(ad as unknown as JamFrame, (f) =>
-          (w.write(f as unknown as AudioData) as Promise<void>).catch(() => {
+        jbuf.push(ad as unknown as JamFrame, 1, (f) =>
+          (w.write(f) as Promise<void>).catch(() => {
             try {
               f.close();
             } catch {

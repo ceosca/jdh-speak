@@ -8,6 +8,36 @@
 
 ---
 
+## 2026-08-24 (3)
+
+### Jam: compensación de drift por RESAMPLING + un solo slider + fix a11y NVDA
+
+- **Qué:** el buffer de jam ahora es **solo para el jitter** (un único slider "Buffer de
+  jitter"). El desfase por diferencia de relojes —lo que hacía crecer el retardo con las
+  horas— se corrige por **resampling continuo** (como SonoBus/AOO), no descartando frames.
+  Se eliminó el slider "máximo" (ya no hace falta un techo de descarte).
+- **Cómo (DSP):** nueva clase `StreamResampler` (interpolación lineal, cursor fraccional
+  continuo entre frames) dentro de `AdaptiveJitterBuffer` (`jam-wt-mesh.ts`). Un
+  controlador lento mide el nivel del buffer muy suavizado (τ=2 s) y **empuja la
+  velocidad de reproducción** ±fracción de % (τ_corrección=4 s, clamp ±2 %) para que el
+  buffer quede clavado en el cushion elegido. Prebufferea al cushion, y ante underrun
+  real re-prebufferea. Queda un techo de seguridad (cushion+250 ms) que en la práctica no
+  se toca. La ganancia por-peer se pasó a `push(ad, gain, write)` (se aplica al extraer
+  el PCM, antes del resampler). Los tres caminos (malla, monitor, generador NetEQ) usan
+  el mismo buffer.
+- **Verificado:** resampler aislado (`node`) — a s=1 transparente, a ±1 % desplaza el
+  pitch ±1 % sin clicks (salto máx = el de la propia señal), sin NaN/clip. Lazo de
+  control (`node`, corridas de 10 min): con drift de −300/+300/−1000 ppm el buffer queda
+  **plano, creep = 0.00 ms**, 0 descartes, 0 underruns; la velocidad se asienta justo en
+  el ppm del drift. En navegador real: `AudioData` f32-planar de largo variable +
+  escrituras al `MediaStreamTrackGenerator` OK, track `live`, sin errores; UI = un solo
+  slider, accesible.
+- **Fix accesibilidad (NVDA):** el lector de ms en vivo era `aria-live="polite"`, así que
+  NVDA lo leía sin parar (cada cambio) y tapaba la navegación hasta el slider. Se quitó
+  `aria-live` (un usuario de lector puede navegar y leer el snapshot cuando quiera), el
+  sondeo bajó a 1 s, y los controles quedaron en un grupo etiquetado. El slider tiene
+  `aria-valuetext` (“N ms”) y `aria-describedby` con la explicación.
+
 ## 2026-08-24 (2)
 
 ### Jam: barras deslizantes de buffer por-usuario (a lo Jamulus)

@@ -116,14 +116,12 @@ export async function setupWtMonitor(
     // --- Receive: echoed datagram → WebCodecs decode → generator → <audio>. ---
     const gen = new (globalThis as AnyRec).MediaStreamTrackGenerator({ kind: "audio" });
     const gw: WritableStreamDefaultWriter = gen.writable.getWriter();
-    // Anti-creep: a Jamulus-style ADAPTIVE jitter buffer bounds the playout (sender/
-    // receiver clock drift would grow the delay forever otherwise) AND pins it to the
-    // minimum the network needs, not a fixed guess. See AdaptiveJitterBuffer.
-    const jbuf = new AdaptiveJitterBuffer(2.5, bounds);
+    // Jitter cushion + SMOOTH drift compensation (resampling). See AdaptiveJitterBuffer.
+    const jbuf = new AdaptiveJitterBuffer(2.5, ch, bounds);
     decoder = new AudioDecoder({
       output: (ad) => {
-        jbuf.push(ad as unknown as JamFrame, (f) =>
-          (gw.write(f as unknown as AudioData) as Promise<void>).catch(() => {
+        jbuf.push(ad as unknown as JamFrame, 1, (f) =>
+          (gw.write(f) as Promise<void>).catch(() => {
             try {
               f.close();
             } catch {

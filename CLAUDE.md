@@ -269,28 +269,37 @@ pinned to **1.4.0** (newer arm64 prebuilds need glibc 2.38; the Pi has 2.36).
   than one Opus frame (PCM arrives one frame at a time), so the ring's floor tracks
   the actual decoded frame size (decaying max) instead of a fixed value — robust to
   whatever frame size a stream uses.
-- **USER-CONTROLLED jitter buffer (`AdaptiveJitterBuffer` in `jam-wt-mesh.ts`) with
-  Jamulus-style min/max sliders — replaced the old fixed 45 ms cap AND the short-lived
-  auto-adaptive target.** History: fixed 45 ms cap → auto "adaptive minimum" (RFC-3550
-  jitter, target `frame+3×jitter`) → **manual min/max** (current). Why the last move:
-  the auto target, sitting right at the floor, **eroded the cushion** under jitter
-  (sim: min=20 decayed to ~11 ms avg, near-underrun). The user asked for Jamulus-style
-  faders, so the buffer is now MANUAL and the human is the adaptation:
-  - **min** (0–100 ms) = the floor cushion, **prebuffered with real frames** before
-    playout starts → genuine latency AND jitter tolerance. Lower = less latency, raise
-    if it crackles.
-  - **max** (10–200 ms) = the drop ceiling (latency cap + clock-drift creep cap).
-    Dropping while AHEAD is inaudible (just catching up), so max only caps latency.
-  - On a true underrun it **re-prebuffers** to rebuild the cushion.
-  The three generator playout paths (WT mesh, WT monitor, NetEQ-bypass generator) all
-  use it via `push(frame, write)`. Bounds are a **live shared object** (`jamBoundsRef`
-  in `useMediasoup`) the sliders mutate in place → running buffers adopt new min/max
-  with no rebuild. Store: `jamBufferMinMs`/`jamBufferMaxMs` (per-user, persisted,
-  cross-clamped min≤max); UI in `DeviceSettings` (shown only while jam is on) + a live
-  readout from `window.__jamMeshStats = {bufferedMs, targetMs, jitterMs, drops}`. Sim
-  (`node`, 6 cases): min=8 holds 8 ms, min=30 holds ~28, drift+max=25 pins ≤25, jitter
-  ±10 ms+min=20 → zero underruns/drops, 300 ms gap → recovers. **Don't re-add an auto
-  target that clamps to min** — it erodes the cushion; the sliders are the control now.
+- **Jitter buffer + SMOOTH drift compensation via RESAMPLING (`AdaptiveJitterBuffer` in
+  `jam-wt-mesh.ts`) — the current design.** History: fixed 45 ms cap → auto "adaptive
+  minimum" (eroded the cushion under jitter) → manual min/max sliders → **single cushion
+  slider + resampling drift compensation** (current). The buffer is now ONLY for jitter;
+  clock drift (why the delay used to grow over hours) is cancelled the SonoBus/AOO way —
+  a DLL-lite + resampler — NOT by dropping frames.
+  - **One user slider** = the jitter cushion (`jamBufferMinMs`, 0–100 ms). Lower = less
+    latency; raise if it crackles. `jamBufferMaxMs` still exists in the store but is
+    **ignored by the buffer** (no user-facing max anymore).
+  - **`StreamResampler`** (linear interp, fractional cursor carried across frames) plays
+    the stream at a variable speed `s`. A slow controller (buffer level smoothed τ=2 s)
+    nudges `s` by a fraction of a percent (correction τ=4 s, clamp ±2 %) so the buffer
+    sits at the cushion forever — drift in either direction is absorbed continuously,
+    **no clicks, no growth**. Prebuffers to the cushion; re-prebuffers on a true
+    underrun; a `cushion+250 ms` drop ceiling is catastrophe-only (never hit normally).
+  - Per-peer gain moved INTO the buffer: `push(ad, gain, write)` (applied while copying
+    the PCM, before the resampler). Buffer built with channels: `new
+    AdaptiveJitterBuffer(nominalMs, channels, bounds)`. Output is fresh f32-planar
+    `AudioData` written to the generator (variable length — verified Chrome accepts it).
+  - All three playout paths (WT mesh, WT monitor, NetEQ-bypass generator) use it. Bounds
+    are a **live shared object** (`jamBoundsRef` in `useMediasoup`) the slider mutates in
+    place → no rebuild. Live stat `window.__jamMeshStats = {bufferedMs, targetMs,
+    jitterMs, drops, ppm}` (ppm = the drift the resampler is cancelling).
+  - Sim (`node`): resampler transparent at s=1, ±1 % shifts pitch ±1 % with no added
+    clicks; control loop over 10 min at ±300/±1000 ppm drift → buffer **flat, creep
+    0.00 ms**, 0 drops, 0 underruns. **Don't go back to dropping at a max ceiling** for
+    drift — resampling is smoother and is the whole point of this revision.
+  - **A11y (NVDA):** the live ms readout must NOT be `aria-live` (it updates ~1/s and
+    flooded NVDA, blocking navigation to the slider). Keep it a plain readable snapshot;
+    slider carries `aria-valuetext`/`aria-describedby`; controls wrapped in a labelled
+    group.
 
 **📏 MEASURED latency budget (so nobody chases the wrong ms).** On Cristian's
 Windows box, live-measured the whole round-trip and found the dominant cost is
