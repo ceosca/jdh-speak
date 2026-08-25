@@ -72,3 +72,6 @@ client/public/ir/*.wav
 client/public/ir/*.flac
 client/public/ir/*.aac
 client/public/ir/*.m4a
+
+# WebTransport probe self-signed throwaway cert (generated at runtime)
+server/.wt-probe-cert/
