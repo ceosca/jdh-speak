@@ -96,7 +96,7 @@ export function DeviceSettings() {
       ).__jamMeshStats;
       if (s)
         setLiveBuf({ bufferedMs: s.bufferedMs, jitterMs: s.jitterMs, drops: s.drops });
-    }, 500);
+    }, 1000);
     return () => window.clearInterval(id);
   }, [jamMode]);
 
@@ -259,7 +259,11 @@ export function DeviceSettings() {
             cushion = latency / crackle tolerance) and max (latency ceiling + drift cap).
             Live, per-user, no rebuild. Only shown while jam is on. */}
         {jamMode && (
-          <div className="mt-3 rounded-lg border border-sonic-600 bg-sonic-800/40 p-2.5">
+          <div
+            role="group"
+            aria-labelledby={jamBufHintId}
+            className="mt-3 rounded-lg border border-sonic-600 bg-sonic-800/40 p-2.5"
+          >
             <p id={jamBufHintId} className="mb-2 text-xs text-sonic-400">
               {m.settings_jam_buffer_hint()}
             </p>
@@ -311,15 +315,12 @@ export function DeviceSettings() {
                 </p>
               </div>
             </div>
-            {/* Live readout — the actual buffer/jitter/drops right now, so you can tune
-                by ear AND eye. aria-live polite so a screen reader can poll it on focus
-                without chattering. */}
+            {/* Live readout — the actual buffer/jitter/drops right now. NOT an aria-live
+                region: it updates every second, so announcing each change would flood a
+                screen reader (it did — NVDA read the ms non-stop). A SR user can still
+                navigate to it to read the current snapshot on demand. */}
             {liveBuf && (
-              <p
-                id={jamBufLiveId}
-                aria-live="polite"
-                className="mt-2 text-xs tabular-nums text-sonic-400"
-              >
+              <p id={jamBufLiveId} className="mt-2 text-xs tabular-nums text-sonic-400">
                 {m.settings_jam_buffer_live({
                   buffered: liveBuf.bufferedMs,
                   jitter: liveBuf.jitterMs,
