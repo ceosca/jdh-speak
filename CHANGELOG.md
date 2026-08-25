@@ -8,6 +8,27 @@
 
 ---
 
+## 2026-08-24 (4)
+
+### Jam: estéreo real (dejó de forzar mono) + no-stall en underrun
+
+- **Qué:** el modo ensayo ya no colapsa todo a mono. La malla y el monitor WT ahora
+  siguen el **conteo de canales real del micrófono/interfaz**: entrada mono → mono
+  (igual que antes), interfaz estéreo → **estéreo de verdad** (Opus estéreo a 2.5 ms,
+  128 kbps). Probado en el navegador real (Edge del usuario): captura mono `max:1` en el
+  device por defecto, `createMediaStreamDestination` es estéreo (no era el culpable),
+  Opus estéreo 2.5 ms encode/decode OK, `AudioData` estéreo de largo variable →
+  generator OK.
+- **Cómo:** `encodeMono` → `encodeFrame(encoder, ad, channels)` (downmix solo si el
+  encoder es mono; si es estéreo, encodea los 2 canales directo). `applyJamMesh` /
+  `applyNetworkMonitor` pasan `micTrack.getSettings().channelCount`. **Cada emisor
+  estampa SU conteo de canales en el paquete** (`[0x01][idLen][appId][ch][seq][t][opus]`,
+  el relay lo reenvía verbatim), así un oyente mono decodifica bien a un emisor estéreo y
+  viceversa (arregla el bug latente de decoders con canales cruzados). Buffer y resampler
+  ya eran por-canal. Verificado el formato de bytes de punta a punta (`node`).
+- **⚠️ Cambió el formato de paquete** → todos deben recargar a la vez (mezclar clientes
+  viejos/nuevos silencia entre ellos hasta recargar).
+
 ## 2026-08-24 (3)
 
 ### Jam: compensación de drift por RESAMPLING + un solo slider + fix a11y NVDA

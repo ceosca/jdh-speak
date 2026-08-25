@@ -1004,13 +1004,16 @@ export function useMediasoup() {
     const probe = await fetchWtProbeInfo();
     const jamUrl = probe.jamUrl;
     if (!probe.enabled || !jamUrl) return stopMesh();
+    // Follow the mic's real channel count so a STEREO input stays stereo in jam
+    // (mono mics → 1, no change). Fixes "jam collapses everything to mono".
+    const micChannels = micTrack.getSettings().channelCount === 2 ? 2 : 1;
     const handle = await setupWtMesh(
       micTrack,
       jamUrl,
       probe.certHash?.value ?? null,
       room,
       store.getState().speakerDeviceId,
-      1,
+      micChannels,
       store.getState().localPeerId ?? "",
       (peerId: string) => effectiveGain(peerId),
       jamBoundsRef.current,
@@ -1493,7 +1496,7 @@ export function useMediasoup() {
             info.url,
             info.certHash?.value ?? null,
             store.getState().netMonitorDeviceId,
-            1,
+            micTrack.getSettings().channelCount === 2 ? 2 : 1,
             jamBoundsRef.current,
           );
           if (handle) {

@@ -18,7 +18,7 @@
 // falls back to the normal mediasoup self-consume monitor. Monitor-only (the self
 // return); the room's real audio is untouched.
 
-import { encodeMono, AdaptiveJitterBuffer, type JamBufferBounds, type JamFrame } from "./jam-wt-mesh";
+import { encodeFrame, AdaptiveJitterBuffer, type JamBufferBounds, type JamFrame } from "./jam-wt-mesh";
 
 export type WtMonitorHandle = {
   teardown: () => void;
@@ -88,7 +88,7 @@ export async function setupWtMonitor(
       codec: "opus",
       sampleRate: 48000,
       numberOfChannels: ch,
-      bitrate: 64000,
+      bitrate: ch === 2 ? 128000 : 64000, // stereo (a musical input) needs the headroom
       opus: { frameDuration: 2500, useinbandfec: false, usedtx: false },
     });
 
@@ -104,7 +104,7 @@ export async function setupWtMonitor(
         }
         if (r.done) break;
         const audioData = r.value;
-        if (encoder) encodeMono(encoder, audioData);
+        if (encoder) encodeFrame(encoder, audioData, ch);
         try {
           audioData.close();
         } catch {

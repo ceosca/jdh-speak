@@ -27,16 +27,18 @@ export type WtMeshHandle = {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyRec = any;
 
-// The mic often captures STEREO (channelCount:2 on desktop), but our Opus encoder is
-// mono — encoding a stereo AudioData into a mono encoder throws ("Input audio buffer
-// is incompatible with codec") and NOTHING gets sent. So downmix to mono first. Voice
-// is mono anyway (half the bytes). Called for every captured chunk on both the mesh
-// and the WT monitor.
+// Encode one captured chunk at the encoder's channel count. The mic often captures
+// STEREO (channelCount:2 on desktop); if the encoder is MONO we must downmix first, or
+// encode() throws ("Input audio buffer is incompatible with codec") and NOTHING gets
+// sent. If the encoder is STEREO (the user's input is a stereo interface), we encode the
+// two channels as-is so jam keeps stereo instead of collapsing it to mono. `channels` is
+// the encoder's channel count. Called for every captured chunk on the mesh and monitor.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function encodeMono(encoder: AudioEncoder, ad: any): void {
+export function encodeFrame(encoder: AudioEncoder, ad: any, channels: number): void {
   if (encoder.state !== "configured") return;
   try {
-    if (ad.numberOfChannels > 1) {
+    if (channels === 1 && ad.numberOfChannels > 1) {
+      // Stereo capture into a mono encoder → downmix (L+R)/2.
       const n = ad.numberOfFrames as number;
       const a = new Float32Array(n);
       const b = new Float32Array(n);
@@ -54,6 +56,7 @@ export function encodeMono(encoder: AudioEncoder, ad: any): void {
       encoder.encode(mono);
       mono.close();
     } else {
+      // Channel counts match (mono→mono or stereo→stereo) → encode directly.
       encoder.encode(ad);
     }
   } catch {
@@ -393,8 +396,10 @@ export async function setupWtMesh(
     hello.set(roomBytes, 1);
     await writer.write(hello);
 
-    // A new sender showed up → build its decoder → generator → <audio>.
-    const ensurePeer = (id: number): MeshPeer | null => {
+    // A new sender showed up → build its decoder → generator → <audio>. `senderCh` is
+    // the SENDER's channel count (from its packets), so a mono listener still decodes a
+    // stereo sender correctly and vice-versa.
+    const ensurePeer = (id: number, senderCh: number): MeshPeer | null => {
       let p = peers.get(id);
       if (p) return p;
       try {
@@ -426,7 +431,7 @@ export async function setupWtMesh(
             /* skip */
           },
         });
-        decoder.configure({ codec: "opus", sampleRate: 48000, numberOfChannels: ch });
+        decoder.configure({ codec: "opus", sampleRate: 48000, numberOfChannels: senderCh });
         const el = new Audio();
         el.autoplay = true;
         (el as unknown as Record<string, boolean>).playsInline = true;
@@ -441,7 +446,7 @@ export async function setupWtMesh(
           decoder,
           el,
           ts: 0,
-          buf: new AdaptiveJitterBuffer(2.5, ch, bounds),
+          buf: new AdaptiveJitterBuffer(2.5, senderCh, bounds),
           appId: "",
           lastSeq: -1,
         };
@@ -457,12 +462,12 @@ export async function setupWtMesh(
     encoder = new AudioEncoder({
       output: (chunk) => {
         try {
-          // [0x01][idLen:u8][appId][seq:4][sendTime:8][opus]. The relay prepends our
-          // senderId and forwards the rest verbatim, so stamping our peerId here lets
-          // receivers map the stream to the app peer (for per-peer volume) with no
-          // relay/server change.
+          // [0x01][idLen:u8][appId][ch:u8][seq:4][sendTime:8][opus]. The relay prepends
+          // our senderId and forwards the rest verbatim, so stamping our peerId (for
+          // per-peer volume) and OUR channel count (so the receiver decodes mono/stereo
+          // correctly regardless of ITS own mic) needs no relay/server change.
           const idLen = localIdBytes.length;
-          const headLen = 1 + 1 + idLen + 4 + 8;
+          const headLen = 1 + 1 + idLen + 1 + 4 + 8;
           const buf = new ArrayBuffer(headLen + chunk.byteLength);
           const dv = new DataView(buf);
           const u8 = new Uint8Array(buf);
@@ -470,6 +475,8 @@ export async function setupWtMesh(
           dv.setUint8(1, idLen);
           u8.set(localIdBytes, 2);
           let o = 2 + idLen;
+          dv.setUint8(o, ch);
+          o += 1;
           dv.setUint32(o, seq, true);
           o += 4;
           dv.setFloat64(o, performance.now(), true);
@@ -489,7 +496,7 @@ export async function setupWtMesh(
       codec: "opus",
       sampleRate: 48000,
       numberOfChannels: ch,
-      bitrate: 64000,
+      bitrate: ch === 2 ? 128000 : 64000, // stereo (a musical input) needs the headroom
       opus: { frameDuration: 2500, useinbandfec: false, usedtx: false },
     });
 
@@ -504,7 +511,7 @@ export async function setupWtMesh(
           break;
         }
         if (r.done) break;
-        if (encoder) encodeMono(encoder, r.value);
+        if (encoder) encodeFrame(encoder, r.value, ch);
         try {
           r.value.close();
         } catch {
@@ -533,19 +540,21 @@ export async function setupWtMesh(
           continue;
         }
         if (type === 0x01 && v.byteLength > 4) {
-          // [0x01][senderId:u16][idLen:u8][appId][seq:4][sendTime:8][opus]
+          // [0x01][senderId:u16][idLen:u8][appId][ch:u8][seq:4][sendTime:8][opus]
           const senderId = dv.getUint16(1, true);
           if (senderId === myId) continue; // our own return → the /echo monitor's job
           const idLen = v[3];
-          const opusOffset = 4 + idLen + 12; // idLen + seq(4) + sendTime(8)
+          const senderCh = v[4 + idLen] === 2 ? 2 : 1;
+          const seqOffset = 4 + idLen + 1; // after appId + ch byte
+          const opusOffset = seqOffset + 12; // seq(4) + sendTime(8)
           if (v.byteLength <= opusOffset) continue;
-          const p = ensurePeer(senderId);
+          const p = ensurePeer(senderId, senderCh);
           if (p) {
             if (idLen > 0) p.appId = new TextDecoder().decode(v.subarray(4, 4 + idLen));
             // Count lost datagrams via seq gaps (WebTransport datagrams are unreliable).
             // This is the key diagnostic: cuts from LOST packets can't be fixed by a
             // bigger buffer — they need FEC/PLC or the mediasoup fallback.
-            const seq = dv.getUint32(4 + idLen, true);
+            const seq = dv.getUint32(seqOffset, true);
             if (p.lastSeq >= 0) {
               const gap = (seq - p.lastSeq - 1) | 0;
               if (gap > 0 && gap < 1000) stats.lost += gap;
