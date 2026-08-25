@@ -77,6 +77,7 @@ type MeshPeer = {
   ts: number;
   buf: AdaptiveJitterBuffer;
   appId: string; // the sender's app peerId (store key) → per-peer volume lookup
+  lastSeq: number; // last received sender seq, to count lost datagrams (−1 = none yet)
 };
 
 // Soft knee above 0.8 so a >1.0 boost doesn't hard-clip into buzz on loud samples.
@@ -93,10 +94,37 @@ const SR = 48000;
 const DEFAULT_JITTER_MS = 8; // cushion when no user slider is wired
 const SAFETY_MS = 250; // drop ceiling ABOVE the cushion — resampler should never reach it
 const TAU_SMOOTH = 2; // s — how heavily the buffer level is smoothed for the controller
-const TAU_CORRECT = 4; // s — how fast the resampler pulls the buffer back to target
+const TAU_CORRECT = 4; // s — how gently drift is drained (buffer above target: smooth)
+const TAU_REFILL = 1; // s — how fast the cushion is rebuilt (buffer below target: quick
+//                           recovery after a loss glitch, so gaps don't linger)
 const MAX_ADJ = 0.02; // ±2 % max playback-speed nudge (drift is normally <0.03 %)
 
 export type JamBufferBounds = { minMs: number; maxMs: number };
+// Live diagnostics, shared on window.__jamMeshStats so a real session can be inspected
+// (crucially, so a user who cuts can report WHAT is happening — underruns vs lost
+// packets vs jitter). `lost` is filled by the mesh receive loop (seq gaps), the rest by
+// the buffer.
+export type JamMeshStats = {
+  bufferedMs: number;
+  targetMs: number;
+  jitterMs: number;
+  drops: number;
+  ppm: number;
+  underruns: number;
+  lost: number;
+};
+export function jamMeshStats(): JamMeshStats {
+  const g = globalThis as unknown as { __jamMeshStats?: JamMeshStats };
+  return (g.__jamMeshStats ||= {
+    bufferedMs: 0,
+    targetMs: 8,
+    jitterMs: 0,
+    drops: 0,
+    ppm: 0,
+    underruns: 0,
+    lost: 0,
+  });
+}
 // Minimal shape the buffer needs from a decoded frame (real WebCodecs AudioData
 // satisfies it; a plain stub satisfies it in tests).
 export type JamFrame = {
@@ -175,13 +203,7 @@ export class AdaptiveJitterBuffer {
   private readonly bounds: JamBufferBounds | null;
   private readonly resampler: StreamResampler;
   private readonly smoothA: number;
-  private readonly stat: {
-    bufferedMs: number;
-    targetMs: number;
-    jitterMs: number;
-    drops: number;
-    ppm: number;
-  };
+  private readonly stat: JamMeshStats;
 
   // `bounds` is a LIVE shared object: the slider mutates its minMs and this buffer reads
   // the new cushion on the fly — no rebuild. (maxMs is ignored now; drift is resampled,
@@ -192,22 +214,7 @@ export class AdaptiveJitterBuffer {
     this.bounds = bounds ?? null;
     this.resampler = new StreamResampler(channels);
     this.smoothA = nominalMs / 1000 / TAU_SMOOTH;
-    const g = globalThis as unknown as {
-      __jamMeshStats?: {
-        bufferedMs: number;
-        targetMs: number;
-        jitterMs: number;
-        drops: number;
-        ppm: number;
-      };
-    };
-    this.stat = g.__jamMeshStats ||= {
-      bufferedMs: 0,
-      targetMs: 8,
-      jitterMs: 0,
-      drops: 0,
-      ppm: 0,
-    };
+    this.stat = jamMeshStats();
   }
 
   private cushionSamples(): number {
@@ -254,17 +261,25 @@ export class AdaptiveJitterBuffer {
     if (!this.prebuffering) {
       const buffered = this.written - ((now - this.startMs) / 1000) * SR;
       if (buffered < 0) {
-        // Underrun — the queue drained. Re-prebuffer to rebuild the cushion.
-        this.prebuffering = true;
-        this.pendingOut = [];
-        this.pendingSamples = 0;
-        this.bufSmoothed = -1;
+        // Underrun — the queue ran dry (jitter spike, packet loss, or a clock-estimate
+        // slip). DON'T stall with a full re-prebuffer: that turns every hiccup into a
+        // cushion-long silence, and a BIGGER cushion makes it WORSE (that's why raising
+        // the buffer didn't help Edu — it lengthened each stall). Instead re-anchor to
+        // the live edge and let the controller refill the cushion by playing very
+        // slightly slow. One tiny glitch at the underrun, no stall.
+        this.startMs = now;
+        this.written = 0;
+        this.bufSmoothed = 0;
         this.speed = 1;
+        this.stat.underruns++;
       } else {
         if (this.bufSmoothed < 0) this.bufSmoothed = buffered;
         this.bufSmoothed += (buffered - this.bufSmoothed) * this.smoothA;
-        const s = 1 + (this.bufSmoothed - target) / (SR * TAU_CORRECT);
-        this.speed = Math.max(1 - MAX_ADJ, Math.min(1 + MAX_ADJ, s));
+        const err = this.bufSmoothed - target;
+        // Below target → refill fast (recover the cushion after a glitch); above target
+        // → drain slow (smooth drift correction, no audible pitch wobble).
+        const tau = err < 0 ? TAU_REFILL : TAU_CORRECT;
+        this.speed = Math.max(1 - MAX_ADJ, Math.min(1 + MAX_ADJ, 1 + err / (SR * tau)));
       }
     }
 
@@ -338,6 +353,7 @@ export async function setupWtMesh(
   if (!wtMeshSupported()) return null;
   const ch = channels === 2 ? 2 : 1;
   const localIdBytes = new TextEncoder().encode(localPeerId).slice(0, 255);
+  const stats = jamMeshStats();
   let wt: AnyRec = null;
   let encoder: AudioEncoder | null = null;
   const peers = new Map<number, MeshPeer>();
@@ -421,7 +437,14 @@ export async function setupWtMesh(
             .catch(() => {});
         }
         el.play().catch(() => {});
-        p = { decoder, el, ts: 0, buf: new AdaptiveJitterBuffer(2.5, ch, bounds), appId: "" };
+        p = {
+          decoder,
+          el,
+          ts: 0,
+          buf: new AdaptiveJitterBuffer(2.5, ch, bounds),
+          appId: "",
+          lastSeq: -1,
+        };
         peers.set(id, p);
         return p;
       } catch {
@@ -519,6 +542,15 @@ export async function setupWtMesh(
           const p = ensurePeer(senderId);
           if (p) {
             if (idLen > 0) p.appId = new TextDecoder().decode(v.subarray(4, 4 + idLen));
+            // Count lost datagrams via seq gaps (WebTransport datagrams are unreliable).
+            // This is the key diagnostic: cuts from LOST packets can't be fixed by a
+            // bigger buffer — they need FEC/PLC or the mediasoup fallback.
+            const seq = dv.getUint32(4 + idLen, true);
+            if (p.lastSeq >= 0) {
+              const gap = (seq - p.lastSeq - 1) | 0;
+              if (gap > 0 && gap < 1000) stats.lost += gap;
+            }
+            p.lastSeq = seq;
             if (p.decoder.state === "configured") {
               try {
                 p.decoder.decode(

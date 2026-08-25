@@ -203,7 +203,7 @@
   "settings_jam_buffer_hint": "Buffer de jitter: cada uno ajusta el suyo.",
   "settings_jam_buffer_label": "Buffer de jitter",
   "settings_jam_buffer_desc": "Cuánto audio se guarda de reserva para tapar los baches de internet. Más bajo = escuchás a los demás con menos retardo, pero si internet tironea se entrecorta. Si oís cortes o chasquidos, subilo un poco. El desfase por la diferencia de relojes entre las computadoras se corrige solo, así que el retardo NO crece con el pasar de las horas.",
-  "settings_jam_buffer_live": "Ahora: {buffered} ms en buffer · jitter {jitter} ms · {drops} descartes",
+  "settings_jam_buffer_live": "Ahora: {buffered} ms en buffer · jitter {jitter} ms · {underruns} cortes · {lost} paquetes perdidos",
   "settings_net_monitor_label": "Monitoreo de red (oír tu propio retorno)",
   "settings_net_monitor_hint": "En vez del monitor local, oís tu propia señal de vuelta por el servidor (a lo Jamulus), a la latencia de la red. Te guiás por ese retorno para tocar en tiempo con todos: te adelantás a tu propio rebote. Requiere auriculares.",
   "settings_net_monitor_device_label": "Placa de salida del retorno",
