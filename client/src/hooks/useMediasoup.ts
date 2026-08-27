@@ -226,6 +226,11 @@ const AUDIO_EXTENSIONS = new Set(["mp3", "m4a", "aac", "ogg", "opus", "wav", "fl
 // browser's adaptive buffer (NetEQ) absorb those short jitter bursts. Receiver
 // side only, applied to BOTH P2P and SFU received tracks. Tunable.
 const JITTER_BUFFER_HINT = 0.05;
+// Jam receive cushion (seconds). NOT 0: the mesh is gone, so jam now plays through NetEQ
+// like normal mode, and a 0 target makes NetEQ choppy on the slightest reordering (see
+// JITTER_BUFFER_HINT note). 30 ms is a real cushion (clean) but below normal's 50 ms, so
+// jam is still tighter than normal — clean AND lower latency, on the standard path.
+const JAM_JITTER_HINT = 0.03;
 
 // Set the receiver-side jitter buffer target. `jitterBufferTarget` (RTCRtpReceiver,
 // Chrome 124+) is the modern, spec'd successor to the non-standard track
@@ -240,7 +245,7 @@ function setReceiverJitterTarget(receiver: RTCRtpReceiver | undefined, jam: bool
   if (!receiver || !("jitterBufferTarget" in receiver)) return;
   try {
     (receiver as unknown as Record<string, number | null>).jitterBufferTarget = jam
-      ? 0
+      ? JAM_JITTER_HINT * 1000
       : JITTER_BUFFER_HINT * 1000;
   } catch {
     /* unsupported value/engine — the playoutDelayHint fallback still applies */
@@ -310,6 +315,18 @@ function createAudioPipeline(track: MediaStreamTrack): Omit<PeerAudio, "consumer
 
   return { audioEl, gainNode, sourceNode, panner, airFilter };
 }
+
+// ⚠️ Jam PEER audio path (2026-08-27). CONFIRMED LIVE: the custom low-latency playout —
+// the WT mesh (Opus 2.5 ms → our jitter buffer → MediaStreamTrackGenerator) AND the
+// NetEQ bypass (encodedInsertableStreams tap) — produces audible crackling/clipping for
+// EVERYONE, on every machine (not laptops, not one bad network). Meanwhile the standard
+// mediasoup/WebRTC/NetEQ path (what "modo normal" uses) is clean. So jam now plays peers
+// through that SAME clean NetEQ path, keeping only the SAFE latency tuning
+// (jitterBufferTarget=0 + the send-side ptime/FEC/priority). The custom pipeline is a
+// nice idea that didn't deliver clean audio — parked behind these flags. Do NOT flip
+// them back on without fixing the underlying crackle first.
+const JAM_WT_MESH = false; // WT peer mesh playout
+const JAM_NETEQ_BYPASS = false; // encoded-transform NetEQ bypass
 
 // Does this browser expose the Encoded Transform tap we use to bypass NetEQ?
 // Chrome/Edge yes; Safari/Firefox no → they just use NetEQ (no bypass, no harm).
@@ -996,6 +1013,9 @@ export function useMediasoup() {
       }
       masterBus.gain.value = 1; // mediasoup peer audio audible again
     };
+    // Parked (see JAM_WT_MESH): the mesh crackled for everyone → jam plays peers through
+    // the clean mediasoup/NetEQ path instead. Always keep the mesh off + masterBus live.
+    if (!JAM_WT_MESH) return stopMesh();
     if (!store.getState().jamMode || !wtMeshSupported()) return stopMesh();
     if (wtMeshRef.current) return; // already meshing
     const micTrack = localStreamRef.current?.getAudioTracks()[0];
@@ -1496,7 +1516,7 @@ export function useMediasoup() {
     // WebTransport, echoed by the relay — bypasses WebRTC's audio path entirely for
     // the timing reference. Falls through to the mediasoup self-consume if the relay
     // is off or anything fails.
-    if (store.getState().jamMode && wtMonitorSupported()) {
+    if (JAM_WT_MESH && store.getState().jamMode && wtMonitorSupported()) {
       const micTrack = localStreamRef.current?.getAudioTracks()[0];
       if (micTrack) {
         const info = await fetchWtProbeInfo();
@@ -1533,7 +1553,7 @@ export function useMediasoup() {
       // Minimum buffer on the return — the whole point is to hear it as early as
       // the network allows (this IS the latency you play against).
       if ("playoutDelayHint" in consumer.track) {
-        (consumer.track as unknown as Record<string, number>).playoutDelayHint = 0;
+        (consumer.track as unknown as Record<string, number>).playoutDelayHint = JAM_JITTER_HINT;
       }
       setReceiverJitterTarget(consumer.rtpReceiver, true);
 
@@ -1713,7 +1733,7 @@ export function useMediasoup() {
         const jam = useRoomStore.getState().jamMode;
         if ("playoutDelayHint" in remoteTrack) {
           (remoteTrack as unknown as Record<string, number>).playoutDelayHint = jam
-            ? 0
+            ? JAM_JITTER_HINT
             : JITTER_BUFFER_HINT;
         }
         setReceiverJitterTarget(e.receiver, jam);
@@ -1841,7 +1861,7 @@ export function useMediasoup() {
         const jam = useRoomStore.getState().jamMode;
         if ("playoutDelayHint" in consumer.track) {
           (consumer.track as unknown as Record<string, number>).playoutDelayHint = jam
-            ? 0
+            ? JAM_JITTER_HINT
             : JITTER_BUFFER_HINT;
         }
         setReceiverJitterTarget(consumer.rtpReceiver, jam);
@@ -1948,7 +1968,8 @@ export function useMediasoup() {
       // routes every frame through the tap, so EVERY consumer must be tapped (bypass
       // or passthrough) — which we can only guarantee in an all-or-nobody jam room.
       // Off for normal calls entirely, so they're byte-for-byte the old path.
-      const useInsertable = SUPPORTS_INSERTABLE_STREAMS && store.getState().jamMode;
+      const useInsertable =
+        JAM_NETEQ_BYPASS && SUPPORTS_INSERTABLE_STREAMS && store.getState().jamMode;
       recvInsertableRef.current = useInsertable;
       const recvTransport = device.createRecvTransport({
         ...(recvRes.params as Parameters<typeof device.createRecvTransport>[0]),

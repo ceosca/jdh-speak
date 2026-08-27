@@ -8,6 +8,30 @@
 
 ---
 
+## 2026-08-27
+
+### Jam: abandonar la malla custom — usar el camino LIMPIO de mediasoup
+
+**Corrección de rumbo.** Cristian dejó claro que **a TODOS** (él, Pablo, Edu, Franco) les
+crujía/clipeaba en modo ensayo, en **cualquier máquina** (no son laptops), mientras el
+**modo normal (mediasoup/WebRTC/NetEQ) suena limpio**. O sea: el problema NO era de red ni
+de CPU — era que **la tubería de audio custom de jam** (malla WT con Opus 2.5 ms → nuestro
+jitter buffer → `MediaStreamTrackGenerator`, y el bypass de NetEQ por `encodedInsertable
+Streams`) produce audio malo para todos. Todos los fixes anteriores puleaban una tubería
+rota de raíz.
+
+- **Apagadas ambas rutas custom** (`JAM_WT_MESH=false`, `JAM_NETEQ_BYPASS=false` en
+  `useMediasoup.ts`): la malla WT, el bypass NetEQ y el monitor WT quedan parkeados. Jam
+  reproduce a los peers por el **mismo NetEQ limpio** que el modo normal.
+- **`jitterBufferTarget` de jam pasó de 0 a 30 ms** (`JAM_JITTER_HINT`). El 0 hacía NetEQ
+  entrecortado ante el mínimo reordenamiento (lo dice el propio comentario del código). 30
+  ms = colchón real (limpio) pero por debajo de los 50 ms del modo normal → jam sigue más
+  ajustado que normal, pero **limpio**, sobre el camino estándar.
+- Cambio **solo de cliente** → build, sin reinicio, sin cortar llamadas.
+- Pendiente (si quieren aún menos latencia): que jam NO fuerce SFU (que sea P2P como el
+  normal) — es un cambio de servidor, va aparte. Y re-cablear el slider "Buffer de jitter"
+  al `jitterBufferTarget` de NetEQ (ahora quedó inerte).
+
 ## 2026-08-26 (2)
 
 ### Jam: clipping + crackling de raíz (limitadores + resampler sin GC + RED anti-pérdida)
