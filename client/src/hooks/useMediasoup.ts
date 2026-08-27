@@ -231,6 +231,11 @@ const JITTER_BUFFER_HINT = 0.05;
 // JITTER_BUFFER_HINT note). 30 ms is a real cushion (clean) but below normal's 50 ms, so
 // jam is still tighter than normal — clean AND lower latency, on the standard path.
 const JAM_JITTER_HINT = 0.03;
+// The network-monitor return (your OWN producer, self-consumed via the SFU) is a
+// server LOOPBACK — very low jitter, no packet reordering between peers. So it can run a
+// much tighter cushion than peer audio without cutting, keeping "el audio que vuelve a
+// mí" as immediate as possible (it's the timing reference you play against).
+const MONITOR_JITTER_HINT = 0.015;
 
 // Set the receiver-side jitter buffer target. `jitterBufferTarget` (RTCRtpReceiver,
 // Chrome 124+) is the modern, spec'd successor to the non-standard track
@@ -1554,12 +1559,22 @@ export function useMediasoup() {
           typeof recvTransport.consume
         >[0]["rtpParameters"],
       });
-      // Minimum buffer on the return — the whole point is to hear it as early as
-      // the network allows (this IS the latency you play against).
+      // Tight buffer on the return — it's a low-jitter server loopback, so it can be
+      // much closer to the edge than peer audio without cutting (this IS the latency you
+      // play against, so keep it minimal).
       if ("playoutDelayHint" in consumer.track) {
-        (consumer.track as unknown as Record<string, number>).playoutDelayHint = JAM_JITTER_HINT;
+        (consumer.track as unknown as Record<string, number>).playoutDelayHint =
+          MONITOR_JITTER_HINT;
       }
-      setReceiverJitterTarget(consumer.rtpReceiver, true);
+      const monRcv = consumer.rtpReceiver;
+      if (monRcv && "jitterBufferTarget" in monRcv) {
+        try {
+          (monRcv as unknown as Record<string, number>).jitterBufferTarget =
+            MONITOR_JITTER_HINT * 1000;
+        } catch {
+          /* unsupported value/engine */
+        }
+      }
 
       // Lowest-latency monitor (jam + Chrome/Edge + flagged recv): decode the tapped
       // frames ourselves and play them through a MediaStreamTrackGenerator → <audio>
