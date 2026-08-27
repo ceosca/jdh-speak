@@ -327,6 +327,10 @@ function createAudioPipeline(track: MediaStreamTrack): Omit<PeerAudio, "consumer
 // them back on without fixing the underlying crackle first.
 const JAM_WT_MESH = false; // WT peer mesh playout
 const JAM_NETEQ_BYPASS = false; // encoded-transform NetEQ bypass
+// Raw-mic send (skip the outgoing soft limiter for ~6 ms less latency). OFF: it shipped a
+// CLIPPING signal for a hot mic/instrument — the "clipeando" everyone heard. Jam now sends
+// the limited track like normal mode; clean beats the 6 ms.
+const JAM_RAW_SEND = false;
 
 // Does this browser expose the Encoded Transform tap we use to bypass NetEQ?
 // Chrome/Edge yes; Safari/Firefox no → they just use NetEQ (no bypass, no harm).
@@ -1095,7 +1099,7 @@ export function useMediasoup() {
     const jam = store.getState().jamMode;
     const raw = localStreamRef.current?.getAudioTracks()[0] ?? null;
     const processed = outGraphRef.current?.outDest.stream.getAudioTracks()[0] ?? null;
-    const track = jam && raw ? raw : processed;
+    const track = JAM_RAW_SEND && jam && raw ? raw : processed;
     if (!track) return;
     if (modeRef.current === "sfu") {
       const producer = producerRef.current;
