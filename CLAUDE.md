@@ -155,8 +155,25 @@ returned via the server as a timing reference, à la Jamulus) and an **all-out
 latency stack**. Two DeviceSettings checkboxes: **"Modo ensayo"** (`jamMode`) and
 **"Monitoreo de red"** (`networkMonitor`).
 
-**⚠️⚠️ WHY JAM RUNS ON THE SFU, NOT P2P — this is the whole logic, do NOT "optimise"
-it away.** It is tempting to think "P2P is lower latency, so jam should use P2P."
+**🔻 REVERSED (2026-08-27) — JAM NO LONGER FORCES THE SFU; it uses P2P like normal.**
+The long argument below (kept as history) claimed jam MUST be SFU for a "shared timing
+hub." In practice that was wrong for THIS app: the custom mesh that would have used the
+hub is PARKED, so jam is just plain NetEQ audio — and forcing the SFU only added a
+**server hop** (your voice goes vos→Pi→peer instead of P2P's direct vos→peer). Cristian
+measured it (A/B: his words reached Iván LATER in jam than in normal, with everyone). It
+was NOT speculation — enumerate what jamMode changes and only the SFU-force ADDS latency;
+the tighter jitter buffer LOWERS it. So `room.jamMode` was removed from `shouldForceSfu`
+(`server/src/signaling.ts`): jam now uses the **same transport as normal** (P2P for ≤5,
+SFU for 6+) PLUS jam's tighter, user-tunable jitter buffer ⇒ **jam is faster than normal,
+not slower.** The **network monitor** still needs the SFU (self-return) and forces it on
+its own via `forceSfu` when enabled (`netMonitorForcedSfuRef`); recording, a caster, and
+manual Ctrl+Alt+S still pin the SFU too. So: want lowest latency → jam alone (P2P); want
+the self-return timing reference → also enable the monitor (accepts the SFU hop). **Do
+NOT re-add `room.jamMode` to `shouldForceSfu`** — it re-introduces the hop the user felt.
+
+<details><summary>History: the old "jam ⇒ SFU" doctrine (no longer in force)</summary>
+
+It is tempting to think "P2P is lower latency, so jam should use P2P."
 **That is wrong and it breaks the Jamulus model.** The reason is not speed, it's
 that an ensemble needs **one universal, shared timing reference** — a single hub
 everyone relates to. Only the SFU gives that:
@@ -172,14 +189,12 @@ everyone relates to. Only the SFU gives that:
   person hears is different and skewed** — there is no universal reference to
   synchronise to, and no way to know how far ahead to play for *everyone* at once.
   Worse, **the network monitor literally cannot exist in P2P** — no server returns
-  your own signal, so the timing reference you play against isn't there. Lower
-  per-link latency is useless if the ensemble can't share a clock.
+  your own signal, so the timing reference you play against isn't there.
 
-So: **jam ⇒ SFU is a correctness requirement, not a performance choice.** `jamMode`
-and `networkMonitor` both pin the room to the SFU on purpose. Never route jam over
-P2P "for speed" — you'd trade a working ensemble for a faster but unsynchronisable
-one. (The bypass work below shaves latency *within* the SFU path; that's the right
-place to optimise, not the transport topology.)
+The reversal above: for a small group the felt latency of the extra hop outweighs the
+theoretical shared-clock benefit (which the parked mesh wasn't even realising). The
+monitor keeps the SFU when you actually want the self-return.
+</details>
 
 **Room-wide (all-or-nobody).** `jamMode` is a **room-wide** toggle now, mirroring the
 force-SFU pattern exactly: the checkbox calls `onJamToggle` (registered in the store

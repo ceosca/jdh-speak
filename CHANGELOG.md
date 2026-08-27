@@ -8,6 +8,25 @@
 
 ---
 
+## 2026-08-27 (3)
+
+### Jam: DEJA de forzar SFU → usa P2P como el modo normal (raíz de "jam tiene más latencia")
+
+- **Síntoma (medido por Cristian, no especulativo):** en jam, su voz llegaba a los
+  parlantes de Iván con MÁS retardo que en modo normal, con todos. **Causa raíz:**
+  `jamMode` estaba en `shouldForceSfu`, así que jam **forzaba el SFU** → la voz hacía un
+  salto extra por el servidor (vos→Pi→peer) en vez del P2P directo del modo normal
+  (vos→peer). Enumerando lo que cambia jamMode, SOLO el force-SFU sumaba latencia; el
+  jitter buffer más chico la BAJA.
+- **Fix:** saqué `room.jamMode` de `shouldForceSfu` (`server/src/signaling.ts`). Ahora
+  jam usa el **mismo transporte que normal** (P2P ≤5, SFU 6+) + su buffer más ajustado ⇒
+  **jam es más rápido que normal, no más lento.** El **monitoreo de red** sigue
+  necesitando SFU y lo fuerza por su cuenta (`forceSfu`); grabación/caster/Ctrl+Alt+S
+  también. El re-tuneo del jitter buffer se aplica en vivo en receptores P2P y SFU al
+  togglear jam o mover el slider. Doctrina "jam ⇒ SFU" del CLAUDE.md **revertida**.
+- **Cambio de servidor** → requiere reiniciar el servicio (corta las llamadas activas;
+  reconectan).
+
 ## 2026-08-27 (2)
 
 ### Jam: el slider "Buffer de jitter" ahora controla el buffer REAL (en vivo)

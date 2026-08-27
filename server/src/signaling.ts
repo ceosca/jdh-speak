@@ -158,13 +158,21 @@ export function createSignalingServer(
   // media itself: while recording, or while a send-only "music caster" peer
   // (Ecobox) is present (a caster produces but never sets up P2P). P2P can also
   // be disabled outright for the room via the `?p2p=off` URL param.
+  //
+  // ⚠️ Jam mode does NOT force the SFU (it used to). Measured/enumerated: forcing the
+  // SFU routes your voice vos→Pi→peer instead of P2P's direct vos→peer — a real server
+  // hop that made jam SLOWER than normal for hearing each other (Cristian's A/B test:
+  // his words reached Iván later in jam than in normal). Everything else jam does is
+  // LOWER latency (tighter jitter buffer). So jam now uses the same transport as normal
+  // (P2P for ≤5) + its tighter buffer ⇒ jam is faster, not slower. The network monitor
+  // (self-return) still needs the SFU and forces it on its own via `forceSfu` when
+  // enabled; recording/caster/manual Ctrl+Alt+S still pin the SFU too.
   function shouldForceSfu(room: Room): boolean {
     return (
       recordingManager.isRecording(room.name) ||
       room.casters.size > 0 ||
       room.disableP2p ||
-      room.forceSfu ||
-      room.jamMode
+      room.forceSfu
     );
   }
 

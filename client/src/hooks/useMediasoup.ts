@@ -1082,25 +1082,28 @@ export function useMediasoup() {
   useEffect(() => {
     jamBoundsRef.current.minMs = jamBufferMinMs;
     jamBoundsRef.current.maxMs = jamBufferMaxMs;
-    if (!useRoomStore.getState().jamMode) return;
+    // Re-tune EVERY live receiver to the current mode's target, so both sliding the
+    // buffer AND toggling jam are heard immediately (no reconnect). jam → the slider;
+    // normal → the standard 50 ms. Works on P2P and SFU alike (jam is P2P now for ≤5).
+    const peerMs = jamMode ? jamBufferMinMs : JITTER_BUFFER_HINT * 1000;
     const applyTo = (rcv: RTCRtpReceiver | undefined | null, targetMs: number) => {
       if (!rcv) return;
       setReceiverJitterTarget(rcv, targetMs);
       const t = rcv.track as unknown as Record<string, number> | undefined;
       if (t && "playoutDelayHint" in t) t.playoutDelayHint = targetMs / 1000;
     };
-    // SFU peer consumers.
-    for (const pa of peerAudiosRef.current.values()) applyTo(pa.consumer?.rtpReceiver, jamBufferMinMs);
-    // P2P receivers.
+    for (const pa of peerAudiosRef.current.values()) applyTo(pa.consumer?.rtpReceiver, peerMs);
     for (const pc of p2pConnectionsRef.current.values()) {
       for (const r of pc.getReceivers()) {
-        if (r.track?.kind === "audio") applyTo(r, jamBufferMinMs);
+        if (r.track?.kind === "audio") applyTo(r, peerMs);
       }
     }
-    // Self-return monitor stays ≤8 ms (loopback) but follows the slider down.
-    const monMs = Math.min(jamBufferMinMs, MONITOR_JITTER_HINT * 1000);
+    // Self-return monitor stays ≤8 ms (loopback) but follows the slider down in jam.
+    const monMs = jamMode
+      ? Math.min(jamBufferMinMs, MONITOR_JITTER_HINT * 1000)
+      : MONITOR_JITTER_HINT * 1000;
     applyTo(netMonitorRef.current?.consumer?.rtpReceiver, monMs);
-  }, [jamBufferMinMs, jamBufferMaxMs]);
+  }, [jamBufferMinMs, jamBufferMaxMs, jamMode]);
 
   const netMonitorDeviceId = useRoomStore((s) => s.netMonitorDeviceId);
 
