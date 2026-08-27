@@ -232,10 +232,12 @@ const JITTER_BUFFER_HINT = 0.05;
 // jam is still tighter than normal — clean AND lower latency, on the standard path.
 const JAM_JITTER_HINT = 0.03;
 // The network-monitor return (your OWN producer, self-consumed via the SFU) is a
-// server LOOPBACK — very low jitter, no packet reordering between peers. So it can run a
-// much tighter cushion than peer audio without cutting, keeping "el audio que vuelve a
-// mí" as immediate as possible (it's the timing reference you play against).
-const MONITOR_JITTER_HINT = 0.015;
+// server LOOPBACK — very low jitter, no packet reordering between peers. And it's a
+// TIMING reference (you already know what you played), so occasional micro-drops matter
+// far less than latency. So it runs a much tighter cushion than peer audio: 8 ms, to
+// keep "el audio que vuelve a mí" as immediate as possible. Lower it further only if it
+// doesn't start cutting.
+const MONITOR_JITTER_HINT = 0.008;
 
 // Set the receiver-side jitter buffer target. `jitterBufferTarget` (RTCRtpReceiver,
 // Chrome 124+) is the modern, spec'd successor to the non-standard track
