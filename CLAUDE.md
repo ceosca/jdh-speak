@@ -386,7 +386,16 @@ server-relayed streams. **When building toward this, do not "simplify" jam into 
 P2P or GUI-only path — that would break both the Jamulus timing model (above) and
 the web-spectator requirement.**
 
-**✅ The native foundation now EXISTS: `native/jam_native.py`.** A headless Python jam
+**⚠️ PRIORITY (Cristian, set explicitly): the WEB app served from the Pi is the product.
+`native/jam_native.py` is a PARKED prototype — it runs on Windows (WDM-KS), NOT on the
+Pi, so it is NOT the main path.** The Python GUI is a "someday" thing, not now. Keep all
+real work on the **web/Pi** path: everything a user needs runs from the Pi (server, SFU,
+the WT jam relay, the served client) — never require the user's Windows for the app to
+work. Don't pour effort into the native client / ASIO / GUI unless Cristian asks; when in
+doubt, improve the web jam. The native prototype stays committed as the future GUI's
+foundation and as proof the WASAPI floor CAN be broken (below), but it's on the shelf.
+
+**✅ The native foundation EXISTS (parked): `native/jam_native.py`.** A headless Python jam
 client that does audio OUTSIDE the browser and joins the SAME WT `/jam` room as the
 browser mesh — the first concrete step of the GUI plan, and the answer to "break the
 WASAPI floor." **Measured on Cristian's box** (PortAudio via pip, no ASIO SDK):

@@ -1,5 +1,11 @@
 # JDH Speak — cliente nativo de jam (romper el piso de WASAPI)
 
+> ⚠️ **Esto es un PROTOTIPO parkeado.** La prioridad del proyecto es la **web servida
+> desde la Pi** — todo lo que un usuario necesita corre en la Pi. Este cliente es
+> **Windows-only** (WDM-KS) y NO corre en la Pi; es la base de una futura GUI en Python,
+> a hacer más adelante, no ahora. Se conserva como prueba de que el piso de WASAPI SÍ se
+> puede romper y como cimiento para cuando se retome. No es el camino central.
+
 Cliente **headless** en Python que toca en la MISMA sala de jam que la malla del
 navegador, pero haciendo el audio **fuera del navegador** para bajar la latencia por
 debajo del piso de WASAPI-shared de Chrome/Edge.
