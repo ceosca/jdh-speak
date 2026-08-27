@@ -150,15 +150,16 @@ class Engine:
         self.enc.open()
         self.enc_pts = 0
 
-    # audio callback (PortAudio realtime thread)
-    def audio_cb(self, indata, outdata, frames, tinfo, status):
-        # capture: mono float32
+    # capture callback (input stream, realtime thread)
+    def in_cb(self, indata, frames, tinfo, status):
         mono = indata[:, 0].copy() if indata.ndim > 1 else indata.copy()
         try:
             self.capture_q.put_nowait(mono)
         except queue.Full:
             pass
-        # playout: mix every sender's ring
+
+    # playout callback (output stream, realtime thread): mix every sender's ring
+    def out_cb(self, outdata, frames, tinfo, status):
         mix = np.zeros(frames, dtype=np.float32)
         with self.rings_lock:
             rings = list(self.rings.values())
@@ -204,6 +205,7 @@ class Engine:
                 self.rtts.append(time.time() * 1000 - st)
             except Exception:
                 pass
+            return  # self-echo is only for RTT; don't play it (mesh skips self, like browser)
         ch = d[4 + idlen]
         opus_off = 4 + idlen + 1 + 12
         if len(d) <= opus_off:
@@ -243,23 +245,26 @@ class Engine:
         cfg = QuicConfiguration(is_client=True, alpn_protocols=["h3"], max_datagram_frame_size=65536)
         cfg.verify_mode = ssl.CERT_NONE
         threading.Thread(target=self.encode_worker, daemon=True).start()
-        stream = None
+        instream = outstream = None
         if test:
             threading.Thread(target=self.synth_capture, daemon=True).start()
         else:
-            stream = sd.Stream(samplerate=SR, blocksize=FRAME, dtype="float32",
-                               channels=1, device=(dev_in, dev_out), latency="low",
-                               callback=self.audio_cb)
+            # SEPARATE streams: input and output can be different devices/host APIs, so
+            # output can use a low-latency WDM-KS device (~10 ms) even if the mic is on
+            # the Focusrite (WASAPI ~22 ms). Cross-device full-duplex isn't possible.
+            instream = sd.InputStream(samplerate=SR, blocksize=FRAME, dtype="float32",
+                                      channels=1, device=dev_in, latency="low", callback=self.in_cb)
+            outstream = sd.OutputStream(samplerate=SR, blocksize=FRAME, dtype="float32",
+                                        channels=2, device=dev_out, latency="low", callback=self.out_cb)
         async with connect(HOST, PORT, configuration=cfg,
                            create_protocol=lambda *a, **k: JamWT(*a, room=self.room, on_audio=self.on_audio, **k)) as client:
             self.wt = client
             client.open_session()
             await asyncio.wait_for(client.connected.wait(), 8)
-            if stream is not None:
-                li, lo = stream.latency
-                stream.start()
-                print(f"[audio] stream started — in {li*1000:.1f} ms / out {lo*1000:.1f} ms "
-                      f"(browser output ~23 ms). Playing. Ctrl+C to stop.")
+            if instream is not None:
+                instream.start(); outstream.start()
+                print(f"[audio] capture in {instream.latency*1000:.1f} ms | playout out "
+                      f"{outstream.latency*1000:.1f} ms  (browser output ~23 ms). Ctrl+C to stop.")
             else:
                 print("[test] synthetic capture; measuring native relay round-trip (self-echo).")
             t0 = time.time()
@@ -273,8 +278,9 @@ class Engine:
             except (KeyboardInterrupt, asyncio.CancelledError):
                 pass
             finally:
-                if stream is not None:
-                    stream.stop(); stream.close()
+                for s in (instream, outstream):
+                    if s is not None:
+                        s.stop(); s.close()
 
 def main():
     ap = argparse.ArgumentParser()
