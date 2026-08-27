@@ -1026,6 +1026,7 @@ export function useMediasoup() {
         return peer ? peer.volume : 1;
       },
       jamBoundsRef.current,
+      sharedAudioContext,
     );
     if (handle) {
       wtMeshRef.current = handle;

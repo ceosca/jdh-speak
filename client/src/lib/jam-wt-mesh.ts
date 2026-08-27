@@ -122,7 +122,8 @@ export function wtMeshSupported(): boolean {
 
 type MeshPeer = {
   decoder: AudioDecoder;
-  el: HTMLAudioElement;
+  el: HTMLAudioElement | null; // per-peer <audio> (fallback path, no master limiter)
+  src: MediaStreamAudioSourceNode | null; // context path: generator → src → master limiter
   ts: number;
   buf: AdaptiveJitterBuffer;
   appId: string; // the sender's app peerId (store key) → per-peer volume lookup
@@ -443,6 +444,7 @@ export async function setupWtMesh(
   localPeerId: string,
   getGain: (peerId: string) => number,
   bounds: JamBufferBounds,
+  audioCtx: AudioContext | null,
 ): Promise<WtMeshHandle | null> {
   if (!wtMeshSupported()) return null;
   const ch = channels === 2 ? 2 : 1;
@@ -454,11 +456,49 @@ export async function setupWtMesh(
   let myId = -1;
   let curDevice = deviceId;
 
+  // MASTER LIMITER: route every peer's generator through ONE DynamicsCompressor so the
+  // SUM of simultaneous players can't clip at the output — the send limiter only bounds
+  // each peer individually, but N players summing at the OS mixer can still exceed full
+  // scale (the "clipea aun con 3 tocando" case). Costs ~10 ms of AudioContext latency, so
+  // it engages only when an AudioContext is available and the chain builds; otherwise we
+  // fall back to the per-peer <audio> path (byte-for-byte the old behaviour). Fail-safe.
+  let masterComp: DynamicsCompressorNode | null = null;
+  let masterEl: HTMLAudioElement | null = null;
+  if (audioCtx) {
+    try {
+      if (audioCtx.state !== "running") void audioCtx.resume().catch(() => {});
+      masterComp = audioCtx.createDynamicsCompressor();
+      masterComp.threshold.value = -1; // only tame peaks approaching full scale
+      masterComp.knee.value = 0;
+      masterComp.ratio.value = 20; // brickwall-ish limiting
+      masterComp.attack.value = 0.003;
+      masterComp.release.value = 0.25;
+      const md = audioCtx.createMediaStreamDestination();
+      masterComp.connect(md);
+      masterEl = new Audio();
+      masterEl.autoplay = true;
+      (masterEl as unknown as Record<string, boolean>).playsInline = true;
+      masterEl.srcObject = md.stream;
+      if ("setSinkId" in masterEl) {
+        (masterEl as unknown as { setSinkId: (s: string) => Promise<void> })
+          .setSinkId(curDevice || "")
+          .catch(() => {});
+      }
+      masterEl.play().catch(() => {});
+    } catch {
+      masterComp = null;
+      masterEl = null;
+    }
+  }
+
   const closePeers = () => {
     for (const p of peers.values()) {
       try {
-        p.el.pause();
-        p.el.srcObject = null;
+        if (p.el) {
+          p.el.pause();
+          p.el.srcObject = null;
+        }
+        if (p.src) p.src.disconnect();
       } catch {
         /* gone */
       }
@@ -523,19 +563,29 @@ export async function setupWtMesh(
           },
         });
         decoder.configure({ codec: "opus", sampleRate: 48000, numberOfChannels: senderCh });
-        const el = new Audio();
-        el.autoplay = true;
-        (el as unknown as Record<string, boolean>).playsInline = true;
-        el.srcObject = new MediaStream([gen]);
-        if ("setSinkId" in el) {
-          (el as unknown as { setSinkId: (s: string) => Promise<void> })
-            .setSinkId(curDevice || "")
-            .catch(() => {});
+        let el: HTMLAudioElement | null = null;
+        let src: MediaStreamAudioSourceNode | null = null;
+        if (masterComp && audioCtx) {
+          // Context path: generator → source → shared master limiter → one <audio>.
+          src = audioCtx.createMediaStreamSource(new MediaStream([gen]));
+          src.connect(masterComp);
+        } else {
+          // Fallback: per-peer <audio> (no master limiter, lowest latency).
+          el = new Audio();
+          el.autoplay = true;
+          (el as unknown as Record<string, boolean>).playsInline = true;
+          el.srcObject = new MediaStream([gen]);
+          if ("setSinkId" in el) {
+            (el as unknown as { setSinkId: (s: string) => Promise<void> })
+              .setSinkId(curDevice || "")
+              .catch(() => {});
+          }
+          el.play().catch(() => {});
         }
-        el.play().catch(() => {});
         p = {
           decoder,
           el,
+          src,
           ts: 0,
           buf: new AdaptiveJitterBuffer(2.5, senderCh, bounds),
           appId: "",
@@ -666,9 +716,26 @@ export async function setupWtMesh(
       }
     })();
 
+    const setSink = (elem: HTMLAudioElement | null, id: string) => {
+      if (elem && "setSinkId" in elem) {
+        (elem as unknown as { setSinkId: (s: string) => Promise<void> })
+          .setSinkId(id || "")
+          .catch(() => {});
+      }
+    };
+
     return {
       teardown: () => {
         closePeers();
+        try {
+          if (masterEl) {
+            masterEl.pause();
+            masterEl.srcObject = null;
+          }
+          if (masterComp) masterComp.disconnect();
+        } catch {
+          /* gone */
+        }
         try {
           if (encoder && encoder.state !== "closed") encoder.close();
         } catch {
@@ -682,13 +749,8 @@ export async function setupWtMesh(
       },
       setDevice: (id: string) => {
         curDevice = id;
-        for (const p of peers.values()) {
-          if ("setSinkId" in p.el) {
-            (p.el as unknown as { setSinkId: (s: string) => Promise<void> })
-              .setSinkId(id || "")
-              .catch(() => {});
-          }
-        }
+        setSink(masterEl, id); // context path: one shared output element
+        for (const p of peers.values()) setSink(p.el, id); // fallback path: per-peer
       },
     };
   } catch {
