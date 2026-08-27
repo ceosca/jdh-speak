@@ -8,6 +8,33 @@
 
 ---
 
+## 2026-08-26 (2)
+
+### Jam: clipping + crackling de raíz (limitadores + resampler sin GC + RED anti-pérdida)
+
+Franco/Edu clipeaban y crujían **aun con el buffer en 100** (buffer-independiente).
+Diagnóstico en vivo (extensión en la máquina de Cristian, sala real): `lost:1004`,
+`underruns:621` en ~5 s → **el crackle es PÉRDIDA DE PAQUETES**, que ningún buffer tapa.
+Cuatro causas de raíz, cuatro arreglos:
+
+1. **Clipping en origen** — el envío de jam saltea el limitador (micro crudo). Agregado
+   un **limitador soft sin latencia** (tanh, rodilla 0.7) en `encodeFrame` (malla +
+   monitor): un micro caliente ya no manda señal saturada.
+2. **Crackle por GC en laptops** — el `StreamResampler` asignaba ~4 arrays por trama por
+   canal (400 fps × N peers) → pausas de GC. Reescrito **sin asignar** (ring preasignado
+   + buffers reusados). Verificado byte-idéntico al anterior.
+3. **Clipping por SUMA** de varios que tocan a la vez — cada peer ≤1 pero la suma en la
+   salida del SO clipea. Agregado un **limitador maestro**: todos los peers van por un
+   `DynamicsCompressor` compartido → un `<audio>`. Cuesta ~10 ms de AudioContext; fail-safe
+   al camino por-peer si no hay contexto.
+4. **Pérdida de paquetes** (la raíz principal del crackle) — datagramas WT no son
+   confiables. Agregado **RED**: cada datagrama lleva también el frame Opus ANTERIOR, así
+   una pérdida aislada se recupera del siguiente (a 2.5 ms/frame, ~2.5 ms de latencia de
+   recuperación). Verificado: con un datagrama caído, el frame se recupera, orden intacto.
+   El lector en vivo ahora muestra `recuperados` y `perdidos`.
+
+- **⚠️ Cambió el formato de paquete** (RED + limitador) → **todos deben recargar a la vez**.
+
 ## 2026-08-26
 
 ### Cliente nativo de jam (romper el piso de WASAPI) + interop navegador

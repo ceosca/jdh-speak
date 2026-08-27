@@ -161,7 +161,8 @@ export type JamMeshStats = {
   drops: number;
   ppm: number;
   underruns: number;
-  lost: number;
+  lost: number; // datagrams lost AND unrecoverable (after RED)
+  recovered: number; // frames recovered from the redundant copy (RED)
 };
 export function jamMeshStats(): JamMeshStats {
   const g = globalThis as unknown as { __jamMeshStats?: JamMeshStats };
@@ -173,6 +174,7 @@ export function jamMeshStats(): JamMeshStats {
     ppm: 0,
     underruns: 0,
     lost: 0,
+    recovered: 0,
   });
 }
 // Minimal shape the buffer needs from a decoded frame (real WebCodecs AudioData
@@ -600,16 +602,23 @@ export async function setupWtMesh(
 
     // --- Send: mic → WebCodecs Opus 2.5 ms → [1][seq][sendTime][opus]. ---
     let seq = 0;
+    let prevChunk: Uint8Array | null = null; // previous Opus frame, sent redundantly (RED)
     encoder = new AudioEncoder({
       output: (chunk) => {
         try {
-          // [0x01][idLen:u8][appId][ch:u8][seq:4][sendTime:8][opus]. The relay prepends
-          // our senderId and forwards the rest verbatim, so stamping our peerId (for
-          // per-peer volume) and OUR channel count (so the receiver decodes mono/stereo
-          // correctly regardless of ITS own mic) needs no relay/server change.
+          // [0x01][idLen:u8][appId][ch:u8][seq:4][sendTime:8][prevLen:u16][prevOpus][opus].
+          // RED redundancy: each datagram also carries the PREVIOUS frame's Opus, so a
+          // single lost datagram is recovered from the next one (WT datagrams are
+          // unreliable → loss was the crackle root). The relay prepends our senderId and
+          // forwards the rest verbatim; peerId (per-peer volume) and channel count ride
+          // along too — no relay/server change.
+          const cur = new Uint8Array(chunk.byteLength);
+          chunk.copyTo(cur);
+          const prev = prevChunk;
+          const prevLen = prev ? prev.byteLength : 0;
           const idLen = localIdBytes.length;
-          const headLen = 1 + 1 + idLen + 1 + 4 + 8;
-          const buf = new ArrayBuffer(headLen + chunk.byteLength);
+          const headLen = 1 + 1 + idLen + 1 + 4 + 8 + 2;
+          const buf = new ArrayBuffer(headLen + prevLen + cur.byteLength);
           const dv = new DataView(buf);
           const u8 = new Uint8Array(buf);
           dv.setUint8(0, 0x01);
@@ -622,9 +631,16 @@ export async function setupWtMesh(
           o += 4;
           dv.setFloat64(o, performance.now(), true);
           o += 8;
-          chunk.copyTo(new Uint8Array(buf, o));
+          dv.setUint16(o, prevLen, true);
+          o += 2;
+          if (prev) {
+            u8.set(prev, o);
+            o += prevLen;
+          }
+          u8.set(cur, o);
           seq = (seq + 1) >>> 0;
           writer.write(u8).catch(() => {});
+          prevChunk = cur;
         } catch {
           /* skip */
         }
@@ -681,36 +697,43 @@ export async function setupWtMesh(
           continue;
         }
         if (type === 0x01 && v.byteLength > 4) {
-          // [0x01][senderId:u16][idLen:u8][appId][ch:u8][seq:4][sendTime:8][opus]
+          // [0x01][senderId:u16][idLen:u8][appId][ch:u8][seq:4][sendTime:8][prevLen:u16][prevOpus][opus]
           const senderId = dv.getUint16(1, true);
           if (senderId === myId) continue; // our own return → the /echo monitor's job
           const idLen = v[3];
           const senderCh = v[4 + idLen] === 2 ? 2 : 1;
           const seqOffset = 4 + idLen + 1; // after appId + ch byte
-          const opusOffset = seqOffset + 12; // seq(4) + sendTime(8)
+          const prevLenOffset = seqOffset + 12; // seq(4) + sendTime(8)
+          if (v.byteLength < prevLenOffset + 2) continue;
+          const prevLen = dv.getUint16(prevLenOffset, true);
+          const prevOpusOffset = prevLenOffset + 2;
+          const opusOffset = prevOpusOffset + prevLen; // current frame's Opus
           if (v.byteLength <= opusOffset) continue;
           const p = ensurePeer(senderId, senderCh);
-          if (p) {
+          if (p && p.decoder.state === "configured") {
             if (idLen > 0) p.appId = new TextDecoder().decode(v.subarray(4, 4 + idLen));
-            // Count lost datagrams via seq gaps (WebTransport datagrams are unreliable).
-            // This is the key diagnostic: cuts from LOST packets can't be fixed by a
-            // bigger buffer — they need FEC/PLC or the mediasoup fallback.
             const seq = dv.getUint32(seqOffset, true);
-            if (p.lastSeq >= 0) {
-              const gap = (seq - p.lastSeq - 1) | 0;
-              if (gap > 0 && gap < 1000) stats.lost += gap;
-            }
-            p.lastSeq = seq;
-            if (p.decoder.state === "configured") {
+            const decode = (data: Uint8Array) => {
               try {
-                p.decoder.decode(
-                  new EncodedAudioChunk({ type: "key", timestamp: p.ts, data: v.slice(opusOffset) }),
-                );
+                p.decoder.decode(new EncodedAudioChunk({ type: "key", timestamp: p.ts, data }));
                 p.ts += 2500;
               } catch {
                 /* skip */
               }
+            };
+            if (p.lastSeq >= 0) {
+              const gap = (seq - p.lastSeq - 1) | 0;
+              if (gap === 1 && prevLen > 0) {
+                // Exactly one datagram lost → recover it from the redundant copy (RED),
+                // decoded BEFORE the current frame so the stream stays in order.
+                decode(v.subarray(prevOpusOffset, opusOffset));
+                stats.recovered++;
+              } else if (gap > 0 && gap < 1000) {
+                stats.lost += gap; // 2+ consecutive lost → unrecoverable by single-frame RED
+              }
             }
+            p.lastSeq = seq;
+            decode(v.subarray(opusOffset));
           }
         }
       }

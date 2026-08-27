@@ -77,8 +77,8 @@ export function DeviceSettings() {
   const [liveBuf, setLiveBuf] = useState<{
     bufferedMs: number;
     jitterMs: number;
-    underruns: number;
     lost: number;
+    recovered: number;
   } | null>(null);
   useEffect(() => {
     if (!jamMode) {
@@ -91,8 +91,8 @@ export function DeviceSettings() {
           __jamMeshStats?: {
             bufferedMs: number;
             jitterMs: number;
-            underruns: number;
             lost: number;
+            recovered: number;
           };
         }
       ).__jamMeshStats;
@@ -100,8 +100,8 @@ export function DeviceSettings() {
         setLiveBuf({
           bufferedMs: s.bufferedMs,
           jitterMs: s.jitterMs,
-          underruns: s.underruns,
           lost: s.lost,
+          recovered: s.recovered,
         });
     }, 1000);
     return () => window.clearInterval(id);
@@ -307,7 +307,7 @@ export function DeviceSettings() {
                 {m.settings_jam_buffer_live({
                   buffered: liveBuf.bufferedMs,
                   jitter: liveBuf.jitterMs,
-                  underruns: liveBuf.underruns,
+                  recovered: liveBuf.recovered,
                   lost: liveBuf.lost,
                 })}
               </p>
