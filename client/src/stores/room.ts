@@ -70,7 +70,7 @@ function loadFileVolume(): number {
 // audio entirely (min can go to 0 = "as tight as possible"; max caps at 200 ms).
 export const JAM_BUF_MIN_LIMIT = 0;
 export const JAM_BUF_MAX_LIMIT = 200;
-const JAM_BUF_MIN_DEFAULT = 8;
+const JAM_BUF_MIN_DEFAULT = 30;
 const JAM_BUF_MAX_DEFAULT = 60;
 function loadJamBufferMs(key: string, def: number): number {
   try {

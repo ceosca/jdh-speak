@@ -8,6 +8,19 @@
 
 ---
 
+## 2026-08-27 (2)
+
+### Jam: el slider "Buffer de jitter" ahora controla el buffer REAL (en vivo)
+
+Cristian aclaró lo que esperaba del slider: que baje/suba el buffer de **todo** lo que
+escucha — menos = menos latencia general + más riesgo de cortes; más = estable. Estaba
+inerte (controlaba la malla muerta). Ahora está cableado al `jitterBufferTarget` de NetEQ
+de **cada receptor** (consumers SFU + P2P), y se aplica **en vivo** mientras lo movés (sin
+reconectar) — `setReceiverJitterTarget(rcv, ms)` + `playoutDelayHint`, recorriendo
+`peerAudiosRef` y `p2pConnectionsRef` en el effect del slider. El retorno propio (monitor)
+se mantiene ≤8 ms (loopback) pero sigue al slider hacia abajo. Default 30 ms (limpio, <50
+del normal). Descripción del slider actualizada. Solo cliente → build, sin reinicio.
+
 ## 2026-08-27
 
 ### Jam: abandonar la malla custom — usar el camino LIMPIO de mediasoup

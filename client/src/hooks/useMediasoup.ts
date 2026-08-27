@@ -226,12 +226,10 @@ const AUDIO_EXTENSIONS = new Set(["mp3", "m4a", "aac", "ogg", "opus", "wav", "fl
 // browser's adaptive buffer (NetEQ) absorb those short jitter bursts. Receiver
 // side only, applied to BOTH P2P and SFU received tracks. Tunable.
 const JITTER_BUFFER_HINT = 0.05;
-// Jam receive cushion (seconds). NOT 0: the mesh is gone, so jam now plays through NetEQ
-// like normal mode, and a 0 target makes NetEQ choppy on the slightest reordering (see
-// JITTER_BUFFER_HINT note). 30 ms is a real cushion (clean) but below normal's 50 ms, so
-// jam is still tighter than normal — clean AND lower latency, on the standard path.
-const JAM_JITTER_HINT = 0.03;
-// The network-monitor return (your OWN producer, self-consumed via the SFU) is a
+// Jam receive cushion: NOT 0 (0 makes NetEQ choppy on the slightest reordering — see
+// above). It's now the user's "Buffer de jitter" slider (jamBufferMinMs, ms), applied
+// live to every receiver, so they trade latency vs stability themselves; default 30 ms
+// (clean, below normal's 50). The network-monitor return (your OWN producer, self-consumed via the SFU) is a
 // server LOOPBACK — very low jitter, no packet reordering between peers. And it's a
 // TIMING reference (you already know what you played), so occasional micro-drops matter
 // far less than latency. So it runs a much tighter cushion than peer audio: 8 ms, to
@@ -248,12 +246,13 @@ const MONITOR_JITTER_HINT = 0.008;
 // new one for Chrome 124+, the old hint as a fallback for anything older/Firefox.
 // Wrapped in try/catch because the setter throws RangeError outside [0, 4000] and
 // isn't present on every engine.
-function setReceiverJitterTarget(receiver: RTCRtpReceiver | undefined, jam: boolean) {
+function setReceiverJitterTarget(receiver: RTCRtpReceiver | undefined, targetMs: number) {
   if (!receiver || !("jitterBufferTarget" in receiver)) return;
   try {
-    (receiver as unknown as Record<string, number | null>).jitterBufferTarget = jam
-      ? JAM_JITTER_HINT * 1000
-      : JITTER_BUFFER_HINT * 1000;
+    (receiver as unknown as Record<string, number | null>).jitterBufferTarget = Math.max(
+      0,
+      Math.min(4000, targetMs),
+    );
   } catch {
     /* unsupported value/engine — the playoutDelayHint fallback still applies */
   }
@@ -1073,14 +1072,34 @@ export function useMediasoup() {
     if (wtMeshRef.current) wtMeshRef.current.setDevice(speakerDeviceId);
   }, [jamMode, speakerDeviceId, applyJamMesh]);
 
-  // Jitter-buffer sliders: mutate the SHARED bounds object in place so every running
-  // jam buffer (mesh peers, WT monitor, generator monitor) adopts the new min/max live,
-  // no rebuild and no dropped audio.
+  // "Buffer de jitter" slider (jamBufferMinMs, ms): the ONE knob for jam latency. It sets
+  // the NetEQ jitterBufferTarget for everyone you hear — lower = less latency but more
+  // crackle risk, higher = more stable. Applied LIVE to every active receiver (SFU
+  // consumers + P2P) so sliding it is heard immediately, no reconnect. The self-return
+  // monitor auto-stays tighter (≤8 ms) but follows the slider down.
   const jamBufferMinMs = useRoomStore((s) => s.jamBufferMinMs);
   const jamBufferMaxMs = useRoomStore((s) => s.jamBufferMaxMs);
   useEffect(() => {
     jamBoundsRef.current.minMs = jamBufferMinMs;
     jamBoundsRef.current.maxMs = jamBufferMaxMs;
+    if (!useRoomStore.getState().jamMode) return;
+    const applyTo = (rcv: RTCRtpReceiver | undefined | null, targetMs: number) => {
+      if (!rcv) return;
+      setReceiverJitterTarget(rcv, targetMs);
+      const t = rcv.track as unknown as Record<string, number> | undefined;
+      if (t && "playoutDelayHint" in t) t.playoutDelayHint = targetMs / 1000;
+    };
+    // SFU peer consumers.
+    for (const pa of peerAudiosRef.current.values()) applyTo(pa.consumer?.rtpReceiver, jamBufferMinMs);
+    // P2P receivers.
+    for (const pc of p2pConnectionsRef.current.values()) {
+      for (const r of pc.getReceivers()) {
+        if (r.track?.kind === "audio") applyTo(r, jamBufferMinMs);
+      }
+    }
+    // Self-return monitor stays ≤8 ms (loopback) but follows the slider down.
+    const monMs = Math.min(jamBufferMinMs, MONITOR_JITTER_HINT * 1000);
+    applyTo(netMonitorRef.current?.consumer?.rtpReceiver, monMs);
   }, [jamBufferMinMs, jamBufferMaxMs]);
 
   const netMonitorDeviceId = useRoomStore((s) => s.netMonitorDeviceId);
@@ -1561,22 +1580,14 @@ export function useMediasoup() {
           typeof recvTransport.consume
         >[0]["rtpParameters"],
       });
-      // Tight buffer on the return — it's a low-jitter server loopback, so it can be
-      // much closer to the edge than peer audio without cutting (this IS the latency you
-      // play against, so keep it minimal).
+      // Tight buffer on the return — it's a low-jitter server loopback + a timing
+      // reference, so it stays at ≤8 ms (auto-tighter than peers) but follows the slider
+      // DOWN if the user pushes it below that.
+      const monMs = Math.min(jamBoundsRef.current.minMs, MONITOR_JITTER_HINT * 1000);
       if ("playoutDelayHint" in consumer.track) {
-        (consumer.track as unknown as Record<string, number>).playoutDelayHint =
-          MONITOR_JITTER_HINT;
+        (consumer.track as unknown as Record<string, number>).playoutDelayHint = monMs / 1000;
       }
-      const monRcv = consumer.rtpReceiver;
-      if (monRcv && "jitterBufferTarget" in monRcv) {
-        try {
-          (monRcv as unknown as Record<string, number>).jitterBufferTarget =
-            MONITOR_JITTER_HINT * 1000;
-        } catch {
-          /* unsupported value/engine */
-        }
-      }
+      setReceiverJitterTarget(consumer.rtpReceiver, monMs);
 
       // Lowest-latency monitor (jam + Chrome/Edge + flagged recv): decode the tapped
       // frames ourselves and play them through a MediaStreamTrackGenerator → <audio>
@@ -1752,12 +1763,13 @@ export function useMediasoup() {
       pc.ontrack = (e) => {
         const remoteTrack = e.track;
         const jam = useRoomStore.getState().jamMode;
+        const jamMs = jamBoundsRef.current.minMs; // live from the "Buffer de jitter" slider
         if ("playoutDelayHint" in remoteTrack) {
           (remoteTrack as unknown as Record<string, number>).playoutDelayHint = jam
-            ? JAM_JITTER_HINT
+            ? jamMs / 1000
             : JITTER_BUFFER_HINT;
         }
-        setReceiverJitterTarget(e.receiver, jam);
+        setReceiverJitterTarget(e.receiver, jam ? jamMs : JITTER_BUFFER_HINT * 1000);
         const pipeline = createAudioPipeline(remoteTrack);
         // Respect deafen / per-peer volume on a (re)built P2P pipeline too —
         // otherwise an SFU→P2P switch resets everyone to full volume and a
@@ -1880,12 +1892,13 @@ export function useMediasoup() {
 
       {
         const jam = useRoomStore.getState().jamMode;
+        const jamMs = jamBoundsRef.current.minMs; // live from the "Buffer de jitter" slider
         if ("playoutDelayHint" in consumer.track) {
           (consumer.track as unknown as Record<string, number>).playoutDelayHint = jam
-            ? JAM_JITTER_HINT
+            ? jamMs / 1000
             : JITTER_BUFFER_HINT;
         }
-        setReceiverJitterTarget(consumer.rtpReceiver, jam);
+        setReceiverJitterTarget(consumer.rtpReceiver, jam ? jamMs : JITTER_BUFFER_HINT * 1000);
       }
 
       const pipeline = createAudioPipeline(consumer.track);
