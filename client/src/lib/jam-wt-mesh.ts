@@ -602,23 +602,27 @@ export async function setupWtMesh(
 
     // --- Send: mic → WebCodecs Opus 2.5 ms → [1][seq][sendTime][opus]. ---
     let seq = 0;
-    let prevChunk: Uint8Array | null = null; // previous Opus frame, sent redundantly (RED)
+    // RED redundancy: carry the previous RED_DEPTH Opus frames in each datagram, so a
+    // burst of up to RED_DEPTH consecutive lost datagrams is still recovered from a later
+    // one. 2 → recovers isolated losses AND 2-bursts (internet loss is often bursty; the
+    // live diagnostic showed heavy loss). Cost: ~3× the tiny Opus payload.
+    const RED_DEPTH = 2;
+    const prevChunks: Uint8Array[] = []; // most-recent-first
     encoder = new AudioEncoder({
       output: (chunk) => {
         try {
-          // [0x01][idLen:u8][appId][ch:u8][seq:4][sendTime:8][prevLen:u16][prevOpus][opus].
-          // RED redundancy: each datagram also carries the PREVIOUS frame's Opus, so a
-          // single lost datagram is recovered from the next one (WT datagrams are
-          // unreliable → loss was the crackle root). The relay prepends our senderId and
-          // forwards the rest verbatim; peerId (per-peer volume) and channel count ride
-          // along too — no relay/server change.
+          // [0x01][idLen:u8][appId][ch:u8][seq:4][sendTime:8][cnt:u8] then cnt×
+          // [len:u16][opus], newest first (frames[0]=current seq, frames[i]=seq−i). The
+          // relay prepends our senderId and forwards the rest verbatim; peerId (per-peer
+          // volume) and channel count ride along too — no relay/server change.
           const cur = new Uint8Array(chunk.byteLength);
           chunk.copyTo(cur);
-          const prev = prevChunk;
-          const prevLen = prev ? prev.byteLength : 0;
+          const frames = [cur, ...prevChunks]; // newest first
           const idLen = localIdBytes.length;
-          const headLen = 1 + 1 + idLen + 1 + 4 + 8 + 2;
-          const buf = new ArrayBuffer(headLen + prevLen + cur.byteLength);
+          const headLen = 1 + 1 + idLen + 1 + 4 + 8 + 1;
+          let payload = 0;
+          for (const f of frames) payload += 2 + f.byteLength;
+          const buf = new ArrayBuffer(headLen + payload);
           const dv = new DataView(buf);
           const u8 = new Uint8Array(buf);
           dv.setUint8(0, 0x01);
@@ -631,16 +635,18 @@ export async function setupWtMesh(
           o += 4;
           dv.setFloat64(o, performance.now(), true);
           o += 8;
-          dv.setUint16(o, prevLen, true);
-          o += 2;
-          if (prev) {
-            u8.set(prev, o);
-            o += prevLen;
+          dv.setUint8(o, frames.length);
+          o += 1;
+          for (const f of frames) {
+            dv.setUint16(o, f.byteLength, true);
+            o += 2;
+            u8.set(f, o);
+            o += f.byteLength;
           }
-          u8.set(cur, o);
           seq = (seq + 1) >>> 0;
           writer.write(u8).catch(() => {});
-          prevChunk = cur;
+          prevChunks.unshift(cur); // newest first
+          if (prevChunks.length > RED_DEPTH) prevChunks.length = RED_DEPTH;
         } catch {
           /* skip */
         }
@@ -697,18 +703,35 @@ export async function setupWtMesh(
           continue;
         }
         if (type === 0x01 && v.byteLength > 4) {
-          // [0x01][senderId:u16][idLen:u8][appId][ch:u8][seq:4][sendTime:8][prevLen:u16][prevOpus][opus]
+          // [0x01][senderId:u16][idLen:u8][appId][ch:u8][seq:4][sendTime:8][cnt:u8] then
+          // cnt×[len:u16][opus], newest first (frames[0]=seq, frames[i]=seq−i).
           const senderId = dv.getUint16(1, true);
           if (senderId === myId) continue; // our own return → the /echo monitor's job
           const idLen = v[3];
           const senderCh = v[4 + idLen] === 2 ? 2 : 1;
           const seqOffset = 4 + idLen + 1; // after appId + ch byte
-          const prevLenOffset = seqOffset + 12; // seq(4) + sendTime(8)
-          if (v.byteLength < prevLenOffset + 2) continue;
-          const prevLen = dv.getUint16(prevLenOffset, true);
-          const prevOpusOffset = prevLenOffset + 2;
-          const opusOffset = prevOpusOffset + prevLen; // current frame's Opus
-          if (v.byteLength <= opusOffset) continue;
+          const cntOffset = seqOffset + 12; // seq(4) + sendTime(8)
+          if (v.byteLength <= cntOffset) continue;
+          const cnt = v[cntOffset];
+          // Parse the cnt length-prefixed Opus frames.
+          const frames: Uint8Array[] = [];
+          let fo = cntOffset + 1;
+          let okParse = true;
+          for (let i = 0; i < cnt; i++) {
+            if (fo + 2 > v.byteLength) {
+              okParse = false;
+              break;
+            }
+            const len = dv.getUint16(fo, true);
+            fo += 2;
+            if (fo + len > v.byteLength) {
+              okParse = false;
+              break;
+            }
+            frames.push(v.subarray(fo, fo + len));
+            fo += len;
+          }
+          if (!okParse || frames.length === 0) continue;
           const p = ensurePeer(senderId, senderCh);
           if (p && p.decoder.state === "configured") {
             if (idLen > 0) p.appId = new TextDecoder().decode(v.subarray(4, 4 + idLen));
@@ -722,18 +745,20 @@ export async function setupWtMesh(
               }
             };
             if (p.lastSeq >= 0) {
-              const gap = (seq - p.lastSeq - 1) | 0;
-              if (gap === 1 && prevLen > 0) {
-                // Exactly one datagram lost → recover it from the redundant copy (RED),
-                // decoded BEFORE the current frame so the stream stays in order.
-                decode(v.subarray(prevOpusOffset, opusOffset));
-                stats.recovered++;
-              } else if (gap > 0 && gap < 1000) {
-                stats.lost += gap; // 2+ consecutive lost → unrecoverable by single-frame RED
+              // Recover every missing seq in (lastSeq, seq) it carries a copy of, OLDEST
+              // first so the stream stays in order; count the rest as truly lost.
+              for (let missing = p.lastSeq + 1; missing < seq; missing++) {
+                const idx = (seq - missing) | 0; // frames[idx] holds frame `missing`
+                if (idx > 0 && idx < frames.length) {
+                  decode(frames[idx]);
+                  stats.recovered++;
+                } else if (seq - missing < 1000) {
+                  stats.lost++;
+                }
               }
             }
             p.lastSeq = seq;
-            decode(v.subarray(opusOffset));
+            decode(frames[0]); // current
           }
         }
       }

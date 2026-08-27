@@ -28,10 +28,12 @@ Cuatro causas de raíz, cuatro arreglos:
    `DynamicsCompressor` compartido → un `<audio>`. Cuesta ~10 ms de AudioContext; fail-safe
    al camino por-peer si no hay contexto.
 4. **Pérdida de paquetes** (la raíz principal del crackle) — datagramas WT no son
-   confiables. Agregado **RED**: cada datagrama lleva también el frame Opus ANTERIOR, así
-   una pérdida aislada se recupera del siguiente (a 2.5 ms/frame, ~2.5 ms de latencia de
-   recuperación). Verificado: con un datagrama caído, el frame se recupera, orden intacto.
-   El lector en vivo ahora muestra `recuperados` y `perdidos`.
+   confiables. Agregado **RED**: cada datagrama lleva también los **2 frames Opus
+   anteriores** (`RED_DEPTH=2`), así una pérdida aislada Y una **ráfaga de hasta 2
+   seguidos** se recuperan de un datagrama posterior (a 2.5 ms/frame, latencia de
+   recuperación mínima). Verificado: ráfaga de 2 caídos → recuperada entera, orden
+   intacto; ráfaga de 3 → recupera 2, reporta 1 perdido. El lector en vivo muestra
+   `recuperados` y `perdidos`. Costo: ~3× el payload Opus (que es diminuto).
 
 - **⚠️ Cambió el formato de paquete** (RED + limitador) → **todos deben recargar a la vez**.
 
