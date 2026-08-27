@@ -1105,6 +1105,53 @@ export function useMediasoup() {
     applyTo(netMonitorRef.current?.consumer?.rtpReceiver, monMs);
   }, [jamBufferMinMs, jamBufferMaxMs, jamMode]);
 
+  // MEASURED receive latency (objective, from getStats): the NetEQ jitterBufferDelay per
+  // incoming audio stream, windowed over the last second, averaged across peers. This is
+  // the part of mouth-to-ear latency that differs between jam and normal — so comparing
+  // this number in jam vs normal is the objective A/B (no ear needed). Exposed on
+  // window.__rxLatencyMs and surfaced in the settings readout.
+  const rxPrevRef = useRef(new WeakMap<RTCRtpReceiver, { delay: number; count: number }>());
+  useEffect(() => {
+    const id = window.setInterval(async () => {
+      const receivers: RTCRtpReceiver[] = [];
+      for (const pa of peerAudiosRef.current.values()) {
+        if (pa.consumer?.rtpReceiver) receivers.push(pa.consumer.rtpReceiver);
+      }
+      for (const pc of p2pConnectionsRef.current.values()) {
+        for (const r of pc.getReceivers()) if (r.track?.kind === "audio") receivers.push(r);
+      }
+      let sum = 0;
+      let n = 0;
+      for (const r of receivers) {
+        try {
+          const stats = await r.getStats();
+          stats.forEach((s: Record<string, unknown>) => {
+            if (
+              s.type === "inbound-rtp" &&
+              s.kind === "audio" &&
+              typeof s.jitterBufferDelay === "number" &&
+              typeof s.jitterBufferEmittedCount === "number"
+            ) {
+              const delay = s.jitterBufferDelay as number;
+              const count = s.jitterBufferEmittedCount as number;
+              const prev = rxPrevRef.current.get(r);
+              if (prev && count > prev.count) {
+                sum += ((delay - prev.delay) / (count - prev.count)) * 1000;
+                n++;
+              }
+              rxPrevRef.current.set(r, { delay, count });
+            }
+          });
+        } catch {
+          /* receiver gone */
+        }
+      }
+      (window as unknown as { __rxLatencyMs: number | null }).__rxLatencyMs =
+        n > 0 ? +(sum / n).toFixed(0) : null;
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
   const netMonitorDeviceId = useRoomStore((s) => s.netMonitorDeviceId);
 
   // Mid-call mic setting change: re-acquire the mic with the selected device
