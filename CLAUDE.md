@@ -121,6 +121,24 @@ A send-only "music caster" peer joins with `role: "caster"` (see `joinSchema`). 
 
 ### Jam mode / "Modo ensayo" (low-latency ensemble) — branch `feat/webtransport-jam`
 
+> **🚨 CURRENT STATE (2026-08-27) — READ THIS FIRST, the long section below is HISTORY.**
+> The whole custom low-latency audio pipeline described below — the **WT peer mesh**
+> (Opus 2.5 ms → our jitter buffer → `MediaStreamTrackGenerator`) AND the **NetEQ bypass**
+> (`encodedInsertableStreams`) AND the **raw-mic send** — **crackled and clipped for
+> EVERYONE, on every machine** (not laptops, not one bad link). The standard
+> mediasoup/WebRTC/**NetEQ** path (what "modo normal" uses) is clean. So it's all
+> **PARKED behind kill-switch flags** in `useMediasoup.ts`: `JAM_WT_MESH=false`,
+> `JAM_NETEQ_BYPASS=false`, `JAM_RAW_SEND=false`. **Jam now plays peers through the SAME
+> clean NetEQ path as normal mode**, with: the outgoing **limiter ON** (no clipping), and
+> a **real jitter cushion** (`JAM_JITTER_HINT`=30 ms peers, `MONITOR_JITTER_HINT`=15 ms on
+> the self-return loopback) instead of the old choppy 0. **CONFIRMED clean+non-cutting by
+> Cristian.** The custom stuff (mesh, RED, resampler, master limiter, WT monitor, native
+> client) stays committed as a parked experiment — do NOT flip those flags back on unless
+> the underlying crackle is actually fixed. Remaining latency lever (not yet done): make
+> jam **NOT force SFU** (go P2P like normal) to drop the relay hop — clean, pure latency
+> win, but a server change. Everything after this box is the OLD mesh design, kept for
+> reference; treat it as history, not the live behaviour.
+
 > **For Edu's Claude (and future me):** this whole feature lives on the branch
 > **`feat/webtransport-jam`**, NOT on `main`. **The Pi's live deployment currently
 > runs this branch** (`git -C /home/pi/jdh-speak branch` to confirm). It's still in
