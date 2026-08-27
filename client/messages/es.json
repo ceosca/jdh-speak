@@ -201,6 +201,7 @@
   "settings_jam_label": "Modo ensayo (instrumentos)",
   "settings_jam_hint": "Latencia al mínimo para tocar en vivo: micrófono sin procesar (sin cancelación de eco ni supresión de ruido) y buffer mínimo. Usa una interfaz de audio y escúchate por su monitor directo por hardware, no por el navegador.",
   "settings_jam_buffer_hint": "Buffer de jitter: cada uno ajusta el suyo.",
+  "settings_jam_measured": "Latencia medida — recepción {rx} ms · ida y vuelta a los demás {rtt} ms. Compará este número en normal vs jam.",
   "settings_jam_buffer_label": "Buffer de jitter",
   "settings_jam_buffer_desc": "Controla el retardo de TODO lo que escuchás. Más bajo = menos latencia entre todos, pero más riesgo de que se entrecorte o suene feo. Más alto = todo más estable, con un poco más de retardo. Bajalo hasta justo antes de que empiece a cortarse. Se aplica al instante mientras lo movés.",
   "settings_jam_buffer_live": "Ahora: {buffered} ms en buffer · jitter {jitter} ms · {recovered} recuperados · {lost} perdidos",

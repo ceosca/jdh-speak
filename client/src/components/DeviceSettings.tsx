@@ -107,6 +107,20 @@ export function DeviceSettings() {
     return () => window.clearInterval(id);
   }, [jamMode]);
 
+  // MEASURED latency (from getStats), ALWAYS shown so the jam-vs-normal comparison is a
+  // number you can read at a glance — no console. rx = NetEQ receive buffer; rtt = the
+  // round-trip to peers (P2P direct). Compare these in jam vs normal.
+  const [rxMs, setRxMs] = useState<number | null>(null);
+  const [txRtt, setTxRtt] = useState<number | null>(null);
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const w = window as unknown as { __rxLatencyMs?: number | null; __txRttMs?: number | null };
+      setRxMs(typeof w.__rxLatencyMs === "number" ? w.__rxLatencyMs : null);
+      setTxRtt(typeof w.__txRttMs === "number" ? w.__txRttMs : null);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
   // A stored device that's gone (unplugged) renders as Default; the media
   // constraints use `ideal`, so capture falls back to the default device too.
   const micValue = mics.some((d) => d.deviceId === micDeviceId) ? micDeviceId : "";
@@ -261,6 +275,16 @@ export function DeviceSettings() {
         <p id={jamModeHintId} className="mt-1 text-xs text-sonic-400">
           {m.settings_jam_hint()}
         </p>
+        {/* MEASURED latency, shown whenever there are peers — read it in jam vs normal to
+            compare with a number, not by ear. */}
+        {(rxMs !== null || txRtt !== null) && (
+          <p className="mt-2 rounded-md bg-sonic-800/50 px-2 py-1 text-xs tabular-nums text-sonic-300">
+            {m.settings_jam_measured({
+              rx: rxMs === null ? "—" : String(rxMs),
+              rtt: txRtt === null ? "—" : String(txRtt),
+            })}
+          </p>
+        )}
 
         {/* ONE Jamulus-style fader: the jitter cushion. Clock drift is now cancelled by
             resampling inside the buffer (no growing delay, no dropped-frame clicks), so
