@@ -1148,6 +1148,31 @@ export function useMediasoup() {
       }
       (window as unknown as { __rxLatencyMs: number | null }).__rxLatencyMs =
         n > 0 ? +(sum / n).toFixed(0) : null;
+
+      // SEND path (the user's actual complaint: their voice reaching a peer). In P2P the
+      // remote-inbound-rtp roundTripTime is the DIRECT RTT to each peer — i.e. exactly
+      // the path jam now uses (vs the old SFU detour via the Pi). Exposed on __txRttMs.
+      let rttSum = 0;
+      let rttN = 0;
+      const senders: RTCRtpSender[] = [];
+      for (const pc of p2pConnectionsRef.current.values()) {
+        for (const s of pc.getSenders()) if (s.track?.kind === "audio") senders.push(s);
+      }
+      for (const snd of senders) {
+        try {
+          const stats = await snd.getStats();
+          stats.forEach((s: Record<string, unknown>) => {
+            if (s.type === "remote-inbound-rtp" && typeof s.roundTripTime === "number") {
+              rttSum += (s.roundTripTime as number) * 1000;
+              rttN++;
+            }
+          });
+        } catch {
+          /* sender gone */
+        }
+      }
+      (window as unknown as { __txRttMs: number | null }).__txRttMs =
+        rttN > 0 ? +(rttSum / rttN).toFixed(0) : null;
     }, 1000);
     return () => window.clearInterval(id);
   }, []);
