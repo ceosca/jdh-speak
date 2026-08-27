@@ -1015,7 +1015,16 @@ export function useMediasoup() {
       store.getState().speakerDeviceId,
       micChannels,
       store.getState().localPeerId ?? "",
-      (peerId: string) => effectiveGain(peerId),
+      // Per-peer volume, but a peer the store doesn't know (e.g. a NATIVE jam client
+      // that's on the WT mesh but not in socket signaling) defaults to AUDIBLE at unity
+      // instead of effectiveGain's 0 — otherwise browser peers would silence it. Deafen
+      // still wins.
+      (peerId: string) => {
+        const st = store.getState();
+        if (st.isDeafened) return 0;
+        const peer = st.peers.get(peerId);
+        return peer ? peer.volume : 1;
+      },
       jamBoundsRef.current,
     );
     if (handle) {
@@ -1024,7 +1033,7 @@ export function useMediasoup() {
     } else {
       masterBus.gain.value = 1;
     }
-  }, [store, effectiveGain]);
+  }, [store]);
 
   useEffect(() => {
     void applyJamMesh();

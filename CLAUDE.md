@@ -386,6 +386,27 @@ server-relayed streams. **When building toward this, do not "simplify" jam into 
 P2P or GUI-only path — that would break both the Jamulus timing model (above) and
 the web-spectator requirement.**
 
+**✅ The native foundation now EXISTS: `native/jam_native.py`.** A headless Python jam
+client that does audio OUTSIDE the browser and joins the SAME WT `/jam` room as the
+browser mesh — the first concrete step of the GUI plan, and the answer to "break the
+WASAPI floor." **Measured on Cristian's box** (PortAudio via pip, no ASIO SDK):
+Chrome's WASAPI-shared output ~23 ms; native WASAPI **exclusive** on the USB Focusrite
+is ~34 ms (NO win — the USB driver fixes the buffer, so WASAPI can't be beaten from
+user space); native **WDM-KS (kernel streaming) = ~10 ms** (−13 ms, pip-achievable
+today); native **ASIO ~3–5 ms** (needs a PortAudio/cpal build with the Steinberg SDK).
+So the win is real and the client picks the lowest-latency host API the device exposes
+(WDM-KS → WASAPI). It speaks the exact mesh wire format over aioquic WebTransport
+(`CONNECT 200`, hello→id, `[0x01][idLen][appId][ch][seq][sendTime][opus]`, relay
+fan-out; verified sent≈recv, relay RTT ~1–2.5 ms). **aioquic gotcha:** set
+`max_datagram_frame_size` or you can send datagrams but never RECEIVE them. Opus 2.5 ms
+via PyAV (1 packet/frame). **Browser interop:** the mesh's per-peer gain callback now
+defaults an UNKNOWN `appId` (a native client not in socket signaling) to unity instead
+of `effectiveGain`'s 0 — otherwise browser peers silence the native client (deafen
+still wins). Remaining for the product: signalling (native client should appear in the
+room with a name/volume), port the resampling jitter buffer into Python (v1 is a simple
+prebuffer ring), ASIO, and stereo (the wire already carries the channel byte). See
+[`native/README.md`](native/README.md).
+
 ### Server-side recording (`server/src/recording.ts` + `recording-util.ts`)
 
 Recording is server-side and forces SFU. Per producer: a mediasoup `PlainTransport` pushes RTP to a local UDP port (`PortAllocator` hands out P/P+1 pairs since ffmpeg also opens an RTCP socket at port+1) where an ffmpeg process captures it to a streamable Ogg/Opus file with `-c:a copy` (no re-encode). The download endpoint (`/api/recordings/:id/download`) spawns a **second** ffmpeg that `amix`es all captures (with `adelay` to align late joiners, `normalize=0`) and streams to HTTP `pipe:1` — captures keep running, never interrupted. Recordings are keyed by a `recordingId` capability token, not room name. `RecordingManager` takes injected `RecordingDeps` so the logic is unit-testable without real ffmpeg/mediasoup.

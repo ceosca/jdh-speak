@@ -8,6 +8,30 @@
 
 ---
 
+## 2026-08-26
+
+### Cliente nativo de jam (romper el piso de WASAPI) + interop navegador
+
+- **Qué:** nuevo `native/jam_native.py` — cliente headless en Python que hace el audio
+  FUERA del navegador (WDM-KS/ASIO) y entra a la MISMA sala WT `/jam` que la malla del
+  navegador. Rompe el piso de WASAPI-shared de Chrome bajando la salida de ~23 ms a
+  ~10 ms (medido), interoperando con peers del navegador.
+- **Reingeniería/medición (en la máquina de Cristian, PortAudio pip):** WASAPI shared y
+  **exclusive** en la Focusrite USB quedan en ~20/34 ms (el driver USB fija el buffer —
+  no se vence desde user-space); **WDM-KS (kernel streaming) = 10 ms in / 10 ms out**
+  (–13 ms vs navegador); **ASIO ~3–5 ms** (necesita build con SDK). Opus 2.5 ms en
+  Python (PyAV, 1 pkt/frame, ~22 B). Cliente WebTransport en aioquic: `CONNECT 200`,
+  hello→ack, envía/recibe el fan-out del relay (sent≈recv, **RTT real ~1–2.5 ms**).
+  Detalle clave que costó: aioquic necesita `max_datagram_frame_size` para RECIBIR
+  datagramas (sin eso mandás pero no recibís).
+- **Interop navegador (`useMediasoup.ts`):** la malla aplicaba `effectiveGain`, que
+  devuelve 0 para un peer desconocido → **silenciaba al cliente nativo**. Ahora un
+  `appId` desconocido en la malla suena a ganancia 1 (deafen sigue mandando). Cambio de
+  cliente → build, sin reinicio.
+- **Estado:** camino de baja latencia probado punta a punta. Falta (etapa GUI):
+  señalización (que el nativo aparezca en la sala con nombre/volumen), portar el jitter
+  buffer con resampling, ASIO, y estéreo. Ver `native/README.md`.
+
 ## 2026-08-24 (4)
 
 ### Jam: estéreo real (dejó de forzar mono) + no-stall en underrun
