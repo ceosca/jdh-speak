@@ -27,24 +27,42 @@ export type WtMeshHandle = {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyRec = any;
 
-// Encode one captured chunk at the encoder's channel count. The mic often captures
-// STEREO (channelCount:2 on desktop); if the encoder is MONO we must downmix first, or
-// encode() throws ("Input audio buffer is incompatible with codec") and NOTHING gets
-// sent. If the encoder is STEREO (the user's input is a stereo interface), we encode the
-// two channels as-is so jam keeps stereo instead of collapsing it to mono. `channels` is
-// the encoder's channel count. Called for every captured chunk on the mesh and monitor.
+// Memoryless soft limiter for the OUTGOING jam signal. The jam send path deliberately
+// bypasses the Web Audio limiter (it sends the RAW mic for zero lookahead latency), so a
+// hot mic/instrument would ship a CLIPPING signal that distorts for EVERY listener — and
+// the sender never hears itself, so they don't notice (that's why Franco/Edu clipped on
+// Cristian's signal but Cristian didn't). This waveshaper is transparent below −3 dB
+// (|x| ≤ 0.7) and smoothly compresses toward ±1 above it; tanh asymptotes to ±1 so the
+// output can never exceed full scale → no hard clip. ZERO added latency (no lookahead).
+const LIMIT_KNEE = 0.7;
+function sendLimit(x: number): number {
+  if (x > LIMIT_KNEE) return LIMIT_KNEE + (1 - LIMIT_KNEE) * Math.tanh((x - LIMIT_KNEE) / (1 - LIMIT_KNEE));
+  if (x < -LIMIT_KNEE) return -LIMIT_KNEE + (1 - LIMIT_KNEE) * Math.tanh((x + LIMIT_KNEE) / (1 - LIMIT_KNEE));
+  return x;
+}
+// Reused per-channel scratch so peak-scanning a clean frame allocates nothing.
+const _encScratch: Float32Array[] = [];
+function encScratch(c: number, n: number): Float32Array {
+  if (!_encScratch[c] || _encScratch[c].length < n) _encScratch[c] = new Float32Array(n);
+  return _encScratch[c];
+}
+
+// Encode one captured chunk at the encoder's channel count, with a zero-latency send
+// limiter (above) so we never ship a clipping signal. The mic often captures STEREO
+// (channelCount:2 on desktop); if the encoder is MONO we downmix first (else encode()
+// throws and NOTHING is sent). If the encoder is STEREO, we keep both channels.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function encodeFrame(encoder: AudioEncoder, ad: any, channels: number): void {
   if (encoder.state !== "configured") return;
   try {
+    const n = ad.numberOfFrames as number;
     if (channels === 1 && ad.numberOfChannels > 1) {
-      // Stereo capture into a mono encoder → downmix (L+R)/2.
-      const n = ad.numberOfFrames as number;
+      // Stereo capture into a mono encoder → downmix (L+R)/2, then limit.
       const a = new Float32Array(n);
-      const b = new Float32Array(n);
+      const b = encScratch(1, n);
       ad.copyTo(a, { planeIndex: 0, format: "f32-planar" });
       ad.copyTo(b, { planeIndex: 1, format: "f32-planar" });
-      for (let i = 0; i < n; i++) a[i] = (a[i] + b[i]) * 0.5;
+      for (let i = 0; i < n; i++) a[i] = sendLimit((a[i] + b[i]) * 0.5);
       const mono = new AudioData({
         format: "f32-planar",
         sampleRate: ad.sampleRate,
@@ -55,10 +73,38 @@ export function encodeFrame(encoder: AudioEncoder, ad: any, channels: number): v
       });
       encoder.encode(mono);
       mono.close();
-    } else {
-      // Channel counts match (mono→mono or stereo→stereo) → encode directly.
-      encoder.encode(ad);
+      return;
     }
+    // Matched channels: peak-scan into reused scratch; only HOT frames get limited (and
+    // allocate), clean frames encode the original AudioData directly.
+    let peak = 0;
+    for (let c = 0; c < channels; c++) {
+      const s = encScratch(c, n);
+      ad.copyTo(s, { planeIndex: c, format: "f32-planar" });
+      for (let i = 0; i < n; i++) {
+        const v = s[i] < 0 ? -s[i] : s[i];
+        if (v > peak) peak = v;
+      }
+    }
+    if (peak <= LIMIT_KNEE) {
+      encoder.encode(ad);
+      return;
+    }
+    const data = new Float32Array(n * channels);
+    for (let c = 0; c < channels; c++) {
+      const s = encScratch(c, n); // still holds channel c from the scan
+      for (let i = 0; i < n; i++) data[c * n + i] = sendLimit(s[i]);
+    }
+    const out = new AudioData({
+      format: "f32-planar",
+      sampleRate: ad.sampleRate,
+      numberOfFrames: n,
+      numberOfChannels: channels,
+      timestamp: ad.timestamp,
+      data,
+    });
+    encoder.encode(out);
+    out.close();
   } catch {
     /* skip a bad frame */
   }
@@ -143,36 +189,67 @@ export type JamFrame = {
 // Linear interpolation with a fractional read cursor carried across frames, so there's
 // no discontinuity at frame boundaries. Verified in isolation: at s=1 it's transparent,
 // at ±1 % it shifts pitch ±1 % with no added clicks (max sample step = the signal's own).
+//
+// ALLOCATION-FREE hot path: a preallocated ring per channel (copyWithin to drop consumed
+// samples — no concat/slice) and a reused output buffer (no per-sample Array.push / no
+// Float32Array.from). The old version allocated ~4 arrays PER FRAME per channel → at
+// 400 fps × N peers that GC churn stalled the audio on weaker machines (Franco/Edu
+// crackled even at a 100 ms buffer — a bigger cushion can't absorb a GC pause on the
+// thread PRODUCING frames). Results live in `out`/`outLen`, valid until the next call.
 class StreamResampler {
-  private pending: Float32Array[];
+  private ring: Float32Array[];
+  private cap = 4096; // ~85 ms of headroom; grows only if ever exceeded
+  private n = 0; // valid samples currently in the ring
   private readPos = 0;
+  out: Float32Array[]; // reused output scratch (read [0..outLen))
+  outLen = 0;
+  private outCap = 1024;
   constructor(private readonly ch: number) {
-    this.pending = Array.from({ length: ch }, () => new Float32Array(0));
+    this.ring = Array.from({ length: ch }, () => new Float32Array(this.cap));
+    this.out = Array.from({ length: ch }, () => new Float32Array(this.outCap));
   }
-  process(input: Float32Array[], s: number): Float32Array[] {
+  // `input[c]` may be a reused scratch LARGER than `inN`; only the first inN are valid.
+  process(input: Float32Array[], inN: number, s: number): void {
+    if (this.n + inN > this.cap) {
+      this.cap = Math.max(this.cap * 2, this.n + inN);
+      this.ring = this.ring.map((r) => {
+        const g = new Float32Array(this.cap);
+        g.set(r.subarray(0, this.n));
+        return g;
+      });
+    }
     for (let c = 0; c < this.ch; c++) {
-      const merged = new Float32Array(this.pending[c].length + input[c].length);
-      merged.set(this.pending[c], 0);
-      merged.set(input[c], this.pending[c].length);
-      this.pending[c] = merged;
+      const r = this.ring[c];
+      const src = input[c];
+      for (let i = 0; i < inN; i++) r[this.n + i] = src[i];
     }
-    const len = this.pending[0].length;
-    const out: number[][] = Array.from({ length: this.ch }, () => []);
-    while (this.readPos + 1 < len) {
-      const i = Math.floor(this.readPos);
-      const frac = this.readPos - i;
+    this.n += inN;
+    const est = Math.ceil((this.n - this.readPos) / Math.max(s, 0.001)) + 2;
+    if (est > this.outCap) {
+      this.outCap = Math.max(this.outCap * 2, est);
+      this.out = this.out.map(() => new Float32Array(this.outCap));
+    }
+    let o = 0;
+    let rp = this.readPos;
+    while (rp + 1 < this.n) {
+      const i = rp | 0;
+      const f = rp - i;
       for (let c = 0; c < this.ch; c++) {
-        const a = this.pending[c][i];
-        out[c].push(a + (this.pending[c][i + 1] - a) * frac);
+        const r = this.ring[c];
+        const a = r[i];
+        this.out[c][o] = a + (r[i + 1] - a) * f;
       }
-      this.readPos += s;
+      o++;
+      rp += s;
     }
-    const drop = Math.floor(this.readPos);
+    const drop = rp | 0;
     if (drop > 0) {
-      for (let c = 0; c < this.ch; c++) this.pending[c] = this.pending[c].slice(drop);
-      this.readPos -= drop;
+      for (let c = 0; c < this.ch; c++) this.ring[c].copyWithin(0, drop, this.n);
+      this.n -= drop;
+      rp -= drop;
     }
-    return out.map((a) => Float32Array.from(a));
+    this.readPos = rp;
+    this.outLen = o;
   }
 }
 
@@ -207,6 +284,11 @@ export class AdaptiveJitterBuffer {
   private readonly resampler: StreamResampler;
   private readonly smoothA: number;
   private readonly stat: JamMeshStats;
+  // Reused extraction scratch (grown as needed) so the hot path allocates nothing per
+  // frame — the whole point of the perf pass. `tmp` holds one raw channel; `inScratch`
+  // the gained planes fed to the resampler (which copies them out immediately).
+  private tmp: Float32Array = new Float32Array(0);
+  private inScratch: Float32Array[] = [];
 
   // `bounds` is a LIVE shared object: the slider mutates its minMs and this buffer reads
   // the new cushion on the fly — no rebuild. (maxMs is ignored now; drift is resampled,
@@ -242,14 +324,17 @@ export class AdaptiveJitterBuffer {
 
     // Extract input planes, applying the per-peer gain (soft knee) while we copy.
     const n = ad.numberOfFrames;
-    const inPlanes: Float32Array[] = [];
-    const tmp = new Float32Array(n);
+    if (this.tmp.length < n) this.tmp = new Float32Array(n);
+    if (this.inScratch.length !== this.ch) {
+      this.inScratch = Array.from({ length: this.ch }, () => new Float32Array(0));
+    }
+    const inPlanes = this.inScratch;
     for (let c = 0; c < this.ch; c++) {
-      ad.copyTo(tmp, { planeIndex: c, format: "f32-planar" });
-      const p = new Float32Array(n);
-      if (gain === 1) p.set(tmp);
-      else for (let i = 0; i < n; i++) p[i] = gain === 0 ? 0 : softclip(tmp[i] * gain);
-      inPlanes.push(p);
+      if (inPlanes[c].length < n) inPlanes[c] = new Float32Array(n);
+      ad.copyTo(this.tmp, { planeIndex: c, format: "f32-planar" });
+      const p = inPlanes[c];
+      if (gain === 1) for (let i = 0; i < n; i++) p[i] = this.tmp[i];
+      else for (let i = 0; i < n; i++) p[i] = gain === 0 ? 0 : softclip(this.tmp[i] * gain);
     }
     try {
       ad.close();
@@ -286,19 +371,23 @@ export class AdaptiveJitterBuffer {
       }
     }
 
-    const outPlanes = this.resampler.process(inPlanes, this.prebuffering ? 1 : this.speed);
-    const outLen = outPlanes[0].length;
+    this.resampler.process(inPlanes, n, this.prebuffering ? 1 : this.speed);
+    const outLen = this.resampler.outLen;
+    const outPlanes = this.resampler.out; // reused — valid only until the next process()
 
     if (this.prebuffering) {
       if (outLen > 0) {
-        this.pendingOut.push(outPlanes);
+        // pendingOut is held across process() calls, so COPY out of the reused buffer.
+        const copy: Float32Array[] = [];
+        for (let c = 0; c < this.ch; c++) copy.push(outPlanes[c].slice(0, outLen));
+        this.pendingOut.push(copy);
         this.pendingSamples += outLen;
       }
       if (this.pendingSamples >= target) {
         this.startMs = now;
         this.written = this.pendingSamples;
         this.bufSmoothed = this.pendingSamples;
-        for (const planes of this.pendingOut) this.emit(planes, write);
+        for (const planes of this.pendingOut) this.emit(planes, planes[0].length, write);
         this.pendingOut = [];
         this.prebuffering = false;
       }
@@ -315,15 +404,17 @@ export class AdaptiveJitterBuffer {
     }
     if (outLen > 0) {
       this.written += outLen;
-      this.emit(outPlanes, write);
+      this.emit(outPlanes, outLen, write); // emitted immediately → reused buffer is safe
     }
   }
 
-  private emit(planes: Float32Array[], write: (f: AudioData) => void): void {
-    const outLen = planes[0].length;
+  private emit(planes: Float32Array[], outLen: number, write: (f: AudioData) => void): void {
     if (outLen === 0) return;
     const data = new Float32Array(outLen * this.ch);
-    for (let c = 0; c < this.ch; c++) data.set(planes[c], c * outLen);
+    for (let c = 0; c < this.ch; c++) {
+      // planes[c] may be a reused buffer LONGER than outLen — copy exactly outLen.
+      data.set(planes[c].subarray(0, outLen), c * outLen);
+    }
     const out = new AudioData({
       format: "f32-planar",
       sampleRate: SR,
