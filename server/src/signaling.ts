@@ -787,7 +787,7 @@ export function createSignalingServer(
     // RTT and derives its offset to server-time from the lowest-RTT sample. This is what
     // makes the shared metronome land on the same server-instant for everyone.
     socket.on("time-sync", (_data: unknown, cb?: (res: unknown) => void) => {
-      cb?.({ serverMs: Date.now() });
+      cb?.({ ok: true, serverMs: Date.now() });
     });
 
     // Shared jam metronome (room-wide). Set bpm / running; on start we anchor beat 0 to
