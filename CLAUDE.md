@@ -316,14 +316,44 @@ server on udp/40059 behind `WT_PROBE`; if `server/src/webtransport-probe.ts` sti
 exists it's inert unless `WT_PROBE` is set and needs `@fails-components/webtransport`
 pinned to **1.4.0** (newer arm64 prebuilds need glibc 2.38; the Pi has 2.36).
 
+**🎯 THE JAMULUS MODEL — the self-return is a TIMING REFERENCE, not a low-latency echo
+(read before touching the monitor).** The band's real need is not "hear yourself fast"
+— it's the Jamulus play-against-your-return workflow: you monitor your OWN signal
+returned via the server, mixed with the other players (also via the server), and you
+anticipate your playing until your return lines up **in tempo** with the others in that
+one monitor. When it lines up for you, it lines up for EVERYONE — because aligning your
+return to the peers *by ear* is mathematically equal to your audio *arriving at the
+server aligned* with theirs, and the server is the common mix point everyone relates to.
+- **The cancellation that makes it work (and the invariant):** you hear your return at
+  `t_you + up_you + (down_you+buffer+output)` and a peer at `t_peer + up_peer +
+  (down_you+buffer+output)`. Aligning them cancels the common `down_you+buffer+output`
+  term ⇒ `t_you+up_you = t_peer+up_peer` ⇒ **aligned at the server**. The cancellation
+  ONLY holds if the self-return traverses the **identical down-path + jitter buffer +
+  output as the peers.** Absolute latency is irrelevant — it works at 100 ms or 5000 ms;
+  you just anticipate more. This is why "lower monitor latency" is the WRONG goal.
+- **The bug this fixed (2026-08-28):** the monitor had been built to be as FAST as
+  possible — `≤8 ms` buffer (`MONITOR_JITTER_HINT`), optional WT-2.5 ms / generator
+  paths, its OWN output card. That made the return arrive EARLIER than the peers, so
+  aligning to it made you play early for everyone → "even with the metronome we can't
+  play together." **Fix:** in jam the self-return now uses the **same buffer
+  (`jamBufferMinMs`) as the peers** and is forced onto the **same output (`masterBus`)**
+  as the peers (`applyNetworkMonitor` + the live buffer effect + `routeNetMonitorOutput`
+  early-returns `deviceId=""` in jam). Outside jam it stays a tight self-echo diagnostic.
+- **The metronome (local click) is NOT the mechanism** and cannot be — playing to a
+  local click makes your audio reach others late, off THEIR click. It stays as an
+  optional aid; the server-return is the real reference. Don't "fix" ensemble timing by
+  improving the metronome — improve/keep-honest the self-return path instead.
+- **Topology:** needs the SFU (server as the common mix point) — the network monitor
+  already force-SFUs the whole room when enabled, so jam+monitor is the Jamulus topology.
+  Do NOT re-minimise the self-return latency or split it to a separate card in jam.
+
 **More recent details (so nobody re-derives them):**
-- **Separate output card for the return.** The network monitor can play its return
-  out its **own** sound card / headphones while the primary card keeps regular sound
-  (e.g. primary = your local piano, secondary = the server-return so you hear how far
-  behind you are). Store `netMonitorDeviceId` ("" = same as primary); `useMediasoup`'s
-  `routeNetMonitorOutput()` sends the monitor's gain through a
-  `MediaStreamAudioDestinationNode → <audio>.setSinkId(deviceId)`; picker in
-  `DeviceSettings` under the monitor checkbox (Chrome/Edge — `canSelectElementSink`).
+- **Separate output card for the return** (non-jam only). The network monitor can play
+  its return out its **own** sound card / headphones (store `netMonitorDeviceId`, ""=
+  primary; `routeNetMonitorOutput()` → `MediaStreamAudioDestinationNode →
+  <audio>.setSinkId`; picker in `DeviceSettings`, Chrome/Edge). **In JAM this is
+  overridden to the masterBus** (see the Jamulus-model note above) — a separate card
+  would give the return a different output latency and break the cancellation.
 - **ptime is 10 ms, and that was MEASURED, not assumed.** Pushing Opus to `ptime=5`
   to lower the receive floor was tried in a loopback: Chrome doesn't honour it
   cleanly (mixes 5/10 ms frames, ~8.5 ms avg), so the receive floor — which must

@@ -8,6 +8,33 @@
 
 ---
 
+## 2026-08-28
+
+### Jam: el retorno de red es la REFERENCIA de tiempo (modelo Jamulus), no un eco rápido — bug de raíz
+
+- **Lo que Cristian explicó (y yo no entendía):** el problema no era la sincronía del
+  metrónomo (esa ya quedó, medida). Es el modelo de Jamulus: uno toca contra su PROPIO
+  retorno vía servidor, mezclado con los demás (también vía servidor), y anticipa hasta
+  que su retorno cuadra **en tempo** con los otros en ese monitor. Cuando cuadra para
+  uno, cuadra para TODOS — porque alinear tu retorno a los peers de oído equivale a que
+  tu audio **llegue al servidor alineado** con el de ellos (el servidor es el punto común).
+- **La cancelación (y el invariante):** oís tu retorno en `t+subida+(bajada+buffer+salida)`
+  y a un peer en `t'+subida'+(bajada+buffer+salida)`; alinearlos cancela el término común
+  `bajada+buffer+salida` ⇒ llegan alineados al servidor. **Solo se cancela si el retorno
+  pasa por el MISMO buffer y la MISMA salida que los peers.** La latencia absoluta da igual
+  (funciona a 100 ms o a 5000 ms; solo anticipás más). Por eso "bajar la latencia del
+  monitor" era el objetivo EQUIVOCADO.
+- **El bug:** yo había construido el monitor para que fuera lo más rápido posible (buffer
+  `≤8 ms`, rutas WT-2.5 ms/generator, su propia placa). Eso hacía que el retorno llegara
+  ANTES que los peers → alinearte a él te dejaba adelantado para todos → "ni con el
+  metrónomo podemos tocar juntos".
+- **Fix (`1195ce0`):** en jam el retorno usa el **mismo buffer (`jamBufferMinMs`) que los
+  peers** y se fuerza a la **misma salida (`masterBus`)** que los peers
+  (`applyNetworkMonitor` + efecto de buffer en vivo + `routeNetMonitorOutput` fuerza
+  `deviceId=""` en jam). Fuera de jam sigue siendo un eco-diagnóstico ajustado. El
+  metrónomo NO es el mecanismo — el retorno del servidor sí. Solo cliente → build, sin
+  restart. Requiere recargar.
+
 ## 2026-08-27 (4)
 
 ### Metrónomo compartido sincronizado — el "elemento que llega a todos igual" + verificación acústica
