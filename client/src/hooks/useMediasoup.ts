@@ -1104,10 +1104,13 @@ export function useMediasoup() {
         if (r.track?.kind === "audio") applyTo(r, peerMs);
       }
     }
-    // Self-return monitor stays ≤8 ms (loopback) but follows the slider down in jam.
-    const monMs = jamMode
-      ? Math.min(jamBufferMinMs, MONITOR_JITTER_HINT * 1000)
-      : MONITOR_JITTER_HINT * 1000;
+    // Self-return monitor: in JAM it is the Jamulus timing reference, so it MUST ride the
+    // SAME buffer as the peers (peerMs) — you play until your own return lines up in tempo
+    // with the others you hear, and that only equals "aligned at the server for everyone"
+    // if your return traversed the identical down-path+buffer+output (the common term
+    // cancels). A tighter return would make you play early for everyone. Outside jam the
+    // monitor is just a "hear yourself" diagnostic, so it can stay tight (≤8 ms).
+    const monMs = jamMode ? peerMs : MONITOR_JITTER_HINT * 1000;
     applyTo(netMonitorRef.current?.consumer?.rtpReceiver, monMs);
   }, [jamBufferMinMs, jamBufferMaxMs, jamMode]);
 
@@ -1540,6 +1543,12 @@ export function useMediasoup() {
   // headphones), or back to the primary output when the picker is "". Live: called
   // both when the monitor is (re)built and when the user changes the device.
   const routeNetMonitorOutput = useCallback((deviceId: string) => {
+    // In JAM the return is the Jamulus reference: it must sit in the SAME mix, on the SAME
+    // output, as the peers (masterBus) so you hear one coherent server mix and calibrate
+    // against it. A separate card would give the return a different output latency and
+    // break the "aligned in my ear ⇒ aligned at the server" cancellation. So force the
+    // masterBus in jam regardless of the picker (the picker still applies outside jam).
+    if (useRoomStore.getState().jamMode) deviceId = "";
     // WebTransport 2.5 ms monitor: re-point its <audio> sink.
     if (netMonitorWtRef.current) {
       netMonitorWtRef.current.handle.setDevice(deviceId);
@@ -1678,10 +1687,13 @@ export function useMediasoup() {
           typeof recvTransport.consume
         >[0]["rtpParameters"],
       });
-      // Tight buffer on the return — it's a low-jitter server loopback + a timing
-      // reference, so it stays at ≤8 ms (auto-tighter than peers) but follows the slider
-      // DOWN if the user pushes it below that.
-      const monMs = Math.min(jamBoundsRef.current.minMs, MONITOR_JITTER_HINT * 1000);
+      // Buffer on the return. In JAM this is the Jamulus timing reference and MUST match
+      // the PEER buffer (jamBufferMinMs) so it traverses the identical path — see the live
+      // buffer effect for why. Outside jam it's just a self-echo diagnostic → stays tight.
+      const jamOn = useRoomStore.getState().jamMode;
+      const monMs = jamOn
+        ? jamBoundsRef.current.minMs
+        : Math.min(jamBoundsRef.current.minMs, MONITOR_JITTER_HINT * 1000);
       if ("playoutDelayHint" in consumer.track) {
         (consumer.track as unknown as Record<string, number>).playoutDelayHint = monMs / 1000;
       }
