@@ -2514,6 +2514,8 @@ export function useMediasoup() {
           (rttMs) => useRoomStore.setState({ metronomeSyncMs: rttMs }),
         );
         void clockSyncRef.current.start();
+        // Debug aid: read the synced server clock + quality from the console.
+        (window as unknown as { __jamClock?: unknown }).__jamClock = clockSyncRef.current;
       }
       if (!metronomeRef.current) {
         // Route straight to ctx.destination (NOT masterBus): getOutputTimestamp measures
