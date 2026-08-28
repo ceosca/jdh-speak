@@ -228,6 +228,11 @@ interface RoomState {
   // = more cushion if it crackles). Per-user, local, persisted, live (no rebuild).
   jamBufferMinMs: number;
   jamBufferMaxMs: number;
+  // Shared jam metronome (ROOM-wide, server-clock-locked). `metronomeBpm`/`Running`
+  // mirror the room state; `metronomeSyncMs` is the measured clock-sync RTT (quality).
+  metronomeBpm: number;
+  metronomeRunning: boolean;
+  metronomeSyncMs: number;
   // Network monitoring ("a lo Jamulus"): hear your OWN signal returned via the
   // server (consume your own producer) as a timing reference. SFU-only. Local,
   // persisted.
@@ -348,6 +353,10 @@ interface RoomState {
   // checkbox can broadcast the change to the whole room (all-or-nobody) instead of
   // flipping only the local flag. Null before a call is joined.
   onJamToggle: ((enabled: boolean) => void) | null;
+  // Shared metronome: setters. `onSetMetronome` (registered by useMediasoup) broadcasts
+  // bpm/running to the room; `setMetronomeState` mirrors the server's broadcast locally.
+  onSetMetronome: ((change: { bpm?: number; running?: boolean }) => void) | null;
+  setMetronomeState: (s: { bpm: number; running: boolean; syncMs?: number }) => void;
   setNetworkMonitor: (enabled: boolean) => void;
   setMicMonitor: (monitor: boolean) => void;
   setSpatialAudio: (enabled: boolean) => void;
@@ -413,6 +422,10 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   jamBufferMinMs: loadJamBufferMs(JAM_BUF_MIN_KEY, JAM_BUF_MIN_DEFAULT),
   jamBufferMaxMs: loadJamBufferMs(JAM_BUF_MAX_KEY, JAM_BUF_MAX_DEFAULT),
   onJamToggle: null,
+  metronomeBpm: 100,
+  metronomeRunning: false,
+  metronomeSyncMs: -1,
+  onSetMetronome: null,
   networkMonitor: loadString(NETWORK_MONITOR_KEY) === "true",
   micMonitor: loadString(MIC_MONITOR_KEY) === "true",
   spatialAudio: false,
@@ -519,6 +532,8 @@ export const useRoomStore = create<RoomState>((set, get) => ({
     saveString(JAM_MODE_KEY, String(jamMode));
     set({ jamMode });
   },
+  setMetronomeState: ({ bpm, running, syncMs }) =>
+    set(syncMs != null ? { metronomeBpm: bpm, metronomeRunning: running, metronomeSyncMs: syncMs } : { metronomeBpm: bpm, metronomeRunning: running }),
   setJamBufferMinMs: (ms) => {
     const min = Math.min(JAM_BUF_MAX_LIMIT, Math.max(JAM_BUF_MIN_LIMIT, Math.round(ms)));
     // Keep min ≤ max: push max up if the min crossed it.

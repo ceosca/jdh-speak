@@ -342,6 +342,8 @@ export function createSignalingServer(
           forceSfu: room.forceSfu,
           // Room-wide jam (ensayo) state so a late joiner adopts it immediately.
           jamMode: room.jamMode,
+          // Shared metronome state so a late joiner locks to the same beat.
+          metronome: room.metronome,
           // Membership token to persist and present on rejoin (see ghost routing).
           token: myToken,
           // Whether THIS (effective) room is closed. A ghost sees its own ghost
@@ -778,6 +780,32 @@ export function createSignalingServer(
         .to(currentRoom.name)
         .emit("jam-mode", { enabled: parsed.data.enabled, by: currentPeer.displayName });
       applyModeDecision(currentRoom);
+      cb?.({ ok: true });
+    });
+
+    // Clock sync (NTP-style): the client pings, we stamp our time. The client measures
+    // RTT and derives its offset to server-time from the lowest-RTT sample. This is what
+    // makes the shared metronome land on the same server-instant for everyone.
+    socket.on("time-sync", (_data: unknown, cb?: (res: unknown) => void) => {
+      cb?.({ serverMs: Date.now() });
+    });
+
+    // Shared jam metronome (room-wide). Set bpm / running; on start we anchor beat 0 to
+    // a server-time a moment in the future so every already-synced client can schedule
+    // the same beats. Broadcast to everyone (incl. late joiners via the join response).
+    socket.on("set-metronome", (data: unknown, cb?: (res: unknown) => void) => {
+      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
+      const parsed = z
+        .object({ bpm: z.number().min(20).max(300).optional(), running: z.boolean().optional() })
+        .safeParse(data);
+      if (!parsed.success) return cb?.({ ok: false, error: "Invalid value" });
+      const m = currentRoom.metronome;
+      if (parsed.data.bpm != null) m.bpm = Math.round(parsed.data.bpm);
+      if (parsed.data.running != null && parsed.data.running !== m.running) {
+        m.running = parsed.data.running;
+        if (m.running) m.anchorServerMs = Date.now() + 300; // start just ahead so all can arm
+      }
+      io.to(currentRoom.name).emit("metronome", { ...m });
       cb?.({ ok: true });
     });
 

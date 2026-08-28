@@ -50,6 +50,13 @@ export interface Room {
   // room would leave non-jam peers out). Like forceSfu it also pins the room to the
   // SFU (the network monitor / bypass need the server in the loop).
   jamMode: boolean;
+  // Shared jam METRONOME — the "elemento que llega a todos igual". A server-clock beat
+  // so musicians on a low-latency P2P mesh still lock to a common timeline (audio stays
+  // P2P for minimum latency; sync comes from the shared clock, not from routing audio
+  // through the SFU hub). `anchorServerMs` is the server-time of beat 0; every client,
+  // once clock-synced, schedules clicks at anchor + n·(60000/bpm) → the click lands at
+  // the same server-instant for everyone. Room-wide; broadcast on change.
+  metronome: { bpm: number; running: boolean; anchorServerMs: number };
   // "Closed" (private) room, toggled live via Ctrl+Alt+B. While closed, a NEW
   // joiner (no member token) is routed to a separate "ghost" room instead — they
   // see an empty room (or each other), never the real group, with NO message. A
@@ -190,6 +197,7 @@ export async function getOrCreateRoom(roomName: string): Promise<Room> {
     disableP2p: false,
     forceSfu: false,
     jamMode: false,
+    metronome: { bpm: 100, running: false, anchorServerMs: 0 },
     closed: false,
     memberTokens: new Set(),
     casters: new Set(),

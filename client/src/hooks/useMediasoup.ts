@@ -18,6 +18,8 @@ import {
   type GeneratorMonitorHandle,
 } from "../lib/jam-neteq-bypass";
 import { setupWtMonitor, wtMonitorSupported, type WtMonitorHandle } from "../lib/jam-wt-monitor";
+import { ClockSync } from "../lib/clocksync";
+import { Metronome } from "../lib/metronome";
 import {
   setupWtMesh,
   wtMeshSupported,
@@ -505,6 +507,10 @@ export function useMediasoup() {
   // Jam PEER mesh over WebTransport (2.5 ms frames, routed between clients). While
   // it's up, masterBus is muted so the mediasoup peer audio doesn't double it.
   const wtMeshRef = useRef<WtMeshHandle | null>(null);
+  // Shared metronome: server clock-sync + a locally-generated, server-locked click.
+  const clockSyncRef = useRef<ClockSync | null>(null);
+  const metronomeRef = useRef<Metronome | null>(null);
+  const metronomeAnchorRef = useRef<number>(0);
   // Live jitter-buffer bounds (ms) for every jam playout path — a SHARED object the
   // sliders mutate in place, so the running buffers pick up new min/max without a
   // rebuild. Seeded from the persisted store values.
@@ -1104,6 +1110,23 @@ export function useMediasoup() {
       : MONITOR_JITTER_HINT * 1000;
     applyTo(netMonitorRef.current?.consumer?.rtpReceiver, monMs);
   }, [jamBufferMinMs, jamBufferMaxMs, jamMode]);
+
+  // Shared metronome: start/stop + BPM changes drive the local, server-clock-locked
+  // click. Reads clockSyncRef/metronomeRef (created on join); the click self-corrects as
+  // clock-sync refines its offset, so starting slightly before it converges is fine.
+  const metronomeRunning = useRoomStore((s) => s.metronomeRunning);
+  const metronomeBpm = useRoomStore((s) => s.metronomeBpm);
+  useEffect(() => {
+    const metro = metronomeRef.current;
+    const clk = clockSyncRef.current;
+    if (!metro || !clk) return;
+    if (metronomeRunning) {
+      void sharedAudioContext.resume().catch(() => {});
+      metro.start(metronomeBpm, metronomeAnchorRef.current, clk);
+    } else {
+      metro.stop();
+    }
+  }, [metronomeRunning, metronomeBpm]);
 
   // MEASURED receive latency (objective, from getStats): the NetEQ jitterBufferDelay per
   // incoming audio stream, windowed over the last second, averaged across peers. This is
@@ -2256,6 +2279,7 @@ export function useMediasoup() {
           ambience?: string;
           forceSfu?: boolean;
           jamMode?: boolean;
+          metronome?: { bpm: number; running: boolean; anchorServerMs: number };
           token?: string;
           closed?: boolean;
           ghosted?: boolean;
@@ -2299,6 +2323,16 @@ export function useMediasoup() {
         // Adopt the room's jam (ensayo) state — it's room-wide, so a late joiner
         // matches whatever the room is currently running.
         store.getState().setJamMode(joinRes.jamMode ?? false);
+        // Adopt the shared metronome (bpm/running). The socket "metronome" handler
+        // (registered above, on the same socket) drives the actual click once clock-sync
+        // has an offset; here we just seed the state + anchor for a late joiner.
+        if (joinRes.metronome) {
+          metronomeAnchorRef.current = joinRes.metronome.anchorServerMs;
+          store.getState().setMetronomeState({
+            bpm: joinRes.metronome.bpm,
+            running: joinRes.metronome.running,
+          });
+        }
         // Persist our membership token and adopt the room's closed state.
         if (joinRes.token) {
           try {
@@ -2467,6 +2501,36 @@ export function useMediasoup() {
           void emit("set-jam-mode", { enabled })
             .then(() => store.getState().setJamMode(enabled))
             .catch((err) => console.error("[jam] set-jam-mode failed:", err));
+        },
+      });
+
+      // Shared jam metronome — the "elemento que llega a todos igual". Audio stays P2P
+      // (min latency); this locally-generated click is phase-locked to the SERVER clock
+      // so it lands at the same server-instant for everyone. Musicians play to the click
+      // and compensate the P2P audio delay against this common timeline.
+      if (!clockSyncRef.current) {
+        clockSyncRef.current = new ClockSync((ev, data) => emit(ev, data));
+        void clockSyncRef.current.start();
+      }
+      if (!metronomeRef.current) {
+        metronomeRef.current = new Metronome(sharedAudioContext, masterBus);
+      }
+      // The click itself is driven by a store-watching effect (below), so both this
+      // broadcast and the join response converge through the same path.
+      socket.on(
+        "metronome",
+        (mm: { bpm: number; running: boolean; anchorServerMs: number }) => {
+          metronomeAnchorRef.current = mm.anchorServerMs;
+          store
+            .getState()
+            .setMetronomeState({ bpm: mm.bpm, running: mm.running, syncMs: clockSyncRef.current?.rttMs });
+        },
+      );
+      useRoomStore.setState({
+        onSetMetronome: (change: { bpm?: number; running?: boolean }) => {
+          void emit("set-metronome", change).catch((err) =>
+            console.error("[metro] set-metronome failed:", err),
+          );
         },
       });
 

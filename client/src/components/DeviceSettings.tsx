@@ -31,6 +31,9 @@ export function DeviceSettings() {
   const setNetMonitorDeviceId = useRoomStore((s) => s.setNetMonitorDeviceId);
   const jamBufferMinMs = useRoomStore((s) => s.jamBufferMinMs);
   const setJamBufferMinMs = useRoomStore((s) => s.setJamBufferMinMs);
+  const metronomeBpm = useRoomStore((s) => s.metronomeBpm);
+  const metronomeRunning = useRoomStore((s) => s.metronomeRunning);
+  const metronomeSyncMs = useRoomStore((s) => s.metronomeSyncMs);
 
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
   const [speakers, setSpeakers] = useState<MediaDeviceInfo[]>([]);
@@ -49,6 +52,8 @@ export function DeviceSettings() {
   const jamBufHintId = useId();
   const jamBufMinDescId = useId();
   const jamBufLiveId = useId();
+  const metroHintId = useId();
+  const metroBpmId = useId();
   const netMonitorId = useId();
   const netMonitorHintId = useId();
   const netMonitorSelectId = useId();
@@ -315,6 +320,55 @@ export function DeviceSettings() {
                 {m.settings_jam_buffer_live({ latency: rxLatency })}
               </p>
             )}
+          </div>
+        )}
+
+        {/* Shared metronome — the common reference locked to the server clock, so the
+            beat lands at the same server-instant for everyone while the instrument audio
+            stays P2P (min latency). Room-wide (like jam). Shown only while jam is on. */}
+        {jamMode && (
+          <div
+            role="group"
+            aria-labelledby={metroHintId}
+            className="mt-3 rounded-lg border border-sonic-600 bg-sonic-800/40 p-2.5"
+          >
+            <p id={metroHintId} className="mb-2 text-xs text-sonic-400">
+              {m.settings_metronome_hint()}
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  useRoomStore.getState().onSetMetronome?.({ running: !metronomeRunning })
+                }
+                aria-pressed={metronomeRunning}
+                className="rounded-lg bg-sonic-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:opacity-90"
+              >
+                {metronomeRunning ? m.settings_metronome_stop() : m.settings_metronome_start()}
+              </button>
+              <label htmlFor={metroBpmId} className="text-xs font-medium text-sonic-300">
+                {m.settings_metronome_bpm()}
+              </label>
+              <input
+                id={metroBpmId}
+                type="number"
+                min={20}
+                max={300}
+                step={1}
+                value={metronomeBpm}
+                onChange={(e) =>
+                  useRoomStore.getState().onSetMetronome?.({
+                    bpm: Math.max(20, Math.min(300, Number(e.target.value) || 100)),
+                  })
+                }
+                className="w-16 rounded-lg border border-sonic-600 bg-sonic-700 px-2 py-1 text-sm text-sonic-100 focus:border-sonic-accent focus:outline-none"
+              />
+            </div>
+            <p className="mt-1 text-xs text-sonic-400">
+              {metronomeSyncMs >= 0
+                ? m.settings_metronome_sync({ ms: metronomeSyncMs })
+                : m.settings_metronome_syncing()}
+            </p>
           </div>
         )}
       </div>
