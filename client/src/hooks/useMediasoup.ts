@@ -2511,7 +2511,30 @@ export function useMediasoup() {
       if (!clockSyncRef.current) {
         clockSyncRef.current = new ClockSync(
           (ev, data) => emit(ev, data),
-          (rttMs) => useRoomStore.setState({ metronomeSyncMs: rttMs }),
+          (rttMs) => {
+            useRoomStore.setState({ metronomeSyncMs: rttMs });
+            // Diagnostic: report our belief of server-time + RTT so the server can compute
+            // this client's clock error and broadcast the room-wide spread (the objective
+            // cross-machine metronome flam). Fires ~every 2s with the heartbeat.
+            const clk = clockSyncRef.current;
+            if (clk && clk.ready) {
+              let otsOk = false;
+              let outLatMs = 0;
+              try {
+                const o = sharedAudioContext.getOutputTimestamp?.();
+                otsOk = !!o && o.performanceTime != null && o.performanceTime > 0;
+                outLatMs = Math.round((sharedAudioContext.outputLatency || 0) * 1000);
+              } catch {
+                /* ignore */
+              }
+              void emit("sync-report", {
+                serverNow: clk.serverNow(),
+                rtt: clk.rttMs,
+                otsOk,
+                outLatMs,
+              }).catch(() => {});
+            }
+          },
         );
         void clockSyncRef.current.start();
         // Debug aid: read the synced server clock + quality from the console.

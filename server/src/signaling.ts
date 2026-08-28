@@ -790,6 +790,51 @@ export function createSignalingServer(
       cb?.({ ok: true, serverMs: Date.now() });
     });
 
+    // Metronome sync DIAGNOSTIC (jam). Each client periodically reports its current belief
+    // of server-time (`serverNow`) plus its min-RTT. The server timestamps arrival with its
+    // OWN true clock and computes this client's clock error: at the client's send instant,
+    // true server time ≈ recv − uplink (uplink ≈ rtt/2), while the client BELIEVED it was
+    // `serverNow`; so err = serverNow − (recv − rtt/2). +ve ⇒ this client fires beats early.
+    // The SPREAD of err across the room's peers is the objective cross-machine flam. We log
+    // it (readable via journalctl) and broadcast the table so every client can show it.
+    socket.on("sync-report", (data: unknown, cb?: (res: unknown) => void) => {
+      cb?.({ ok: true });
+      if (!currentRoom || !currentPeer) return;
+      const parsed = z
+        .object({
+          serverNow: z.number(),
+          rtt: z.number().min(0).max(5000),
+          otsOk: z.boolean().optional(),
+          outLatMs: z.number().optional(),
+        })
+        .safeParse(data);
+      if (!parsed.success) return;
+      const recv = Date.now();
+      const err = Math.round(parsed.data.serverNow - (recv - parsed.data.rtt / 2));
+      currentPeer.clockErrMs = err;
+      currentPeer.clockRttMs = Math.round(parsed.data.rtt);
+      const otsOk = parsed.data.otsOk;
+      const outLatMs = parsed.data.outLatMs;
+      const reports = [...currentRoom.peers.values()]
+        .filter((p) => p.clockErrMs != null)
+        .map((p) => ({
+          id: p.id,
+          name: p.displayName,
+          errMs: p.clockErrMs,
+          rttMs: p.clockRttMs,
+        }));
+      // Spread = max−min clock error = predicted metronome flam between these peers.
+      const errs = reports.map((r) => r.errMs as number);
+      const spread = errs.length > 1 ? Math.max(...errs) - Math.min(...errs) : 0;
+      console.log(
+        `[metro-sync] ${currentRoom.name}: spread=${spread}ms | ` +
+          `${currentPeer.displayName}: err=${err} rtt=${Math.round(parsed.data.rtt)} ` +
+          `otsOk=${otsOk} outLat=${outLatMs} || all: ` +
+          reports.map((r) => `${r.name}(err=${r.errMs} rtt=${r.rttMs})`).join(" "),
+      );
+      io.to(currentRoom.name).emit("sync-reports", { reports, spread });
+    });
+
     // Shared jam metronome (room-wide). Set bpm / running; on start we anchor beat 0 to
     // a server-time a moment in the future so every already-synced client can schedule
     // the same beats. Broadcast to everyone (incl. late joiners via the join response).

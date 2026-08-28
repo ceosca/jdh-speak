@@ -17,6 +17,12 @@ export interface Peer {
   recvTransport: WebRtcTransport | null;
   producers: Map<string, Producer>;
   consumers: Map<string, Consumer>;
+  // Metronome sync diagnostics (jam). Latest measured clock error of THIS peer vs the
+  // server's true clock (ms; +ve = this client's clock/metronome runs ahead), and its
+  // min-RTT. The SPREAD of clockErrMs across a room's peers is the predicted cross-machine
+  // metronome flam — the objective "llega igual a todos" number. Undefined until reported.
+  clockErrMs?: number;
+  clockRttMs?: number;
 }
 
 export type RoomMode = "p2p" | "sfu";
