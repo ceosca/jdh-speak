@@ -14,7 +14,10 @@ export class ClockSync {
   private bestRtt = Infinity;
   private timer: number | null = null;
 
-  constructor(private readonly emit: <T>(ev: string, data?: unknown) => Promise<T>) {}
+  constructor(
+    private readonly emit: <T>(ev: string, data?: unknown) => Promise<T>,
+    private readonly onSync?: (rttMs: number) => void,
+  ) {}
 
   private async ping(): Promise<void> {
     const l0 = Date.now();
@@ -37,6 +40,7 @@ export class ClockSync {
     } else {
       this.bestRtt += 2; // relax toward re-measuring
     }
+    this.onSync?.(this.rttMs);
   }
 
   // Rapid burst to converge, then keep a slow heartbeat to track drift.

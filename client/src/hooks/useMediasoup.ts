@@ -2509,7 +2509,10 @@ export function useMediasoup() {
       // so it lands at the same server-instant for everyone. Musicians play to the click
       // and compensate the P2P audio delay against this common timeline.
       if (!clockSyncRef.current) {
-        clockSyncRef.current = new ClockSync((ev, data) => emit(ev, data));
+        clockSyncRef.current = new ClockSync(
+          (ev, data) => emit(ev, data),
+          (rttMs) => useRoomStore.setState({ metronomeSyncMs: rttMs }),
+        );
         void clockSyncRef.current.start();
       }
       if (!metronomeRef.current) {
