@@ -42,9 +42,14 @@ export interface Room {
   peers: Map<string, Peer>;
   mode: RoomMode;
   // P2P explicitly disabled for this room (via the `?p2p=off` room URL param).
-  // Pins the room to the SFU even with <=5 peers; sticky for the room's
-  // lifetime once any joiner sets it (see decideMode's forceSfu).
+  // Pins the room to the SFU even with <=5 peers (see decideMode's forceSfu).
+  // DERIVED from `p2pOffPeers`: true iff at least one CURRENTLY-present peer asked
+  // for it — so it releases automatically when that peer leaves (NOT sticky).
   disableP2p: boolean;
+  // Socket ids of the peers currently present that joined with `?p2p=off`. Kept in
+  // sync with `disableP2p` on join/leave (mirrors `casters`), so one departed
+  // p2p-off client no longer pins the whole room to the SFU forever.
+  p2pOffPeers: Set<string>;
   // Manual "force SFU" toggle, flipped live via a keyboard shortcut (Ctrl+Alt+S).
   // Like disableP2p it pins the room to the SFU, but it's TOGGLEABLE (turning it
   // off returns the room to automatic P2P/SFU by size). Handy on a bad
@@ -201,6 +206,7 @@ export async function getOrCreateRoom(roomName: string): Promise<Room> {
     peers: new Map(),
     mode: "p2p",
     disableP2p: false,
+    p2pOffPeers: new Set(),
     forceSfu: false,
     jamMode: false,
     metronome: { bpm: 100, running: false, anchorServerMs: 0 },

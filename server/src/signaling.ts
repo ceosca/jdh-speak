@@ -231,6 +231,10 @@ export function createSignalingServer(
     // Drop from the casters set before removePeer (which may destroy the room)
     // so the mode decision no longer forces SFU once this music caster is gone.
     room.casters.delete(peerId);
+    // Same for a departing `?p2p=off` peer: recompute disableP2p from who's left,
+    // so one gone p2p-off client no longer pins the whole room to the SFU forever.
+    room.p2pOffPeers.delete(peerId);
+    room.disableP2p = room.p2pOffPeers.size > 0;
 
     removePeer(room, peerId);
 
@@ -286,10 +290,12 @@ export function createSignalingServer(
         const peer = createPeer(room, socket.id, displayName);
 
         // Register a caster / P2P-disable BEFORE deciding the mode, so the join
-        // response (and the new peer's own setup) already reflects the
-        // forced-SFU room. disableP2p is sticky for the room's lifetime.
+        // response (and the new peer's own setup) already reflects the forced-SFU
+        // room. disableP2p is DERIVED from the p2p-off peers present NOW (mirrors
+        // casters), so it releases when the last such peer leaves — see teardownPeer.
         if (role === "caster") room.casters.add(socket.id);
-        if (disableP2p) room.disableP2p = true;
+        if (disableP2p) room.p2pOffPeers.add(socket.id);
+        room.disableP2p = room.p2pOffPeers.size > 0;
         currentRoom = room;
         currentPeer = peer;
 
