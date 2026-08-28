@@ -13,9 +13,12 @@
 // realistic floor for networked-music sync (same limit Jamulus lives with).
 
 const K_BEST = 5; // median the offsets of the K lowest-RTT samples
+const EMA_ALPHA = 0.15; // per-ping smoothing of the offset toward the median target
+const SNAP_MS = 50; // corrections larger than this snap instantly (startup / real steps)
 
 export class ClockSync {
-  private offset = 0; // add to Date.now() to get server time
+  private offset = 0; // add to Date.now() to get server time (EMA-SMOOTHED — see recompute)
+  private initialized = false;
   private minRtt = Infinity;
   private sampleCount = 0;
   private samples: { offset: number; rtt: number }[] = [];
@@ -29,12 +32,23 @@ export class ClockSync {
   private recompute(): void {
     if (this.samples.length === 0) return;
     // Take the K lowest-RTT samples, then the MEDIAN of their offsets (robust to a single
-    // asymmetric outlier that happens to have a low RTT).
+    // asymmetric outlier that happens to have a low RTT) — that's the TARGET offset.
     const byRtt = [...this.samples].sort((a, b) => a.rtt - b.rtt).slice(0, K_BEST);
     const offs = byRtt.map((s) => s.offset).sort((a, b) => a - b);
     const mid = Math.floor(offs.length / 2);
-    this.offset = offs.length % 2 ? offs[mid] : (offs[mid - 1] + offs[mid]) / 2;
+    const target = offs.length % 2 ? offs[mid] : (offs[mid - 1] + offs[mid]) / 2;
     this.minRtt = byRtt[0].rtt;
+    // Then EMA-SMOOTH the used offset toward that target. On a jittery WAN link the median
+    // target wobbles ±10-15 ms ping-to-ping as the 5-lowest set changes; snapping to it each
+    // time makes the metronome CLICK wobble beat-to-beat (felt as "not reliable"). Smoothing
+    // keeps the offset CONSISTENT — clock drift is slow (ppm) so the small lag is harmless.
+    // A large correction (startup, or a genuine step) still snaps so convergence stays fast.
+    if (!this.initialized || Math.abs(target - this.offset) > SNAP_MS) {
+      this.offset = target;
+      this.initialized = true;
+    } else {
+      this.offset += EMA_ALPHA * (target - this.offset);
+    }
   }
 
   private async ping(): Promise<void> {
