@@ -1175,6 +1175,37 @@ export function useMediasoup() {
       (window as unknown as { __rxLatencyMs: number | null }).__rxLatencyMs =
         n > 0 ? +(sum / n).toFixed(0) : null;
 
+      // Self-return buffer, measured SEPARATELY from the peers (the monitor consumer is not
+      // in peerAudiosRef). This is the Jamulus-model check: in jam it MUST equal the peer
+      // buffer above, else the down-path+buffer+output no longer cancels and aligning your
+      // return to the peers puts you off for everyone. Exposed on __selfReturnMs.
+      let selfMs: number | null = null;
+      const selfRcv = netMonitorRef.current?.consumer?.rtpReceiver;
+      if (selfRcv) {
+        try {
+          const stats = await selfRcv.getStats();
+          stats.forEach((s: Record<string, unknown>) => {
+            if (
+              s.type === "inbound-rtp" &&
+              s.kind === "audio" &&
+              typeof s.jitterBufferDelay === "number" &&
+              typeof s.jitterBufferEmittedCount === "number"
+            ) {
+              const delay = s.jitterBufferDelay as number;
+              const count = s.jitterBufferEmittedCount as number;
+              const prev = rxPrevRef.current.get(selfRcv);
+              if (prev && count > prev.count) {
+                selfMs = +(((delay - prev.delay) / (count - prev.count)) * 1000).toFixed(0);
+              }
+              rxPrevRef.current.set(selfRcv, { delay, count });
+            }
+          });
+        } catch {
+          /* monitor receiver gone */
+        }
+      }
+      (window as unknown as { __selfReturnMs: number | null }).__selfReturnMs = selfMs;
+
       // SEND path (the user's actual complaint: their voice reaching a peer). In P2P the
       // remote-inbound-rtp roundTripTime is the DIRECT RTT to each peer — i.e. exactly
       // the path jam now uses (vs the old SFU detour via the Pi). Exposed on __txRttMs.
@@ -2542,6 +2573,7 @@ export function useMediasoup() {
               const w = window as unknown as {
                 __rxLatencyMs?: number | null;
                 __txRttMs?: number | null;
+                __selfReturnMs?: number | null;
               };
               void emit("sync-report", {
                 serverNow: clk.serverNow(),
@@ -2554,6 +2586,8 @@ export function useMediasoup() {
                 // per-link latency (and its fraction of a beat) — the actual "off-beat".
                 rxLatMs: w.__rxLatencyMs ?? undefined,
                 txRttMs: w.__txRttMs ?? undefined,
+                // Jamulus-model check: self-return buffer must equal rxLatMs (peer buffer).
+                selfMs: w.__selfReturnMs ?? undefined,
               }).catch(() => {});
             }
           },

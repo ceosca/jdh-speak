@@ -808,6 +808,7 @@ export function createSignalingServer(
           outLatMs: z.number().optional(),
           rxLatMs: z.number().nullable().optional(),
           txRttMs: z.number().nullable().optional(),
+          selfMs: z.number().nullable().optional(),
         })
         .safeParse(data);
       if (!parsed.success) return;
@@ -819,6 +820,11 @@ export function createSignalingServer(
       const outLatMs = parsed.data.outLatMs;
       const rxLatMs = parsed.data.rxLatMs ?? null;
       const txRttMs = parsed.data.txRttMs ?? null;
+      const selfMs = parsed.data.selfMs ?? null;
+      // Jamulus-model health: the self-return buffer must match the peer buffer, else
+      // aligning your return to the peers is not the same as aligning at the server.
+      const jamOk =
+        selfMs != null && rxLatMs != null ? (Math.abs(selfMs - rxLatMs) <= 12 ? "OK" : "MISMATCH") : "n/a";
       // Estimated mouth-to-ear THIS peer experiences hearing others: remote capture (~10)
       // + network one-way (txRtt/2) + our jitter buffer (rxLat) + our output (outLat|~42).
       const earMs =
@@ -840,7 +846,7 @@ export function createSignalingServer(
         `[metro-sync] ${currentRoom.name}: spread=${spread}ms | ` +
           `${currentPeer.displayName}: err=${err} rtt=${Math.round(parsed.data.rtt)} ` +
           `otsOk=${otsOk} outLat=${outLatMs} | ear≈${earMs}ms ` +
-          `(txRtt=${txRttMs} rx=${rxLatMs}) || all: ` +
+          `(txRtt=${txRttMs} rx=${rxLatMs}) | self=${selfMs} jamRef=${jamOk} || all: ` +
           reports.map((r) => `${r.name}(err=${r.errMs} rtt=${r.rttMs})`).join(" "),
       );
       io.to(currentRoom.name).emit("sync-reports", { reports, spread });
