@@ -204,7 +204,7 @@
   "settings_jam_measured": "Latencia medida — recepción {rx} ms · ida y vuelta a los demás {rtt} ms. Compará este número en normal vs jam.",
   "settings_jam_buffer_label": "Buffer de jitter",
   "settings_jam_buffer_desc": "Controla el retardo de TODO lo que escuchás. Más bajo = menos latencia entre todos, pero más riesgo de que se entrecorte o suene feo. Más alto = todo más estable, con un poco más de retardo. Bajalo hasta justo antes de que empiece a cortarse. Se aplica al instante mientras lo movés.",
-  "settings_jam_buffer_live": "Ahora: {buffered} ms en buffer · jitter {jitter} ms · {recovered} recuperados · {lost} perdidos",
+  "settings_jam_buffer_live": "Latencia de recepción medida ahora: {latency} ms (movés el slider y mirás si baja)",
   "settings_net_monitor_label": "Monitoreo de red (oír tu propio retorno)",
   "settings_net_monitor_hint": "En vez del monitor local, oís tu propia señal de vuelta por el servidor (a lo Jamulus), a la latencia de la red. Te guiás por ese retorno para tocar en tiempo con todos: te adelantás a tu propio rebote. Requiere auriculares.",
   "settings_net_monitor_device_label": "Placa de salida del retorno",

@@ -74,35 +74,19 @@ export function DeviceSettings() {
   // Live jitter-buffer readout (the actual buffered ms / drops the jam playout is
   // running at) so the sliders can be tuned by ear+eye. Polled from the shared stat the
   // buffers publish; only while jam is on.
-  const [liveBuf, setLiveBuf] = useState<{
-    bufferedMs: number;
-    jitterMs: number;
-    lost: number;
-    recovered: number;
-  } | null>(null);
+  // Live MEASURED receive latency (window.__rxLatencyMs — the NetEQ jitter-buffer delay
+  // averaged across peers, from getStats). Shown so the slider's effect is VISIBLE: move
+  // it and watch the number. If it doesn't move, the buffer is already at the network's
+  // jitter floor (can't go lower without cutting) — not a bug, physics.
+  const [rxLatency, setRxLatency] = useState<number | null>(null);
   useEffect(() => {
     if (!jamMode) {
-      setLiveBuf(null);
+      setRxLatency(null);
       return;
     }
     const id = window.setInterval(() => {
-      const s = (
-        window as unknown as {
-          __jamMeshStats?: {
-            bufferedMs: number;
-            jitterMs: number;
-            lost: number;
-            recovered: number;
-          };
-        }
-      ).__jamMeshStats;
-      if (s)
-        setLiveBuf({
-          bufferedMs: s.bufferedMs,
-          jitterMs: s.jitterMs,
-          lost: s.lost,
-          recovered: s.recovered,
-        });
+      const v = (window as unknown as { __rxLatencyMs?: number }).__rxLatencyMs;
+      setRxLatency(typeof v === "number" ? v : null);
     }, 1000);
     return () => window.clearInterval(id);
   }, [jamMode]);
@@ -322,18 +306,13 @@ export function DeviceSettings() {
                 {m.settings_jam_buffer_desc()}
               </p>
             </div>
-            {/* Live readout — the actual buffer/jitter/drops right now. NOT an aria-live
-                region: it updates every second, so announcing each change would flood a
-                screen reader (it did — NVDA read the ms non-stop). A SR user can still
-                navigate to it to read the current snapshot on demand. */}
-            {liveBuf && (
+            {/* Live MEASURED receive latency (real getStats number). Move the slider and
+                watch it: if it drops, the slider is working; if it's stuck, you're at the
+                network's jitter floor and it can't go lower without cutting. NOT an
+                aria-live region (updates every second → would flood a screen reader). */}
+            {rxLatency != null && (
               <p id={jamBufLiveId} className="mt-2 text-xs tabular-nums text-sonic-400">
-                {m.settings_jam_buffer_live({
-                  buffered: liveBuf.bufferedMs,
-                  jitter: liveBuf.jitterMs,
-                  recovered: liveBuf.recovered,
-                  lost: liveBuf.lost,
-                })}
+                {m.settings_jam_buffer_live({ latency: rxLatency })}
               </p>
             )}
           </div>
