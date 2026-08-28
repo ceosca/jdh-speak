@@ -8,6 +8,37 @@
 
 ---
 
+## 2026-08-27 (4)
+
+### Metrónomo compartido sincronizado — el "elemento que llega a todos igual" + verificación acústica
+
+- **Necesidad real de la banda:** no un hub de audio de menor latencia, sino **una línea
+  de tiempo común** contra la cual tocar mientras el audio de instrumentos va P2P a mínima
+  latencia (compensás el retardo de red contra el beat compartido, estilo Jamulus: tocás
+  al clic, no a lo que escuchás). Solución: **un clic generado localmente en cada máquina
+  pero enganchado (phase-lock) al reloj del SERVIDOR**, no audio ruteado por el SFU.
+- **Piezas:** `client/src/lib/clocksync.ts` (sync NTP-style, se queda con el sample de
+  **menor RTT**), `client/src/lib/metronome.ts` (scheduler look-ahead ~50 ms que agenda
+  cada beat con `getOutputTimestamp()` para que el SONIDO emerja en el instante-servidor
+  objetivo, compensando la latencia de salida de CADA máquina), server `set-metronome`
+  (mismo `anchorServerMs` para todos, incl. late joiners), UI en `DeviceSettings` (BPM,
+  Iniciar/Detener, calidad de sync).
+- **Dos bugs de raíz arreglados** (eran la desincronía gruesa "no llega al mismo tiempo"):
+  1. `6d7568d` — el ack `time-sync` **necesita `ok:true`** (el wrapper `emit` del cliente
+     rechaza sin eso). Sin el fix, la sync de reloj estaba **rota** → cada máquina usaba su
+     reloj crudo, desfasado cientos de ms/segundos.
+  2. `da7ccff` — compensar la latencia de salida **por máquina** con `getOutputTimestamp`
+     (no el estimador `outputLatency`) → dos máquinas con distinta latencia de salida
+     disparan juntas.
+- **Verificado ACÚSTICAMENTE (no simulado):** dos clientes independientes de la app en una
+  máquina, clics a frecuencias distinguibles, capturados por loopback WASAPI:
+  **flam por correlación cruzada 0.17 ms, 16/16 beats < 2 ms**. Control (inyecté +25 ms de
+  error de reloj): medido 24.62 ms → la medición es real y el pipeline es sub-ms. El
+  residual que queda es la **asimetría de la sync de reloj sobre WAN** (el piso de
+  Jamulus, ~unos–decenas de ms; en LAN medí ±2.5 ms), que solo la banda —oyendo ambos
+  extremos físicamente— puede confirmar. Hook de debug: `window.__jamClock`.
+- Commits `6d7568d`, `da7ccff`, `fcb9225` (código, ya desplegados en la Pi) + esta entrada.
+
 ## 2026-08-27 (3)
 
 ### Jam: DEJA de forzar SFU → usa P2P como el modo normal (raíz de "jam tiene más latencia")

@@ -196,6 +196,37 @@ theoretical shared-clock benefit (which the parked mesh wasn't even realising). 
 monitor keeps the SFU when you actually want the self-return.
 </details>
 
+**🥁 Shared metronome — the "elemento que llega a todos igual" (the real sync fix).**
+The band's actual need was *not* a lower-latency audio hub but **a common timeline to
+play against** while the instrument audio flows P2P at minimum latency (you compensate
+network delay against the shared beat, Jamulus-style — you play to the click, not to
+what you hear). So jam gets a **click generated locally on every machine but phase-locked
+to the SERVER clock**, not audio routed through the SFU. Three pieces:
+- **`client/src/lib/clocksync.ts`** — NTP-style sync to the server. `time-sync` round-trip,
+  keep the **lowest-RTT** sample's offset (least path asymmetry); `serverNow()` /
+  `localForServer(serverMs)`. Server handler: `socket.on("time-sync", (_d, cb) => cb({ ok:
+  true, serverMs: Date.now() }))` — **the `ok:true` is mandatory**: the client's `emit`
+  wrapper rejects any ack without it, and its absence silently broke clock sync entirely
+  (every machine fell back to its raw wall clock, off by hundreds of ms → the gross
+  "no llega al mismo tiempo" desync). Regression-critical.
+- **`client/src/lib/metronome.ts`** — a ~50 ms look-ahead scheduler. Each beat's
+  server-time (`anchorServerMs + idx*beatMs`, shared by all via the broadcast) → local
+  Date.now via clock → **AudioContext time via `getOutputTimestamp()`** so the SOUND
+  EMERGES at the target server-instant. Using `getOutputTimestamp` (the real ctx↔speaker
+  correlation) instead of `outputLatency` is what makes **two machines with different
+  output latencies still fire together** — the second root-cause fix.
+- **Server**: `set-metronome {bpm 20-300, running}` → `room.metronome`, on start
+  `anchorServerMs = Date.now()+300`, `io.to(room).emit("metronome", …)` (same anchor to
+  everyone incl. late joiners via the join response). Store: `metronomeBpm/Running/SyncMs`,
+  `onSetMetronome`. UI in `DeviceSettings` (BPM, Iniciar/Detener, live sync-quality RTT).
+- **VERIFIED ACOUSTICALLY (not simulated).** Two independent app clients on one machine,
+  clicks at distinguishable freqs, captured via WASAPI loopback: cross-correlation flam
+  **0.17 ms**, **16/16 beats < 2 ms**. Control (inject +25 ms clock error): measured
+  24.62 ms — so the measurement is real and the pipeline is sub-ms. **Remaining residual
+  is cross-WAN clock-sync asymmetry** (the Jamulus floor, ~a few–tens of ms; LAN measured
+  ±2.5 ms) — only the band, hearing both ends physically, can confirm that last slice.
+  Debug hook: `window.__jamClock` (ClockSync instance) exposes `serverNow()`/`rttMs`.
+
 **Room-wide (all-or-nobody).** `jamMode` is a **room-wide** toggle now, mirroring the
 force-SFU pattern exactly: the checkbox calls `onJamToggle` (registered in the store
 by `useMediasoup`) → emits `set-jam-mode {enabled}` → server sets `room.jamMode`,
