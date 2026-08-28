@@ -2516,7 +2516,10 @@ export function useMediasoup() {
         void clockSyncRef.current.start();
       }
       if (!metronomeRef.current) {
-        metronomeRef.current = new Metronome(sharedAudioContext, masterBus);
+        // Route straight to ctx.destination (NOT masterBus): getOutputTimestamp measures
+        // exactly that path, so the per-machine output-latency compensation is accurate.
+        // masterBus → MediaStreamDestination → <audio> would add latency it can't see.
+        metronomeRef.current = new Metronome(sharedAudioContext, sharedAudioContext.destination);
       }
       // The click itself is driven by a store-watching effect (below), so both this
       // broadcast and the join response converge through the same path.

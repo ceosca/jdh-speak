@@ -11,7 +11,8 @@
 
 export class ClockSync {
   private offset = 0; // add to Date.now() to get server time
-  private bestRtt = Infinity;
+  private minRtt = Infinity;
+  private samples: { offset: number; rtt: number }[] = [];
   private timer: number | null = null;
 
   constructor(
@@ -32,25 +33,26 @@ export class ClockSync {
     if (rtt < 0 || rtt > 5000) return;
     const localMid = (l0 + l1) / 2;
     const offset = res.serverMs - localMid;
-    // Keep the offset from the lowest-RTT sample (min asymmetry). Let the "best" RTT
-    // relax slowly so a transient-low sample doesn't pin us forever on a stale offset.
-    if (rtt <= this.bestRtt) {
-      this.bestRtt = rtt;
-      this.offset = offset;
-    } else {
-      this.bestRtt += 2; // relax toward re-measuring
-    }
+    // Sliding window; the offset is taken from the LOWEST-RTT sample in the window (its
+    // path is the most symmetric, so its offset is the most accurate). The window lets us
+    // re-acquire a better sample and track slow drift without a growing-error hack.
+    this.samples.push({ offset, rtt });
+    if (this.samples.length > 60) this.samples.shift();
+    let best = this.samples[0];
+    for (const s of this.samples) if (s.rtt < best.rtt) best = s;
+    this.offset = best.offset;
+    this.minRtt = best.rtt;
     this.onSync?.(this.rttMs);
   }
 
-  // Rapid burst to converge, then keep a slow heartbeat to track drift.
+  // Rapid burst to converge, then a steady heartbeat to track drift + re-acquire minima.
   async start(): Promise<void> {
-    for (let i = 0; i < 8; i++) await this.ping();
+    for (let i = 0; i < 15; i++) await this.ping();
     const loop = async () => {
       await this.ping();
-      this.timer = window.setTimeout(loop, 3000);
+      this.timer = window.setTimeout(loop, 2000);
     };
-    this.timer = window.setTimeout(loop, 3000);
+    this.timer = window.setTimeout(loop, 2000);
   }
 
   stop(): void {
@@ -68,6 +70,6 @@ export class ClockSync {
     return serverMs - this.offset;
   }
   get rttMs(): number {
-    return this.bestRtt === Infinity ? -1 : Math.round(this.bestRtt);
+    return this.minRtt === Infinity ? -1 : Math.round(this.minRtt);
   }
 }

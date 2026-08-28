@@ -43,28 +43,46 @@ export class Metronome {
   private tick = (): void => {
     if (!this.clock) return;
     const beatMs = 60000 / this.bpm;
-    const now = Date.now();
-    const lookaheadMs = 220;
-    // First upcoming beat index on the SERVER timeline.
+    // Snapshot the three clocks together: Date.now() (clock-sync domain), performance.now
+    // (audio domain), and getOutputTimestamp() (the ACTUAL ctx↔output correlation, which
+    // captures this machine's real output latency). We compute the ctx time to schedule
+    // each beat so the SOUND EMERGES at the target server-instant — so two machines with
+    // different output latencies still emerge together (the big desync source, measured
+    // ~52 ms here). Without getOutputTimestamp, fall back to the outputLatency estimate.
+    const dateNow = Date.now();
+    const perfNow = performance.now();
+    const ots =
+      typeof this.ctx.getOutputTimestamp === "function" ? this.ctx.getOutputTimestamp() : null;
+    const otsCtx = ots?.contextTime;
+    const otsPerf = ots?.performanceTime;
+    const useOts = otsCtx != null && otsPerf != null && otsPerf > 0;
+    const outLat = this.ctx.outputLatency || this.ctx.baseLatency || 0.02;
+
     let n = Math.ceil((this.clock.serverNow() - this.anchorServerMs) / beatMs);
     if (n < 0) n = 0;
-    for (let i = 0; i < 16; i++) {
+    for (let i = 0; i < 24; i++) {
       const idx = n + i;
-      const beatServer = this.anchorServerMs + idx * beatMs;
-      const beatLocal = this.clock.localForServer(beatServer);
-      const dt = beatLocal - now; // ms until this beat, in local time
-      if (dt < -10) continue;
-      if (dt > lookaheadMs) break;
       if (this.scheduled.has(idx)) continue;
+      const beatServer = this.anchorServerMs + idx * beatMs;
+      const beatLocalDate = this.clock.localForServer(beatServer); // Date.now() domain
+      let at: number; // ctx.currentTime domain time to schedule at
+      if (useOts) {
+        const beatPerf = perfNow + (beatLocalDate - dateNow); // performance.now() domain
+        at = otsCtx + (beatPerf - otsPerf) / 1000;
+      } else {
+        at = this.ctx.currentTime + (beatLocalDate - dateNow) / 1000 - outLat;
+      }
+      const ahead = at - this.ctx.currentTime;
+      if (ahead < -0.03) continue; // already passed at the output → skip
+      if (ahead > 0.3) break; // beyond the look-ahead window
       this.scheduled.add(idx);
-      this.click(this.ctx.currentTime + Math.max(0, dt) / 1000, idx);
+      this.click(Math.max(this.ctx.currentTime + 0.0005, at), idx);
     }
-    // Prune old scheduled indices so the Set doesn't grow unbounded.
     if (this.scheduled.size > 64) {
       const cutoff = n - 8;
       for (const k of this.scheduled) if (k < cutoff) this.scheduled.delete(k);
     }
-    this.timer = window.setTimeout(this.tick, 50);
+    this.timer = window.setTimeout(this.tick, 40);
   };
 
   private click(at: number, idx: number): void {
