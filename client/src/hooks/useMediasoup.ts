@@ -2527,11 +2527,21 @@ export function useMediasoup() {
               } catch {
                 /* ignore */
               }
+              const w = window as unknown as {
+                __rxLatencyMs?: number | null;
+                __txRttMs?: number | null;
+              };
               void emit("sync-report", {
                 serverNow: clk.serverNow(),
                 rtt: clk.rttMs,
                 otsOk,
                 outLatMs,
+                // Real mouth-to-ear pieces (getStats): our receive jitter-buffer delay and
+                // the DIRECT P2P RTT to our peers. mouth-to-ear ≈ their capture + txRtt/2
+                // (network one-way) + our rxLat + our output. Lets the server print the true
+                // per-link latency (and its fraction of a beat) — the actual "off-beat".
+                rxLatMs: w.__rxLatencyMs ?? undefined,
+                txRttMs: w.__txRttMs ?? undefined,
               }).catch(() => {});
             }
           },

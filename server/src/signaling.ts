@@ -806,6 +806,8 @@ export function createSignalingServer(
           rtt: z.number().min(0).max(5000),
           otsOk: z.boolean().optional(),
           outLatMs: z.number().optional(),
+          rxLatMs: z.number().nullable().optional(),
+          txRttMs: z.number().nullable().optional(),
         })
         .safeParse(data);
       if (!parsed.success) return;
@@ -815,6 +817,14 @@ export function createSignalingServer(
       currentPeer.clockRttMs = Math.round(parsed.data.rtt);
       const otsOk = parsed.data.otsOk;
       const outLatMs = parsed.data.outLatMs;
+      const rxLatMs = parsed.data.rxLatMs ?? null;
+      const txRttMs = parsed.data.txRttMs ?? null;
+      // Estimated mouth-to-ear THIS peer experiences hearing others: remote capture (~10)
+      // + network one-way (txRtt/2) + our jitter buffer (rxLat) + our output (outLat|~42).
+      const earMs =
+        txRttMs != null && rxLatMs != null
+          ? Math.round(10 + txRttMs / 2 + rxLatMs + (outLatMs || 42))
+          : null;
       const reports = [...currentRoom.peers.values()]
         .filter((p) => p.clockErrMs != null)
         .map((p) => ({
@@ -829,7 +839,8 @@ export function createSignalingServer(
       console.log(
         `[metro-sync] ${currentRoom.name}: spread=${spread}ms | ` +
           `${currentPeer.displayName}: err=${err} rtt=${Math.round(parsed.data.rtt)} ` +
-          `otsOk=${otsOk} outLat=${outLatMs} || all: ` +
+          `otsOk=${otsOk} outLat=${outLatMs} | ear≈${earMs}ms ` +
+          `(txRtt=${txRttMs} rx=${rxLatMs}) || all: ` +
           reports.map((r) => `${r.name}(err=${r.errMs} rtt=${r.rttMs})`).join(" "),
       );
       io.to(currentRoom.name).emit("sync-reports", { reports, spread });
