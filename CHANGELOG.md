@@ -8,6 +8,24 @@
 
 ---
 
+## 2026-08-28 (2)
+
+### Fix: `?p2p=off` ya no clava la sala en SFU para siempre — se libera al irse quien lo pidió
+
+- **Síntoma (Cristian, en vivo):** 3 personas, sin Modo ensayo, y aun así en SFU. El log
+  del servidor mostró que el Android de Edu había entrado antes con `?p2p=off`.
+- **Causa:** `room.disableP2p` se ponía en `true` al entrar alguien con `?p2p=off` y era
+  **sticky toda la vida de la sala** — nunca se recalculaba. Cuando ese cliente se iba, el
+  flag quedaba pegado → SFU para siempre aunque no quedara nadie con p2p-off ni jam.
+- **Fix (`69e28a8`):** `disableP2p` ahora se **deriva de `room.p2pOffPeers`** (los peers
+  `?p2p=off` presentes AHORA): se agrega al entrar y se quita en `teardownPeer`, igual que
+  `casters`, recalculando en ambos. Al irse el último que lo pidió, `applyModeDecision`
+  devuelve la sala a P2P sola. **Verificado en vivo:** tras el restart, los 3 reconectaron
+  sin flag y `txRtt` no-null ⇒ P2P. Cambio de servidor → requiere restart.
+- Nota cliente (pendiente opcional): `?p2p=off` también queda en `sessionStorage` por
+  pestaña (`jdh-speak:p2p-off:<sala>`), así que esa pestaña lo re-manda en cada F5 mientras
+  siga abierta (ahora se libera al salir). Se podría agregar un atajo para limpiarlo en vivo.
+
 ## 2026-08-28
 
 ### Jam: el retorno de red es la REFERENCIA de tiempo (modelo Jamulus), no un eco rápido — bug de raíz
