@@ -24,6 +24,8 @@ export function DeviceSettings() {
   const shareMonitor = useRoomStore((s) => s.shareMonitor);
   const jamMode = useRoomStore((s) => s.jamMode);
   const networkMonitor = useRoomStore((s) => s.networkMonitor);
+  // Jam/ensayo options are hidden unless revealed with Alt+Shift+J.
+  const jamUiVisible = useRoomStore((s) => s.jamUiVisible);
   const setShareMonitor = useRoomStore((s) => s.setShareMonitor);
   const setJamMode = useRoomStore((s) => s.setJamMode);
   const setNetworkMonitor = useRoomStore((s) => s.setNetworkMonitor);
@@ -241,6 +243,12 @@ export function DeviceSettings() {
         </p>
       </div>
 
+      {/* ── JAM / ENSAYO block: HIDDEN by default. Revealed only with Alt+Shift+J
+          (jamUiVisible) so first-time/casual users see just the standard controls.
+          Everything jam-specific (Modo ensayo, buffer, metrónomo, Monitoreo de red)
+          lives inside this guard. ── */}
+      {jamUiVisible && (
+        <>
       {/* Jam mode: minimise latency for playing instruments together (unprocessed
           capture + tiny jitter buffer). ROOM-WIDE: toggling it broadcasts to the
           whole room (all-or-nobody) via onJamToggle; falls back to the local flag
@@ -423,6 +431,8 @@ export function DeviceSettings() {
           </div>
         )}
       </div>
+        </>
+      )}
 
       {/* Browsers hide device names until mic permission is granted (e.g. in
           the lobby before the first test) — explain the bare lists. Tied to the

@@ -398,6 +398,22 @@ export function Room() {
         return;
       }
 
+      // Alt+Shift+J: reveal / hide the jam ("Modo ensayo") options. Hidden by
+      // default so first-time/casual users aren't overwhelmed; power users who
+      // know the shortcut toggle them (persisted). Announced for screen readers.
+      if (e.altKey && e.shiftKey && (e.code === "KeyJ" || e.key === "j" || e.key === "J")) {
+        e.preventDefault();
+        useRoomStore.getState().toggleJamUi();
+        useRoomStore
+          .getState()
+          .announce(
+            useRoomStore.getState().jamUiVisible
+              ? m.settings_jam_ui_shown()
+              : m.settings_jam_ui_hidden(),
+          );
+        return;
+      }
+
       // Serieteca playback shortcuts (Alt+K/J/L/S/A/R/I), active only while a
       // series is the loaded streamer — otherwise these fall through and never
       // shadow any other shortcut. K = play/pause, J/L = seek -15s/+15s (routed

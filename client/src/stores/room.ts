@@ -51,6 +51,18 @@ function loadPlayerRepeat(): PlayerRepeat {
   return v === "one" || v === "all" ? v : "off";
 }
 
+// Jam/ensayo options are HIDDEN by default: only power users who know Alt+Shift+J
+// reveal them, so first-timers see just the standard controls. Persisted per-browser,
+// so once you turn it on it stays on for you.
+const JAM_UI_KEY = "jdh-speak:jamUiVisible";
+function loadJamUiVisible(): boolean {
+  try {
+    return localStorage.getItem(JAM_UI_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 
 function loadFileVolume(): number {
   try {
@@ -173,6 +185,8 @@ interface RoomState {
   // Are YOU speaking right now (from your mic level, gated by mute)? Drives the
   // "you are talking" indicator on your own card. Visual only — never announced.
   localSpeaking: boolean;
+  // Jam/ensayo options shown? Hidden by default, toggled by Alt+Shift+J.
+  jamUiVisible: boolean;
   isSharingAudio: boolean;
   // Local-file streaming (independent of the audio share): the name of the file
   // currently being streamed into the call (null = not streaming), and whether
@@ -384,6 +398,7 @@ interface RoomState {
   removePeer: (peerId: string) => void;
   setPeerSpeaking: (peerId: string, speaking: boolean) => void;
   setLocalSpeaking: (speaking: boolean) => void;
+  toggleJamUi: () => void;
   setPeerMuted: (peerId: string, muted: boolean) => void;
   setPeerName: (peerId: string, displayName: string) => void;
   setPeerVolume: (peerId: string, volume: number) => void;
@@ -401,6 +416,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   hasMic: true,
   isMuted: false,
   localSpeaking: false,
+  jamUiVisible: loadJamUiVisible(),
   isDeafened: false,
   isSharingAudio: false,
   fileStreamName: null,
@@ -706,6 +722,17 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setLocalSpeaking: (speaking) =>
     set((state) => (state.localSpeaking === speaking ? {} : { localSpeaking: speaking })),
 
+  toggleJamUi: () =>
+    set((state) => {
+      const next = !state.jamUiVisible;
+      try {
+        localStorage.setItem(JAM_UI_KEY, next ? "1" : "0");
+      } catch {
+        /* localStorage unavailable — session-only toggle */
+      }
+      return { jamUiVisible: next };
+    }),
+
   setPeerMuted: (peerId, muted) =>
     set((state) => {
       const peers = new Map(state.peers);
@@ -782,3 +809,9 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       messages: [],
     }),
 }));
+
+// Debug hook (like window.__jamClock): lets us inspect/drive store state from the
+// console for testing UI states (speaking/muted). Read-write; only a dev aid.
+if (typeof window !== "undefined") {
+  (window as unknown as { __roomStore?: typeof useRoomStore }).__roomStore = useRoomStore;
+}

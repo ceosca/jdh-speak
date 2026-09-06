@@ -340,6 +340,8 @@
   "card_volume_label": "Volumen",
   "card_your_mic_label": "Tu micrófono",
   "card_speaking_now": "Hablando ahora",
+  "settings_jam_ui_shown": "Opciones de modo ensayo mostradas",
+  "settings_jam_ui_hidden": "Opciones de modo ensayo ocultas",
 
   "name_prompt_title": "¿Cómo te quieres llamar?",
   "name_prompt_label": "Tu nombre",
