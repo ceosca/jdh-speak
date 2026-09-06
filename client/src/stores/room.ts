@@ -170,6 +170,9 @@ interface RoomState {
   // Local controls
   isMuted: boolean;
   isDeafened: boolean;
+  // Are YOU speaking right now (from your mic level, gated by mute)? Drives the
+  // "you are talking" indicator on your own card. Visual only — never announced.
+  localSpeaking: boolean;
   isSharingAudio: boolean;
   // Local-file streaming (independent of the audio share): the name of the file
   // currently being streamed into the call (null = not streaming), and whether
@@ -380,6 +383,7 @@ interface RoomState {
   addPeer: (peerId: string, displayName: string) => void;
   removePeer: (peerId: string) => void;
   setPeerSpeaking: (peerId: string, speaking: boolean) => void;
+  setLocalSpeaking: (speaking: boolean) => void;
   setPeerMuted: (peerId: string, muted: boolean) => void;
   setPeerName: (peerId: string, displayName: string) => void;
   setPeerVolume: (peerId: string, volume: number) => void;
@@ -396,6 +400,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   mode: "p2p",
   hasMic: true,
   isMuted: false,
+  localSpeaking: false,
   isDeafened: false,
   isSharingAudio: false,
   fileStreamName: null,
@@ -691,11 +696,15 @@ export const useRoomStore = create<RoomState>((set, get) => ({
 
   setPeerSpeaking: (peerId, speaking) =>
     set((state) => {
+      const peer = state.peers.get(peerId);
+      if (!peer || peer.isSpeaking === speaking) return {}; // no-op → no re-render
       const peers = new Map(state.peers);
-      const peer = peers.get(peerId);
-      if (peer) peers.set(peerId, { ...peer, isSpeaking: speaking });
+      peers.set(peerId, { ...peer, isSpeaking: speaking });
       return { peers };
     }),
+
+  setLocalSpeaking: (speaking) =>
+    set((state) => (state.localSpeaking === speaking ? {} : { localSpeaking: speaking })),
 
   setPeerMuted: (peerId, muted) =>
     set((state) => {

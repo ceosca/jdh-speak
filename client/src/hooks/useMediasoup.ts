@@ -85,6 +85,11 @@ interface PeerAudio {
   // Low-pass that dulls distant voices (air absorption) — in the chain only
   // while spatial audio is on, like the panner.
   airFilter: BiquadFilterNode;
+  // Passive tap off sourceNode (pre-gain) to detect when this peer is speaking,
+  // for the "who is talking" indicator. Reads the RAW incoming level, so it's
+  // independent of the listener's per-peer volume. Never connected onward → no
+  // audio effect.
+  analyser?: AnalyserNode;
   // SFU-only
   consumer?: Consumer;
   // Jam mode: when set, this peer's audio is decoded by us (WebCodecs) through a
@@ -321,7 +326,13 @@ function createAudioPipeline(track: MediaStreamTrack): Omit<PeerAudio, "consumer
   // Output goes to the master bus (which routes to the plain or low-latency sink).
   gainNode.connect(masterBus);
 
-  return { audioEl, gainNode, sourceNode, panner, airFilter };
+  // Speaking detector: a passive analyser tapping the raw source (not connected
+  // onward, so it never affects playback). The detection loop reads its level.
+  const analyser = sharedAudioContext.createAnalyser();
+  analyser.fftSize = 1024;
+  sourceNode.connect(analyser);
+
+  return { audioEl, gainNode, sourceNode, panner, airFilter, analyser };
 }
 
 // ⚠️ Jam PEER audio path (2026-08-27). CONFIRMED LIVE: the custom low-latency playout —
@@ -1113,6 +1124,75 @@ export function useMediasoup() {
     const monMs = jamMode ? peerMs : MONITOR_JITTER_HINT * 1000;
     applyTo(netMonitorRef.current?.consumer?.rtpReceiver, monMs);
   }, [jamBufferMinMs, jamBufferMaxMs, jamMode]);
+
+  // "Who is talking" detector — drives the visual speaking indicator on each card.
+  // A passive analyser per peer (created in createAudioPipeline) + one on your own
+  // mic; ~10 Hz RMS with a short HOLD so the ring doesn't flicker between syllables.
+  // VISUAL ONLY: writes isSpeaking to the store (guarded to no-op when unchanged),
+  // never announces anything, so it can't disturb a screen reader (dual-a11y rule).
+  useEffect(() => {
+    const SPEAK_ON = 0.018; // RMS threshold (time-domain, [-1,1]) to count as talking
+    const HOLD_MS = 300; // stay "talking" this long after the level last crossed ON
+    const buf = new Float32Array(1024);
+    const lastAbove = new Map<string, number>();
+    const shown = new Map<string, boolean>(); // last value pushed to the store
+    let localAnalyser: AnalyserNode | null = null;
+    let localShown = false;
+
+    const rms = (an: AnalyserNode): number => {
+      an.getFloatTimeDomainData(buf);
+      let s = 0;
+      for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i];
+      return Math.sqrt(s / buf.length);
+    };
+
+    const id = window.setInterval(() => {
+      const now = performance.now();
+      const st = store.getState();
+
+      const seen = new Set<string>();
+      for (const [peerId, pa] of peerAudiosRef.current) {
+        seen.add(peerId);
+        if (!pa.analyser) continue;
+        if (rms(pa.analyser) > SPEAK_ON) lastAbove.set(peerId, now);
+        const speaking = now - (lastAbove.get(peerId) ?? -1e9) < HOLD_MS;
+        if (shown.get(peerId) !== speaking) {
+          shown.set(peerId, speaking);
+          st.setPeerSpeaking(peerId, speaking);
+        }
+      }
+      for (const peerId of [...shown.keys()])
+        if (!seen.has(peerId)) {
+          shown.delete(peerId);
+          lastAbove.delete(peerId);
+        }
+
+      // You. Lazily tap your mic gain once the outgoing graph exists.
+      if (!localAnalyser && outGraphRef.current?.micGain) {
+        localAnalyser = sharedAudioContext.createAnalyser();
+        localAnalyser.fftSize = 1024;
+        outGraphRef.current.micGain.connect(localAnalyser);
+      }
+      let localSpeaking = false;
+      if (localAnalyser && st.hasMic && !st.isMuted) {
+        if (rms(localAnalyser) > SPEAK_ON) lastAbove.set("__local", now);
+        localSpeaking = now - (lastAbove.get("__local") ?? -1e9) < HOLD_MS;
+      }
+      if (localShown !== localSpeaking) {
+        localShown = localSpeaking;
+        st.setLocalSpeaking(localSpeaking);
+      }
+    }, 100);
+
+    return () => {
+      window.clearInterval(id);
+      try {
+        localAnalyser?.disconnect();
+      } catch {
+        /* already gone */
+      }
+    };
+  }, [store]);
 
   // Shared metronome: start/stop + BPM changes drive the local, server-clock-locked
   // click. Reads clockSyncRef/metronomeRef (created on join); the click self-corrects as

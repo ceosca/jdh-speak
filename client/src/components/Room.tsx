@@ -191,6 +191,7 @@ export function Room() {
   const peers = useRoomStore((s) => s.peers);
   const isMuted = useRoomStore((s) => s.isMuted);
   const hasMic = useRoomStore((s) => s.hasMic);
+  const localSpeaking = useRoomStore((s) => s.localSpeaking);
   const micGain = useRoomStore((s) => s.micGain);
   const micMonitor = useRoomStore((s) => s.micMonitor);
   const setMicMonitor = useRoomStore((s) => s.setMicMonitor);
@@ -647,7 +648,7 @@ export function Room() {
                   peer={{
                     peerId: localPeerId,
                     displayName,
-                    isSpeaking: false,
+                    isSpeaking: localSpeaking,
                     isMuted,
                     volume: 1,
                     isMusic: false,

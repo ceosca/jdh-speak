@@ -70,17 +70,29 @@ export function ParticipantCard({
 
   const nameWithYou = isLocal ? `${peer.displayName} (${m.card_you()})` : peer.displayName;
 
+  // "Talking now" indicator: VISUAL ONLY (everything below is aria-hidden), so it
+  // never floods the screen reader — the SR already reads mute status by the name.
+  // Not shown for a muted peer or a music stream (their level isn't "talking").
+  const speaking = peer.isSpeaking && !peer.isMusic && !peer.isMuted;
+
   return (
-    <div className="flex flex-col items-center gap-2 rounded-xl border border-sonic-600 bg-sonic-800 p-4">
-      {/* Decorative avatar — hidden from the screen reader. */}
+    <div
+      className={`flex flex-col items-center gap-2 rounded-xl border bg-sonic-800 p-4 transition-colors ${
+        speaking ? "border-green-400/80 ring-2 ring-green-400/40" : "border-sonic-600"
+      }`}
+    >
+      {/* Decorative avatar — hidden from the screen reader. Green glowing ring while
+          this person is talking (universal video-call cue). */}
       <div
         aria-hidden="true"
-        className={`flex h-14 w-14 items-center justify-center rounded-full text-lg font-bold ${
-          peer.isMusic
-            ? "border-2 border-sonic-accent bg-sonic-accent/20 text-sonic-accent"
-            : peer.isMuted
-              ? "border-2 border-sonic-600 bg-sonic-700 text-sonic-400"
-              : "border-2 border-sonic-500 bg-sonic-700 text-sonic-200"
+        className={`flex h-14 w-14 items-center justify-center rounded-full text-lg font-bold transition-all ${
+          speaking
+            ? "border-2 border-green-400 bg-sonic-700 text-green-100 shadow-[0_0_14px_rgba(74,222,128,0.55)] ring-4 ring-green-400/50"
+            : peer.isMusic
+              ? "border-2 border-sonic-accent bg-sonic-accent/20 text-sonic-accent"
+              : peer.isMuted
+                ? "border-2 border-sonic-600 bg-sonic-700 text-sonic-400"
+                : "border-2 border-sonic-500 bg-sonic-700 text-sonic-200"
         }`}
       >
         {peer.isMusic ? <Music className="h-6 w-6" /> : getInitials(peer.displayName)}
@@ -90,6 +102,17 @@ export function ParticipantCard({
       <p className="max-w-[150px] truncate text-center text-sm text-sonic-100">
         <span className="font-medium">{nameWithYou}</span>, {micStatus}
       </p>
+
+      {/* Talking badge — extra cue (dot animation + text, not colour alone). */}
+      {speaking && (
+        <span
+          aria-hidden="true"
+          className="flex items-center gap-1.5 rounded-full bg-green-500/15 px-2 py-0.5 text-xs font-medium text-green-300"
+        >
+          <span className="h-2 w-2 animate-pulse rounded-full bg-green-400" />
+          {m.card_speaking_now()}
+        </span>
+      )}
 
       {/* Local: change-name button right under your name. */}
       {isLocal && onChangeName && (
@@ -117,37 +140,48 @@ export function ParticipantCard({
         </label>
       )}
 
-      {/* Remote peer: how loud you hear them. Label has NO on/off (it's by the name). */}
+      {/* Remote peer: how loud you hear them. Visible "Volumen" label so a sighted
+          first-timer knows what the slider does; the aria-label keeps the name. */}
       {!isLocal && (
-        <div className="flex w-full items-center gap-2">
-          <Volume2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-sonic-400" />
-          <input
-            type="range"
-            min="0"
-            max="4"
-            step="0.01"
-            value={peer.volume}
-            onChange={handleVolume}
-            className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-sonic-600 accent-sonic-accent"
-            aria-label={m.card_volume_for({ name: peer.displayName })}
-          />
+        <div className="w-full">
+          <span aria-hidden="true" className="mb-0.5 block text-[11px] text-sonic-400">
+            {m.card_volume_label()}
+          </span>
+          <div className="flex w-full items-center gap-2">
+            <Volume2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-sonic-400" />
+            <input
+              type="range"
+              min="0"
+              max="4"
+              step="0.01"
+              value={peer.volume}
+              onChange={handleVolume}
+              className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-sonic-600 accent-sonic-accent"
+              aria-label={m.card_volume_for({ name: peer.displayName })}
+            />
+          </div>
         </div>
       )}
 
-      {/* Your own card: your outgoing mic level (send-side gain). */}
+      {/* Your own card: your outgoing mic level (how loud others hear you). */}
       {isLocal && onMicGainChange && (
-        <div className="flex w-full items-center gap-2">
-          <Mic aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-sonic-400" />
-          <input
-            type="range"
-            min="0"
-            max="4"
-            step="0.01"
-            value={micGain ?? 1}
-            onChange={handleMicGain}
-            className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-sonic-600 accent-sonic-accent"
-            aria-label={m.card_your_mic_level()}
-          />
+        <div className="w-full">
+          <span aria-hidden="true" className="mb-0.5 block text-[11px] text-sonic-400">
+            {m.card_your_mic_label()}
+          </span>
+          <div className="flex w-full items-center gap-2">
+            <Mic aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-sonic-400" />
+            <input
+              type="range"
+              min="0"
+              max="4"
+              step="0.01"
+              value={micGain ?? 1}
+              onChange={handleMicGain}
+              className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-sonic-600 accent-sonic-accent"
+              aria-label={m.card_your_mic_level()}
+            />
+          </div>
         </div>
       )}
     </div>
