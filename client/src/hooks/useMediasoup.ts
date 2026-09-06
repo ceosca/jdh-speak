@@ -273,11 +273,13 @@ async function setSenderMaxBitrate(
   try {
     const params = sender.getParameters();
     if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
-    const max = kbps >= 128 ? undefined : kbps * 1000;
-    for (const enc of params.encodings) {
-      if (max === undefined) delete enc.maxBitrate;
-      else enc.maxBitrate = max;
-    }
+    // Always set an EXPLICIT maxBitrate (128 kbps = full-quality voice ceiling).
+    // Leaving it undefined ("unlimited") made Chrome sit at its low mono-voice
+    // DEFAULT (~32 kbps) on a fresh sender — that was the "joins at low quality"
+    // bug. An explicit cap also makes every re-apply a real parameter change that
+    // actually kicks the encoder to the target.
+    const max = kbps >= 128 ? 128000 : kbps * 1000;
+    for (const enc of params.encodings) enc.maxBitrate = max;
     await sender.setParameters(params);
   } catch (err) {
     console.error("[bitrate] setParameters failed:", err);
@@ -2022,6 +2024,22 @@ export function useMediasoup() {
         peerAudiosRef.current.set(peerId, pipeline);
         refreshSpatial();
       };
+
+      // RE-APPLY the room bitrate once the connection is actually ESTABLISHED.
+      // Root cause of "some join at low quality until we cycle the bitrate": the
+      // encoder bitrate set at addTrack() (above, before negotiation) does NOT
+      // reliably stick — the sender sits at a low default until setParameters is
+      // called on the LIVE connection. That is exactly what a manual bitrate cycle
+      // does; here we do it automatically so a joiner reaches full quality on their
+      // own. Applied for BOTH directions (offerer and answerer) on every fresh PC.
+      pc.addEventListener("connectionstatechange", () => {
+        if (pc.connectionState !== "connected") return;
+        const s = pc.getSenders().find((x) => x.track?.kind === "audio");
+        // Re-apply immediately, then again after a beat: some Chrome builds only
+        // honour the encoder target once media is actually flowing.
+        void setSenderMaxBitrate(s, roomBitrateRef.current);
+        window.setTimeout(() => void setSenderMaxBitrate(s, roomBitrateRef.current), 1200);
+      });
 
       p2pConnectionsRef.current.set(peerId, pc);
 
