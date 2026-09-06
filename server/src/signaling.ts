@@ -284,7 +284,7 @@ export function createSignalingServer(
         if (!ghosted) realRoom.memberTokens.add(myToken);
 
         console.log(
-          `[ws] ${socket.id} joined ${roomName} as "${displayName}" [${clientIp(socket)}]${role ? ` (${role})` : ""}${disableP2p ? " (p2p disabled)" : ""}${ghosted ? " (ghosted — room closed)" : ""}`,
+          `[ws] ${socket.id} joined ${roomName} as "${displayName}" [${clientIp(socket)}]${role ? ` (${role})` : ""}${disableP2p ? " (p2p disabled)" : ""}${ghosted ? " (ghosted — room closed)" : ""} [${room.audioBitrate}kbps]`,
         );
 
         const peer = createPeer(room, socket.id, displayName);

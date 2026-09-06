@@ -270,6 +270,12 @@ export function removePeer(room: Room, peerId: string) {
   if (room.peers.size === 0) {
     room.router.close();
     rooms.delete(room.name);
+    // Reset the persisted voice bitrate so the NEXT session starts fresh at full
+    // quality (128). Otherwise a bitrate someone lowered once (e.g. a bad-network
+    // moment) stuck for every future joiner — they entered at low quality until
+    // someone manually bumped it back. Now you only get low quality if it's
+    // deliberately lowered DURING an active session. Spatial seats stay remembered.
+    roomBitrates.delete(room.name);
   }
 }
 
