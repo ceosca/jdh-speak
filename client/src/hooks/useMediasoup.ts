@@ -1217,6 +1217,9 @@ export function useMediasoup() {
   // this number in jam vs normal is the objective A/B (no ear needed). Exposed on
   // window.__rxLatencyMs and surfaced in the settings readout.
   const rxPrevRef = useRef(new WeakMap<RTCRtpReceiver, { delay: number; count: number }>());
+  // Outgoing audio bitrate (kbps) per sender, from outbound-rtp bytesSent deltas —
+  // diagnostic for "some join at low quality until a bitrate cycle fixes it".
+  const txPrevRef = useRef(new WeakMap<RTCRtpSender, { bytes: number; ts: number }>());
   useEffect(() => {
     const id = window.setInterval(async () => {
       const receivers: RTCRtpReceiver[] = [];
@@ -1295,6 +1298,11 @@ export function useMediasoup() {
       for (const pc of p2pConnectionsRef.current.values()) {
         for (const s of pc.getSenders()) if (s.track?.kind === "audio") senders.push(s);
       }
+      // SFU: the producer's sender too, so the diagnostic covers both transports.
+      const prodSender = (producerRef.current as unknown as { rtpSender?: RTCRtpSender } | null)
+        ?.rtpSender;
+      if (prodSender) senders.push(prodSender);
+      const kbpsList: number[] = [];
       for (const snd of senders) {
         try {
           const stats = await snd.getStats();
@@ -1303,6 +1311,17 @@ export function useMediasoup() {
               rttSum += (s.roundTripTime as number) * 1000;
               rttN++;
             }
+            // Outgoing bitrate: bytesSent delta over the timestamp delta.
+            if (s.type === "outbound-rtp" && s.kind === "audio" && typeof s.bytesSent === "number") {
+              const bytes = s.bytesSent as number;
+              const ts = s.timestamp as number;
+              const prev = txPrevRef.current.get(snd);
+              if (prev && ts > prev.ts) {
+                const kbps = ((bytes - prev.bytes) * 8) / (ts - prev.ts); // bytes*8/ms = kbps
+                if (kbps >= 0 && kbps < 1000) kbpsList.push(kbps);
+              }
+              txPrevRef.current.set(snd, { bytes, ts });
+            }
           });
         } catch {
           /* sender gone */
@@ -1310,6 +1329,10 @@ export function useMediasoup() {
       }
       (window as unknown as { __txRttMs: number | null }).__txRttMs =
         rttN > 0 ? +(rttSum / rttN).toFixed(0) : null;
+      // Report the MIN across senders (the worst/struggling connection — that's the
+      // one that "joins low"), plus we keep it simple with one number.
+      (window as unknown as { __txKbps: number | null }).__txKbps =
+        kbpsList.length > 0 ? +Math.min(...kbpsList).toFixed(0) : null;
     }, 1000);
     return () => window.clearInterval(id);
   }, []);
@@ -2654,6 +2677,7 @@ export function useMediasoup() {
                 __rxLatencyMs?: number | null;
                 __txRttMs?: number | null;
                 __selfReturnMs?: number | null;
+                __txKbps?: number | null;
               };
               void emit("sync-report", {
                 serverNow: clk.serverNow(),
@@ -2668,6 +2692,8 @@ export function useMediasoup() {
                 txRttMs: w.__txRttMs ?? undefined,
                 // Jamulus-model check: self-return buffer must equal rxLatMs (peer buffer).
                 selfMs: w.__selfReturnMs ?? undefined,
+                // Outgoing audio bitrate (kbps) — diagnostic for "joins at low quality".
+                txKbps: w.__txKbps ?? undefined,
               }).catch(() => {});
             }
           },

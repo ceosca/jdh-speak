@@ -815,6 +815,7 @@ export function createSignalingServer(
           rxLatMs: z.number().nullable().optional(),
           txRttMs: z.number().nullable().optional(),
           selfMs: z.number().nullable().optional(),
+          txKbps: z.number().nullable().optional(),
         })
         .safeParse(data);
       if (!parsed.success) return;
@@ -827,6 +828,7 @@ export function createSignalingServer(
       const rxLatMs = parsed.data.rxLatMs ?? null;
       const txRttMs = parsed.data.txRttMs ?? null;
       const selfMs = parsed.data.selfMs ?? null;
+      const txKbps = parsed.data.txKbps ?? null;
       // Jamulus-model health: the self-return buffer must match the peer buffer, else
       // aligning your return to the peers is not the same as aligning at the server.
       const jamOk =
@@ -852,7 +854,7 @@ export function createSignalingServer(
         `[metro-sync] ${currentRoom.name}: spread=${spread}ms | ` +
           `${currentPeer.displayName}: err=${err} rtt=${Math.round(parsed.data.rtt)} ` +
           `otsOk=${otsOk} outLat=${outLatMs} | ear≈${earMs}ms ` +
-          `(txRtt=${txRttMs} rx=${rxLatMs}) | self=${selfMs} jamRef=${jamOk} || all: ` +
+          `(txRtt=${txRttMs} rx=${rxLatMs}) | tx=${txKbps}kbps | self=${selfMs} jamRef=${jamOk} || all: ` +
           reports.map((r) => `${r.name}(err=${r.errMs} rtt=${r.rttMs})`).join(" "),
       );
       io.to(currentRoom.name).emit("sync-reports", { reports, spread });
