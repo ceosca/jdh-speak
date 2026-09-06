@@ -8,6 +8,34 @@
 
 ---
 
+## 2026-09-05
+
+### UI más intuitiva para videntes no técnicos (sin romper el lector) + jam oculto por defecto
+
+- **Meta:** que un amigo que ve y no sabe de tecnología entienda la plataforma sin que
+  le expliquen botón por botón, y que un ciego siga usándola igual con el lector. Regla de
+  doble accesibilidad guardada en la memoria de Claude.
+- **Barra de controles:** cada botón ahora es **ícono + etiqueta de texto** visible,
+  agrupado (Tu voz | Reproducir en la sala | Sala) con separadores. Estado on/off
+  inequívoco (color + ícono + texto, no solo color): mute silenciado en **rojo** con
+  "Activar audio" (convención universal). Los `aria-label` largos que usa el lector quedan
+  intactos; las etiquetas visibles son `aria-hidden` (sin doble lectura).
+- **Indicador de quién habla:** anillo verde + borde de tarjeta + insignia "Hablando ahora"
+  con punto que pulsa, por cada peer y por vos mismo. Detección por analyser pasivo (no
+  afecta el audio), ~10 Hz con hold anti-parpadeo, escrito al store solo en cambios. Todo
+  `aria-hidden` (no satura al lector; el estado ya se anuncia por el nombre). Sliders de
+  volumen con etiqueta visible.
+- **Jam oculto por defecto:** todas las opciones de Modo ensayo (jam, buffer, metrónomo,
+  Monitoreo de red) quedan ocultas en Ajustes hasta pulsar **Alt+Shift+J**, que alterna
+  `jamUiVisible` (persistido) y lo anuncia para el lector. Los primerizos solo ven los
+  controles estándar. Sin colisión con Alt+J de serieteca (ese es sin Shift).
+- **Verificado por Claude en su navegador** (capturas): barra con etiquetas, estados
+  rojo/verde/violeta, jam oculto y Alt+Shift+J revelándolo. `window.__roomStore` agregado
+  como hook de debug (estilo `__jamClock`).
+- Commits ahora en **`main`** (la rama `feat/webtransport-jam` se consolidó ahí por
+  fast-forward; la Pi también sigue `main`). Corregida la nota de ruteo del CLAUDE.md: la
+  ruta de sala es `/:roomName`, NO `/room/:roomName`. Solo cliente → build, sin restart.
+
 ## 2026-08-28 (2)
 
 ### Fix: `?p2p=off` ya no clava la sala en SFU para siempre — se libera al irse quien lo pidió
