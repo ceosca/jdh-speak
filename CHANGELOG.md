@@ -8,6 +8,24 @@
 
 ---
 
+## 2026-09-06
+
+### Fix: el bitrate bajo se quedaba pegado entre sesiones → ahora se arranca en 128
+
+- **Síntoma (Cristian):** a veces, al entrar, a algunos les entraba en calidad baja y se
+  quedaba trabado hasta subir a 128 KBPS a mano.
+- **Causa (deducida del código, no supuesta):** no hay auto-degradación en ningún lado —
+  nada baja el bitrate solo. El produce (SFU) y el SDP (P2P) ya apuntan al bitrate del
+  room. El ÚNICO camino a "entrar bajo" era `roomBitrates`, un Map por nombre de sala que
+  guardaba el valor **para siempre** (incluso al vaciarse y recrearse la sala). Si alguien
+  lo bajó una vez, cada joiner nuevo lo adoptaba → entraba bajo; los que ya estaban en 128
+  seguían bien hasta reconectar (de ahí "a algunos"); subir a 128 lo arreglaba para todos.
+- **Fix (`df3521a`):** al vaciarse la sala se borra su entrada en `roomBitrates`, así la
+  próxima sesión arranca en 128 (full) y solo baja si se baja a propósito EN la sesión.
+  El log de join ahora muestra `[Nkbps]` para verificar en vivo. El restart del deploy
+  además limpió el Map en memoria → las salas ya pegadas volvieron a 128 al instante
+  (**verificado:** la banda reconectó en `[128kbps]`). Cambio de servidor → restart.
+
 ## 2026-09-05
 
 ### UI más intuitiva para videntes no técnicos (sin romper el lector) + jam oculto por defecto
