@@ -8,6 +8,32 @@
 
 ---
 
+## 2026-09-06 (2)
+
+### Fix raíz de "algunos entran en calidad baja hasta ciclar el bitrate"
+
+- **Aclaración de Cristian:** pasaba AUN estando la sala en 128 — un joiner (Franco/Edu)
+  entraba bajo hasta que ciclaban el bitrate y lo volvían a 128; ahí quedaban todos alto.
+  Es decir: no era el valor de la sala (eso fue el fix anterior), era el **arranque del
+  encoder del que entra**.
+- **Causa (medida en vivo, no supuesta):** en P2P el bitrate del sender se aplicaba en
+  `addTrack()` — ANTES de negociar la conexión — y **nunca se re-aplicaba tras conectar**.
+  Ese seteo temprano no "prende", así que el encoder quedaba en el default bajo de Chrome
+  (~48k) hasta que un ciclo manual re-aplicaba `setParameters` en la conexión ya viva.
+  Además `setSenderMaxBitrate` para 128 borraba el cap ("ilimitado"), que dejaba a Chrome
+  en ese default en vez de forzar el target.
+- **Fix (`1584cb2`):** (1) cap EXPLÍCITO de 128000 en vez de "ilimitado"; (2)
+  `createP2pConnection` re-aplica el bitrate en `connectionstatechange='connected'`
+  (inmediato + a los 1.2s), para offerer y answerer — automatiza el ciclo manual.
+- **Verificado MIDIENDO el bitrate de salida real** (instrumenté `tx=Nkbps ch=N` en el log
+  por peer): un joiner limpio (Franco) subió 113→128 en ~12s sin ciclar; en estado estable
+  **edu 128k 100% del tiempo, franquito ≥96k 100%**, todos estéreo (ch=2) alcanzando 128-130.
+  Los dips que quedan (sobre todo de Cristian, en la LAN pero con enlaces WAN largos a los
+  remotos en Argentina) son **adaptación de congestión** — exactamente "bajar solo si el
+  audio se pone malo", que es lo pedido. Forzar 128 sobre un enlace con pérdida cortaría.
+- SFU (6+ peers) usa el bitrate del produce (`opusMaxAverageBitrate=128000`, post-conexión),
+  cubierto por el mismo instrumento; no probado en vivo (hace falta 6+). Solo cliente → build.
+
 ## 2026-09-06
 
 ### Fix: el bitrate bajo se quedaba pegado entre sesiones → ahora se arranca en 128
