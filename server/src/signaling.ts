@@ -816,6 +816,8 @@ export function createSignalingServer(
           txRttMs: z.number().nullable().optional(),
           selfMs: z.number().nullable().optional(),
           txKbps: z.number().nullable().optional(),
+          hifi: z.boolean().optional(),
+          micCh: z.number().nullable().optional(),
         })
         .safeParse(data);
       if (!parsed.success) return;
@@ -854,7 +856,7 @@ export function createSignalingServer(
         `[metro-sync] ${currentRoom.name}: spread=${spread}ms | ` +
           `${currentPeer.displayName}: err=${err} rtt=${Math.round(parsed.data.rtt)} ` +
           `otsOk=${otsOk} outLat=${outLatMs} | ear≈${earMs}ms ` +
-          `(txRtt=${txRttMs} rx=${rxLatMs}) | tx=${txKbps}kbps | self=${selfMs} jamRef=${jamOk} || all: ` +
+          `(txRtt=${txRttMs} rx=${rxLatMs}) | tx=${txKbps}kbps hifi=${parsed.data.hifi} ch=${parsed.data.micCh} | self=${selfMs} jamRef=${jamOk} || all: ` +
           reports.map((r) => `${r.name}(err=${r.errMs} rtt=${r.rttMs})`).join(" "),
       );
       io.to(currentRoom.name).emit("sync-reports", { reports, spread });
