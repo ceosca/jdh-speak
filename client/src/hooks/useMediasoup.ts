@@ -2712,10 +2712,10 @@ export function useMediasoup() {
                 selfMs: w.__selfReturnMs ?? undefined,
                 // Outgoing audio bitrate (kbps) — diagnostic for "joins at low quality".
                 txKbps: w.__txKbps ?? undefined,
-                // Is THIS client sending stereo hi-fi voice (→ up to 128k) or mono
-                // (Chrome caps mono voice ~48k by design)? Lets us tell a real stuck-low
-                // bug from a correct mono rate WITHOUT asking. micCh = mic channel count.
-                hifi: useRoomStore.getState().hifiVoiceEnabled,
+                // Voice is negotiated as stereo 128k for everyone, so a peer stuck at
+                // ~48k is either a physically MONO mic (mono content → ~48k, correct) or
+                // a real stuck-low bug. micCh = the mic's actual channel count, which tells
+                // the two apart WITHOUT asking (1 = mono mic → 48k expected; 2 = should be 128).
                 micCh:
                   localStreamRef.current?.getAudioTracks()[0]?.getSettings().channelCount ??
                   undefined,
