@@ -1,6 +1,6 @@
 import express from "express";
 import { createServer } from "node:http";
-import { createReadStream, readFileSync } from "node:fs";
+import { createReadStream } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -34,6 +34,21 @@ try {
 } catch {
   /* no .env present — fine */
 }
+
+// GLOBAL SAFETY NET. Node's default is to CRASH the whole process on an unhandled
+// promise rejection or a thrown error with no handler on the call stack. In an
+// audio server that juggles dozens of async mediasoup calls (a producer/transport
+// closing mid-await, a socket vanishing), one such stray rejection would take the
+// entire room down for EVERYONE — exactly the "se cae y yo no estoy para
+// reiniciar" failure we're hardening against. Log loudly and keep serving; a real
+// fatal (worker died) still exits via its own handler below. This does NOT hide
+// the mediasoup worker dying — that path calls process.exit(1) deliberately.
+process.on("unhandledRejection", (reason) => {
+  console.error("[fatal-guard] unhandledRejection (ignorado, servidor sigue):", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[fatal-guard] uncaughtException (ignorado, servidor sigue):", err);
+});
 
 const PORT = parseInt(process.env.PORT || "3100", 10);
 
@@ -406,13 +421,17 @@ async function main() {
   // client/src/lib/branding.ts), plus the static <title>. Read fresh per request
   // (not cached) so a client-only `pnpm build` — which changes the asset hashes
   // referenced in index.html — is picked up on the next load without a restart.
-  const renderIndexHtml = (): string | null => {
-    let html: string;
-    try {
-      html = readFileSync(indexHtmlPath, "utf8");
-    } catch {
-      return null; // client not built yet
-    }
+  // CACHED in memory + refreshed by mtime (async). The old code did a SYNCHRONOUS
+  // readFileSync on EVERY page load and every SPA deep-link — on the Pi's SD card that
+  // blocks the whole event loop (all HTTP + socket.io, incl. "join") for as long as the
+  // read takes, which spikes under concurrent load (e.g. ffmpeg writing a recording).
+  // Now we serve from memory and only re-read when the file's mtime changed, checked at
+  // most once per RENDER_STAT_TTL_MS with a non-blocking stat — so a client-only
+  // `pnpm build` (new asset hashes) is still picked up within ~2 s, no restart needed.
+  let indexCache: { html: string; mtimeMs: number } | null = null;
+  let indexLastStat = 0;
+  const RENDER_STAT_TTL_MS = 2000;
+  const buildIndexHtml = (raw: string): string => {
     // JS object literal; escape "<" so a name containing "</script>" can't break
     // out of the inline <script>. Injected right after <head> so it runs before
     // the (deferred) app bundle.
@@ -420,19 +439,33 @@ async function main() {
       instanceName: INSTANCE_NAME,
       iceServers: ICE_SERVERS,
     }).replace(/</g, "\\u003c");
-    html = html.replace(
+    let html = raw.replace(
       "<head>",
       `<head><script>window.__JDH_SPEAK_CONFIG__=${configJson};</script>`,
     );
     const safeTitle = INSTANCE_NAME.replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
-    html = html.replace(/<title>[^<]*<\/title>/, `<title>${safeTitle}</title>`);
-    return html;
+    return html.replace(/<title>[^<]*<\/title>/, `<title>${safeTitle}</title>`);
+  };
+  const renderIndexHtml = async (): Promise<string | null> => {
+    const now = Date.now();
+    // Serve cached without touching disk at all within the TTL window.
+    if (indexCache && now - indexLastStat < RENDER_STAT_TTL_MS) return indexCache.html;
+    try {
+      const st = await stat(indexHtmlPath);
+      indexLastStat = now;
+      if (indexCache && indexCache.mtimeMs === st.mtimeMs) return indexCache.html;
+      const raw = await readFile(indexHtmlPath, "utf8");
+      indexCache = { html: buildIndexHtml(raw), mtimeMs: st.mtimeMs };
+      return indexCache.html;
+    } catch {
+      return indexCache?.html ?? null; // client not built yet (or a transient stat error)
+    }
   };
 
-  app.get("/{*splat}", (_req, res) => {
-    const html = renderIndexHtml();
+  app.get("/{*splat}", async (_req, res) => {
+    const html = await renderIndexHtml();
     if (html == null) {
       res.status(404).type("text/plain").send("Client not built. Run `pnpm build`.");
       return;

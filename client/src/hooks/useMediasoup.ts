@@ -240,6 +240,13 @@ const JITTER_BUFFER_HINT = 0.05;
 // flaky-network blip) or a fetch failure (OUR connectivity) does NOT reload — otherwise
 // clients on unstable links get reload-bounced on every drop, which killed reliability.
 const MAINT_PROBE_MS = 8000;
+// Reliability guards so a join never hangs forever (the "timeout que a algunos les
+// pasa al entrar"). If the mic can't be acquired in this window we join mic-less; if
+// the socket can't make its FIRST connection in this window we reject the join with a
+// clear error (a recoverable "no se pudo conectar" screen) instead of an eternal
+// spinner. Both are generous — they only fire on a genuine stuck state, not a slow link.
+const MIC_ACQUIRE_TIMEOUT_MS = 12000;
+const CONNECT_TIMEOUT_MS = 25000;
 // Jam receive cushion: NOT 0 (0 makes NetEQ choppy on the slightest reordering — see
 // above). It's now the user's "Buffer de jitter" slider (jamBufferMinMs, ms), applied
 // live to every receiver, so they trade latency vs stability themselves; default 30 ms
@@ -2400,11 +2407,25 @@ export function useMediasoup() {
       let stream: MediaStream | null = null;
       if (!opts?.noMic) {
         try {
-          stream = await getMicrophoneStream(
-            store.getState().micDeviceId,
-            store.getState().voiceProcessingEnabled && !store.getState().jamMode,
-            store.getState().jamMode,
-          );
+          // Bound the mic acquisition. getUserMedia can HANG indefinitely (not
+          // reject) — a stuck permission prompt the user never answers, a device
+          // the OS is busy with — and since joining awaits this, a hang here means
+          // the room never loads at all (a silent "timeout al entrar"). After
+          // MIC_ACQUIRE_TIMEOUT_MS we give up and join mic-less; they can still
+          // listen/chat, and re-enable the mic later from device settings.
+          stream = await Promise.race([
+            getMicrophoneStream(
+              store.getState().micDeviceId,
+              store.getState().voiceProcessingEnabled && !store.getState().jamMode,
+              store.getState().jamMode,
+            ),
+            new Promise<never>((_, rej) =>
+              window.setTimeout(
+                () => rej(new Error("mic-acquire-timeout")),
+                MIC_ACQUIRE_TIMEOUT_MS,
+              ),
+            ),
+          ]);
         } catch (err) {
           console.warn("[mic] no microphone — joining in listen/chat-only mode:", err);
         }
@@ -2425,7 +2446,16 @@ export function useMediasoup() {
         store.getState().setMuted(true);
       }
 
-      const socket = io({ transports: ["websocket"] });
+      // transports: try WebSocket first (lowest latency) but FALL BACK to HTTP
+      // long-polling. WS-only was silently fatal on networks that block WebSocket
+      // upgrades (some mobile carriers, corporate/CGNAT proxies) — the socket never
+      // connected, `connect` never fired, and the join hung forever ("a algunos no
+      // les carga, aleatorio"). tryAllTransports makes socket.io actually attempt
+      // the next transport when the first fails on the initial connection.
+      const socket = io({
+        transports: ["websocket", "polling"],
+        tryAllTransports: true,
+      });
       socketRef.current = socket;
 
       // (Re)join the room and (re)build all media from the server's response.
@@ -2595,7 +2625,34 @@ export function useMediasoup() {
         rejectReady = rej;
       });
 
+      // Bound the FIRST connection. socket.io retries connect_error forever on its
+      // own (good for a real drop), but on the very first join a network that never
+      // lets us through would just spin. After CONNECT_TIMEOUT_MS with no successful
+      // join, reject `ready` so the UI shows a recoverable "no se pudo conectar"
+      // error (reload retries) instead of an endless spinner. Cleared once we join.
+      let connectTimer: number | null = window.setTimeout(() => {
+        connectTimer = null;
+        if (!hasJoined) {
+          console.error("[ws] no se pudo conectar tras", CONNECT_TIMEOUT_MS, "ms");
+          rejectReady(new Error("connect-timeout"));
+        }
+      }, CONNECT_TIMEOUT_MS);
+      const clearConnectTimer = () => {
+        if (connectTimer != null) {
+          window.clearTimeout(connectTimer);
+          connectTimer = null;
+        }
+      };
+
+      // Log connection errors (transport rejected, upgrade blocked). Not fatal on its
+      // own — socket.io keeps retrying and may fall back to polling — so we DON'T
+      // reject here; the timeout above is the single give-up point.
+      socket.on("connect_error", (err: Error) => {
+        console.warn("[ws] connect_error:", err?.message ?? err);
+      });
+
       socket.on("connect", async () => {
+        clearConnectTimer();
         // Reconnected → stop probing for a server-down.
         if (maintTimerRef.current != null) {
           window.clearInterval(maintTimerRef.current);
@@ -2619,8 +2676,26 @@ export function useMediasoup() {
             resolveReady();
           }
         } catch (err) {
-          if (hasJoined) console.error("[ws] rejoin failed:", err);
-          else rejectReady(err);
+          if (hasJoined) {
+            // Reconnect's rejoin failed (server hiccup mid-rejoin). The socket is
+            // still CONNECTED, so no new "connect" will fire to retry — we'd be left
+            // silently in no room (connected but muted-to-the-world). Force a fresh
+            // reconnect cycle so the whole connect→join runs again. Only when the
+            // socket is actually up; a real drop already triggers its own reconnect.
+            console.error("[ws] rejoin failed — forcing reconnect:", err);
+            if (socket.connected) {
+              window.setTimeout(() => {
+                if (!socket.connected) return;
+                try {
+                  socket.disconnect().connect();
+                } catch {
+                  /* socket torn down — nothing to do */
+                }
+              }, 1500);
+            }
+          } else {
+            rejectReady(err);
+          }
         }
       });
 
@@ -2635,14 +2710,28 @@ export function useMediasoup() {
         const deliberate =
           reason === "io client disconnect" || reason === "io server disconnect";
         if (hasJoined && !deliberate && maintTimerRef.current == null) {
+          // Require TWO consecutive 502/503 before reloading. A single 502 can be a
+          // transient blip (Caddy momentarily can't reach the upstream during a normal
+          // service restart, or one bad response) — reloading on that would bounce
+          // people out of a call that was about to recover. Two in a row means the app
+          // is really stopped (maintenance), so the cut is intentional.
+          let downStreak = 0;
           maintTimerRef.current = window.setInterval(async () => {
             try {
               const res = await fetch(`/?_probe=${Date.now()}`, { cache: "no-store" });
               // Caddy serves the maintenance page as 502/503 while the app is stopped.
-              if (res.status === 502 || res.status === 503) window.location.reload();
-              // 200 → server is up, our socket will reconnect on its own → do nothing.
+              if (res.status === 502 || res.status === 503) {
+                downStreak += 1;
+                if (downStreak >= 2) window.location.reload();
+              } else {
+                // 200 → server is up (flaky-network blip); socket reconnects on its
+                // own. Reset the streak so an isolated 502 never accumulates.
+                downStreak = 0;
+              }
             } catch {
-              // Fetch failed → OUR connectivity is down; reloading won't help. Wait.
+              // Fetch failed → OUR connectivity is down; reloading won't help. Wait,
+              // and reset the streak (an unreachable server isn't a confirmed cut).
+              downStreak = 0;
             }
           }, MAINT_PROBE_MS);
         }

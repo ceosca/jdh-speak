@@ -10,6 +10,49 @@
 
 ## 2026-09-07
 
+### Robustez: que un fallo al entrar sea SIEMPRE culpa de la red del usuario, no de la Pi
+
+Auditoría con agentes de los timeouts/errores "aleatorios" que a veces impedían entrar.
+Se cerraron todos los caminos por los que la Pi, la URL o un timeout evitable podían dejar
+a alguien fuera. Ahora si algo falla es por su internet o porque yo paré el servidor a mano.
+
+**Servidor:**
+- **Red de seguridad global** (`index.ts`): `unhandledRejection`/`uncaughtException` ahora
+  se **loguean y el servidor sigue**, en vez del comportamiento por defecto de Node (tirar
+  el proceso entero). Una promesa mediasoup que rechaza suelta ya no corta la sala a todos.
+  (El worker de mediasoup muriendo sigue saliendo con `exit(1)` a propósito → systemd
+  reinicia.)
+- **`producer-pause`/`producer-resume`** (`signaling.ts`): envueltos en try/catch + saltan
+  el producer ya cerrado + **siempre llaman al callback**. Antes, `pause()` sobre un
+  producer cerrado (carrera mute vs. cambio de modo) rechazaba sin handler y el cliente
+  quedaba colgado en el `await` (un timeout que no debía existir).
+- **`index.html` cacheado en memoria por mtime, con `stat`/`readFile` async**
+  (`index.ts`): antes se hacía un `readFileSync` **síncrono en CADA carga** — en la SD de
+  la Pi eso bloquea el event loop (todo HTTP + socket.io, incl. "join") mientras lee. Ahora
+  se sirve de memoria y solo re-lee si cambió el mtime (comprobado como mucho 1 vez cada
+  2s). Un build de cliente se sigue viendo en ~2s, sin restart.
+- **`create-transport` cierra el transport anterior antes de reemplazarlo**
+  (`signaling.ts`): un reintento (reconexión, cambio a SFU) dejaba el transport viejo
+  huérfano con sus puertos/consumers abiertos — una fuga lenta que agotaba el rango
+  40000-40058 y hacía fallar entradas nuevas.
+
+**Cliente (`useMediasoup.ts`):**
+- **Fallback a long-polling** (`transports: ["websocket","polling"]` + `tryAllTransports`):
+  era **solo WebSocket**, y en redes que bloquean el upgrade WS (algunas móviles/CGNAT/
+  proxies) el socket no conectaba nunca → el join colgaba para siempre. Esta era la causa
+  más probable del "a algunos no les carga, aleatorio".
+- **Timeout de conexión** (25s): si la primera conexión no entra, se **rechaza el join con
+  un error recuperable** ("no se pudo conectar", recargar reintenta) en vez de un spinner
+  eterno. `connect_error` se loguea (socket.io sigue reintentando solo).
+- **Timeout de captura de micro** (12s): `getUserMedia` puede **colgarse** (prompt sin
+  responder, device ocupado); ahora se entra en modo escucha/chat en vez de no cargar.
+- **Reintento si falla el rejoin**: si un rejoin tras reconexión falla, el socket seguía
+  conectado pero fuera de la sala (mudo para el mundo, sin que nada lo reintente); ahora
+  fuerza un ciclo de reconexión limpio.
+- **Sondeo de mantenimiento exige 2 respuestas 502/503 seguidas** antes de recargar: un
+  502 transitorio (Caddy que no alcanza el upstream durante un restart normal) ya no
+  rebotea a nadie fuera de una llamada que iba a recuperarse.
+
 ### Modo mantenimiento (parar el servicio) + fix de fiabilidad del corte
 
 - **Mantenimiento:** `sudo systemctl stop sonicroom` (por ssh) pausa la plataforma; Caddy

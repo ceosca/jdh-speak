@@ -428,6 +428,20 @@ export function createSignalingServer(
         const { direction } = z.object({ direction: z.enum(["send", "recv"]) }).parse(data);
         const { transport, params } = await createWebRtcTransport(currentRoom);
 
+        // Close any PREVIOUS transport in this slot before overwriting it. A client
+        // that retries create-transport (reconnect, ICE restart, switch-to-sfu race)
+        // would otherwise orphan the old mediasoup transport — it keeps its ports and
+        // consumers open with no reference, a slow leak that eventually exhausts the
+        // 40000-40058 port range and makes NEW joins fail. Closing is idempotent.
+        const previous = direction === "send" ? currentPeer.sendTransport : currentPeer.recvTransport;
+        if (previous && previous !== transport) {
+          try {
+            previous.close();
+          } catch {
+            /* already closed — fine */
+          }
+        }
+
         if (direction === "send") {
           currentPeer.sendTransport = transport;
         } else {
@@ -570,7 +584,16 @@ export function createSignalingServer(
       currentPeer.muted = true;
       for (const producer of currentPeer.producers.values()) {
         if (((producer.appData?.source as string) ?? "voice") !== "voice") continue;
-        await producer.pause();
+        // A producer can already be closed here (mode switch / peer teardown racing
+        // the mute). pause() on a closed producer REJECTS — before, that rejection
+        // was unhandled AND skipped the cb(), so the client's `await` hung forever
+        // (the "timeout que no debería pasar"). Skip closed, swallow per-producer.
+        if (producer.closed) continue;
+        try {
+          await producer.pause();
+        } catch {
+          /* producer closed mid-pause — ignore */
+        }
       }
       if (currentRoom) {
         socket.to(currentRoom.name).emit("peer-muted", { peerId: socket.id });
@@ -583,7 +606,12 @@ export function createSignalingServer(
       currentPeer.muted = false;
       for (const producer of currentPeer.producers.values()) {
         if (((producer.appData?.source as string) ?? "voice") !== "voice") continue;
-        await producer.resume();
+        if (producer.closed) continue;
+        try {
+          await producer.resume();
+        } catch {
+          /* producer closed mid-resume — ignore */
+        }
       }
       if (currentRoom) {
         socket.to(currentRoom.name).emit("peer-unmuted", { peerId: socket.id });
