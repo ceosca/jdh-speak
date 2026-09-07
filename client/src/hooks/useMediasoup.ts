@@ -233,6 +233,12 @@ const AUDIO_EXTENSIONS = new Set(["mp3", "m4a", "aac", "ogg", "opus", "wav", "fl
 // browser's adaptive buffer (NetEQ) absorb those short jitter bursts. Receiver
 // side only, applied to BOTH P2P and SFU received tracks. Tunable.
 const JITTER_BUFFER_HINT = 0.05;
+// Maintenance / server-down hard cut: if the socket stays disconnected this long
+// with no reconnect, the client RELOADS — landing on the Caddy maintenance page
+// while `sonicroom` is stopped (and back in the app once it returns). This is what
+// makes "pausar la plataforma" cut EVERYONE, including already-connected P2P calls
+// whose media is direct and would otherwise keep flowing with the server down.
+const MAINT_RELOAD_MS = 10000;
 // Jam receive cushion: NOT 0 (0 makes NetEQ choppy on the slightest reordering — see
 // above). It's now the user's "Buffer de jitter" slider (jamBufferMinMs, ms), applied
 // live to every receiver, so they trade latency vs stability themselves; default 30 ms
@@ -481,6 +487,8 @@ function applySpatialLayout(
 
 export function useMediasoup() {
   const socketRef = useRef<Socket | null>(null);
+  // Pending maintenance-reload timer (see MAINT_RELOAD_MS).
+  const maintTimerRef = useRef<number | null>(null);
   const deviceRef = useRef<Device | null>(null);
   const sendTransportRef = useRef<Transport | null>(null);
   const recvTransportRef = useRef<Transport | null>(null);
@@ -2587,6 +2595,11 @@ export function useMediasoup() {
       });
 
       socket.on("connect", async () => {
+        // Reconnected in time → cancel any pending maintenance reload.
+        if (maintTimerRef.current != null) {
+          window.clearTimeout(maintTimerRef.current);
+          maintTimerRef.current = null;
+        }
         store.getState().setConnected(true);
         try {
           // Serialized with the mode-switch handlers so a rejoin never
@@ -2610,8 +2623,21 @@ export function useMediasoup() {
         }
       });
 
-      socket.on("disconnect", () => {
+      socket.on("disconnect", (reason: string) => {
         store.getState().setConnected(false);
+        // Server-down / maintenance hard cut. Only for UNEXPECTED transport loss —
+        // never a deliberate close (leave, kick, or the bitrate-change reconnect,
+        // which report "io client disconnect" / "io server disconnect" and reconnect
+        // on their own). If we can't get the server back within MAINT_RELOAD_MS, reload:
+        // that lands on the Caddy maintenance page while the service is stopped, so
+        // EVERYONE is cut (incl. ongoing P2P calls), and re-enters the app once it's up.
+        const deliberate =
+          reason === "io client disconnect" || reason === "io server disconnect";
+        if (hasJoined && !deliberate && maintTimerRef.current == null) {
+          maintTimerRef.current = window.setTimeout(() => {
+            window.location.reload();
+          }, MAINT_RELOAD_MS);
+        }
       });
 
       // --- Socket event handlers (attached once; persist across reconnects) ---
@@ -4513,6 +4539,11 @@ export function useMediasoup() {
     surfaceRef.current.clear();
     localStreamRef.current?.getTracks().forEach((t) => t.stop());
     localStreamRef.current = null;
+    // Drop any pending maintenance reload — this is a deliberate teardown/leave.
+    if (maintTimerRef.current != null) {
+      window.clearTimeout(maintTimerRef.current);
+      maintTimerRef.current = null;
+    }
     socketRef.current?.disconnect();
     socketRef.current = null;
     deviceRef.current = null;
