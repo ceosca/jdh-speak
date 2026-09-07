@@ -233,12 +233,13 @@ const AUDIO_EXTENSIONS = new Set(["mp3", "m4a", "aac", "ogg", "opus", "wav", "fl
 // browser's adaptive buffer (NetEQ) absorb those short jitter bursts. Receiver
 // side only, applied to BOTH P2P and SFU received tracks. Tunable.
 const JITTER_BUFFER_HINT = 0.05;
-// Maintenance / server-down hard cut: if the socket stays disconnected this long
-// with no reconnect, the client RELOADS — landing on the Caddy maintenance page
-// while `sonicroom` is stopped (and back in the app once it returns). This is what
-// makes "pausar la plataforma" cut EVERYONE, including already-connected P2P calls
-// whose media is direct and would otherwise keep flowing with the server down.
-const MAINT_RELOAD_MS = 6000;
+// Maintenance / server-down hard cut. While disconnected, we PROBE the server every
+// MAINT_PROBE_MS. Only a real "service stopped" (Caddy up, app down → 502 maintenance
+// page) makes the client RELOAD onto that page — so pausing the platform cuts EVERYONE,
+// incl. already-connected P2P calls whose media is direct. A 200 (server up → it was a
+// flaky-network blip) or a fetch failure (OUR connectivity) does NOT reload — otherwise
+// clients on unstable links get reload-bounced on every drop, which killed reliability.
+const MAINT_PROBE_MS = 8000;
 // Jam receive cushion: NOT 0 (0 makes NetEQ choppy on the slightest reordering — see
 // above). It's now the user's "Buffer de jitter" slider (jamBufferMinMs, ms), applied
 // live to every receiver, so they trade latency vs stability themselves; default 30 ms
@@ -487,7 +488,7 @@ function applySpatialLayout(
 
 export function useMediasoup() {
   const socketRef = useRef<Socket | null>(null);
-  // Pending maintenance-reload timer (see MAINT_RELOAD_MS).
+  // Server-down PROBE interval while disconnected (see MAINT_PROBE_MS).
   const maintTimerRef = useRef<number | null>(null);
   const deviceRef = useRef<Device | null>(null);
   const sendTransportRef = useRef<Transport | null>(null);
@@ -2595,9 +2596,9 @@ export function useMediasoup() {
       });
 
       socket.on("connect", async () => {
-        // Reconnected in time → cancel any pending maintenance reload.
+        // Reconnected → stop probing for a server-down.
         if (maintTimerRef.current != null) {
-          window.clearTimeout(maintTimerRef.current);
+          window.clearInterval(maintTimerRef.current);
           maintTimerRef.current = null;
         }
         store.getState().setConnected(true);
@@ -2625,18 +2626,25 @@ export function useMediasoup() {
 
       socket.on("disconnect", (reason: string) => {
         store.getState().setConnected(false);
-        // Server-down / maintenance hard cut. Only for UNEXPECTED transport loss —
-        // never a deliberate close (leave, kick, or the bitrate-change reconnect,
-        // which report "io client disconnect" / "io server disconnect" and reconnect
-        // on their own). If we can't get the server back within MAINT_RELOAD_MS, reload:
-        // that lands on the Caddy maintenance page while the service is stopped, so
-        // EVERYONE is cut (incl. ongoing P2P calls), and re-enters the app once it's up.
+        // Maintenance hard cut — but ONLY when the server is genuinely down. While
+        // disconnected we probe the server; a 502 (Caddy up, app stopped → maintenance
+        // page) means the platform was paused → reload onto it, cutting EVERYONE incl.
+        // ongoing P2P calls. A 200 (server up → flaky network) or a fetch failure (our
+        // own connectivity) does NOT reload, so unstable links no longer get reload-
+        // bounced. Never probe on a deliberate close (leave / kick / bitrate reconnect).
         const deliberate =
           reason === "io client disconnect" || reason === "io server disconnect";
         if (hasJoined && !deliberate && maintTimerRef.current == null) {
-          maintTimerRef.current = window.setTimeout(() => {
-            window.location.reload();
-          }, MAINT_RELOAD_MS);
+          maintTimerRef.current = window.setInterval(async () => {
+            try {
+              const res = await fetch(`/?_probe=${Date.now()}`, { cache: "no-store" });
+              // Caddy serves the maintenance page as 502/503 while the app is stopped.
+              if (res.status === 502 || res.status === 503) window.location.reload();
+              // 200 → server is up, our socket will reconnect on its own → do nothing.
+            } catch {
+              // Fetch failed → OUR connectivity is down; reloading won't help. Wait.
+            }
+          }, MAINT_PROBE_MS);
         }
       });
 
@@ -4539,9 +4547,9 @@ export function useMediasoup() {
     surfaceRef.current.clear();
     localStreamRef.current?.getTracks().forEach((t) => t.stop());
     localStreamRef.current = null;
-    // Drop any pending maintenance reload — this is a deliberate teardown/leave.
+    // Stop the server-down probe — this is a deliberate teardown/leave.
     if (maintTimerRef.current != null) {
-      window.clearTimeout(maintTimerRef.current);
+      window.clearInterval(maintTimerRef.current);
       maintTimerRef.current = null;
     }
     socketRef.current?.disconnect();
