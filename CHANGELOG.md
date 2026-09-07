@@ -8,6 +8,26 @@
 
 ---
 
+## 2026-09-07
+
+### Modo mantenimiento (parar el servicio) + fix de fiabilidad del corte
+
+- **Mantenimiento:** `sudo systemctl stop sonicroom` (por ssh) pausa la plataforma; Caddy
+  sirve una página "En mantenimiento" (`/var/www/maintenance/index.html`, `handle_errors`
+  en el Caddyfile) en vez de un 502. `start` (o `sudo reboot`, el servicio es `enabled`)
+  la devuelve; la página se auto-refresca cada 30s y vuelve sola a la app.
+- **Cortar a TODOS, no solo a los nuevos:** en P2P el audio va directo entre peers, así que
+  parar el servidor NO cortaba a los ya conectados. El cliente ahora, al desconectarse,
+  **sondea el servidor** (`fetch /`): 502 (Caddy arriba, app parada = mantenimiento) →
+  `location.reload()` a la página de mantenimiento; 200 (servidor arriba) o fallo de fetch
+  (tu red) → NO recarga.
+- **Fix de fiabilidad (regresión propia):** la primera versión recargaba tras cualquier
+  desconexión de >6s, lo que **reboteaba a los clientes de red inestable** (uno hizo 106
+  requests en 10 min recargando), y esas recargas fallidas eran el "a veces no carga". El
+  sondeo lo resuelve: solo recarga si el servidor está realmente caído. **Verificado:**
+  30/30 cargas OK vía Caddy, carga externa OK (WebFetch), sondeo 200 arriba / 502 parado,
+  y el churn de reconexiones se detuvo. Todo cliente → build, sin restart.
+
 ## 2026-09-06 (2)
 
 ### Fix raíz de "algunos entran en calidad baja hasta ciclar el bitrate"
