@@ -238,7 +238,7 @@ const JITTER_BUFFER_HINT = 0.05;
 // while `sonicroom` is stopped (and back in the app once it returns). This is what
 // makes "pausar la plataforma" cut EVERYONE, including already-connected P2P calls
 // whose media is direct and would otherwise keep flowing with the server down.
-const MAINT_RELOAD_MS = 10000;
+const MAINT_RELOAD_MS = 6000;
 // Jam receive cushion: NOT 0 (0 makes NetEQ choppy on the slightest reordering — see
 // above). It's now the user's "Buffer de jitter" slider (jamBufferMinMs, ms), applied
 // live to every receiver, so they trade latency vs stability themselves; default 30 ms
