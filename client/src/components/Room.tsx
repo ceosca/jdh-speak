@@ -15,9 +15,13 @@ import { AmbienceDialog } from "./AmbienceDialog";
 import { SerietecaDialog } from "./SerietecaDialog";
 import { Chat } from "./Chat";
 import { pickFolderAudioFiles } from "../lib/audioFolder";
+import { isAppleWebKit } from "../lib/microphone";
 import { m } from "../paraglide/messages.js";
 
-type JoinState = "idle" | "joining" | "joined" | "error";
+// "gate" = we already have a name (so no name prompt) but the browser needs a
+// user gesture before we can request the mic (Apple WebKit — see below). We show
+// a single "Entrar" button and only join when it's tapped.
+type JoinState = "idle" | "gate" | "joining" | "joined" | "error";
 
 // The main room joined at the base domain "/". Any "/<roomName>" joins that room.
 const DEFAULT_ROOM = "jdh";
@@ -123,6 +127,9 @@ export function Room() {
   const [namePromptOpen, setNamePromptOpen] = useState(false);
   const [nameInput, setNameInput] = useState("");
   const joinedRef = useRef(false);
+  // Name captured on mount when we defer the auto-join behind the "Entrar" gate
+  // (Apple WebKit). The gate button joins with this name, inside the tap.
+  const gateNameRef = useRef<string>("");
   const knownPeersRef = useRef<Set<string>>(new Set());
   const lastAltNumRef = useRef<{ digit: string; at: number } | null>(null);
 
@@ -241,20 +248,32 @@ export function Room() {
     [roomName, join, disableP2p, noMic, p2pStorageKey],
   );
 
-  // On mount: join immediately if we already have a name (from ?displayName= or
-  // the persisted one); otherwise show the one-time name prompt and wait.
+  // On mount: if we already have a name (from ?displayName= or the persisted
+  // one) we normally join immediately. But on Apple WebKit (Safari on iOS/macOS)
+  // getUserMedia only prompts inside a user gesture; an auto-join in this mount
+  // effect runs OUTSIDE any tap, so WebKit would deny the mic silently and drop
+  // the user into listen/chat-only mode. So on Apple we show a "Entrar" gate and
+  // do the actual join from that tap, so the mic prompt appears. Other browsers
+  // (Chrome/Firefox) keep the instant auto-join. If no name yet, the one-time
+  // name prompt already runs inside a click, so it needs no gate.
   useEffect(() => {
-    if (joinedRef.current) return;
+    if (joinedRef.current || joinState === "gate") return;
     const fromQuery = sanitizeName(searchParams.get("displayName") ?? "");
     const name = fromQuery || loadStoredDisplayName();
     if (name) {
       useRoomStore.getState().setDisplayName(name);
-      doJoin(name);
+      // noMic joins never request the mic, so no gesture is needed there.
+      if (isAppleWebKit && !noMic) {
+        gateNameRef.current = name;
+        setJoinState("gate");
+      } else {
+        doJoin(name);
+      }
     } else {
       setNameInput("");
       setNamePromptOpen(true);
     }
-  }, [doJoin, searchParams]);
+  }, [doJoin, searchParams, joinState, noMic]);
 
   // Confirm the name prompt: persist the name, then join (first time) or rename
   // live (already in the room).
@@ -574,6 +593,27 @@ export function Room() {
       </form>
     </div>
   ) : null;
+
+  // "Entrar" gate (Apple WebKit): a single tap so the mic is requested from
+  // within a user gesture and Safari actually shows the permission prompt.
+  // The button is autofocused so a screen reader lands on it and reads it out.
+  if (joinState === "gate") {
+    return (
+      <div className="flex min-h-dvh flex-col items-center justify-center bg-sonic-900 p-4">
+        <div className="flex w-full max-w-sm flex-col items-center gap-4 text-center">
+          <h1 className="text-lg font-semibold text-sonic-100">{m.room_enter_heading()}</h1>
+          <p className="text-sm text-sonic-300">{m.room_enter_desc()}</p>
+          <button
+            autoFocus
+            onClick={() => doJoin(gateNameRef.current)}
+            className="w-full rounded-lg bg-sonic-accent px-4 py-3 text-base font-medium text-white hover:bg-sonic-accent/90"
+          >
+            {m.room_enter_button()}
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   // Loading state
   if (joinState === "joining") {

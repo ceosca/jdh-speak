@@ -6,6 +6,23 @@ export const isIOS =
   (/iP(hone|ad|od)/.test(navigator.userAgent) ||
     (/Mac/.test(navigator.userAgent) && navigator.maxTouchPoints > 1));
 
+// Apple WebKit (Safari on iOS/iPadOS/macOS, and every iOS browser — they're all
+// WebKit under the hood). WebKit only shows the getUserMedia permission prompt
+// when the call happens INSIDE a user activation (a real tap/click); called
+// outside a gesture it denies silently, with NO prompt. Chrome/Firefox on
+// desktop are permissive and prompt regardless. We use this to require an
+// explicit "Entrar" tap before the initial auto-join on Apple, so the mic is
+// requested from within that gesture and the prompt actually appears.
+//   - iOS: `isIOS` already covers Safari + iOS Chrome/Firefox (all WebKit).
+//   - macOS Safari: vendor is "Apple Computer, Inc." and it's not a Chromium/
+//     Firefox build (those report a different vendor on the Mac).
+export const isAppleWebKit =
+  isIOS ||
+  (typeof navigator !== "undefined" &&
+    navigator.vendor === "Apple Computer, Inc." &&
+    /Safari/.test(navigator.userAgent) &&
+    !/Chrome|Chromium|CriOS|Edg|OPR|FxiOS/.test(navigator.userAgent));
+
 // Mic capture constraints. One per-user choice:
 //   - voiceProcessingEnabled: echo cancel / noise suppress / auto gain.
 // Voice is captured as stereo (2 channels) — EXCEPT on iPhone/iPad, which capture

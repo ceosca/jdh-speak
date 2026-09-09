@@ -349,6 +349,10 @@
   "name_prompt_confirm": "Entrar",
   "name_prompt_save": "Guardar",
 
+  "room_enter_heading": "Entrar a la sala",
+  "room_enter_desc": "Toca «Entrar» para unirte con tu micrófono. El navegador te pedirá permiso del micrófono.",
+  "room_enter_button": "Entrar",
+
   "controls_noise_suppression_enable": "Habilitar supresión de ruidos",
   "controls_noise_suppression_disable": "Deshabilitar supresión de ruidos",
   "controls_noise_suppression_on_title": "Supresión de ruidos activada: control de eco, limpieza de ruido y nivel automático",

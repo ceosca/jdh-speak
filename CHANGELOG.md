@@ -8,6 +8,42 @@
 
 ---
 
+## 2026-09-09
+
+### Safari/Apple: el micrófono ya no cae en "solo texto" (faltaba el gesto de usuario)
+
+**Síntoma:** en Safari (iPhone iOS y macOS) se entraba y NO aparecía el prompt de
+micrófono (aún con Safari en "preguntar"), cayendo a modo "solo texto/chat".
+
+**Causa (confirmada con agentes, sin especular):** WebKit solo muestra el prompt de
+`getUserMedia()` si la llamada ocurre **dentro de una activación de usuario** (un tap/
+click real); fuera de un gesto lo deniega en silencio. Cuando ya había nombre guardado
+(`?displayName=` o localStorage), la sala se **auto-unía en un `useEffect` de montaje**,
+o sea sin ningún tap → Safari denegaba el micro sin prompt → modo sin-micro. Chrome/
+Firefox son permisivos y por eso ahí nunca se notó.
+
+**Fix (solo cliente, sin reiniciar el servicio):**
+- Nuevo `isAppleWebKit` (`client/src/lib/microphone.ts`): `isIOS` (Safari + Chrome/
+  Firefox de iOS, todos WebKit) más Safari de macOS (`navigator.vendor` de Apple, no
+  Chromium/Firefox). No se tocaron `isIOS` ni los constraints (la captura mono de iOS
+  queda igual).
+- Nuevo estado de join `"gate"` (`client/src/components/Room.tsx`): en Apple WebKit, en
+  vez de auto-unir, se muestra una pantalla con un botón **"Entrar"**; el join — y por
+  ende `getUserMedia` — corre **dentro del `onClick`**, síncrono (sin `await` antes que
+  rompa la activación), así que Safari muestra el prompt. Chrome/Firefox/Android siguen
+  con el auto-join instantáneo de siempre. `?mic=off` salta el gate.
+- Botón con `autoFocus`, encabezado y descripción claros (doble accesibilidad: sirve
+  igual a lector de pantalla y a vidente). Claves i18n `room_enter_*` en `es.json`.
+
+**Verificado:** dos agentes (uno resuelve, otro comprueba) confirmaron la causa con
+evidencia, que la cadena de activación no se rompe, que la detección Apple no clasifica
+mal a Chrome/Firefox de Mac, cero regresiones (modo sin-micro legítimo, jam, reconexión,
+robustez previa), typecheck limpio y servidor intacto. **Pendiente de confirmar en un
+Safari real** (iPhone/Mac) que el prompt aparece al tocar "Entrar" — no hay Safari en la
+máquina de desarrollo.
+
+---
+
 ## 2026-09-07
 
 ### Robustez: que un fallo al entrar sea SIEMPRE culpa de la red del usuario, no de la Pi
