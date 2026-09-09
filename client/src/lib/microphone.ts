@@ -74,7 +74,21 @@ export async function getMicrophoneStream(
       audio: microphoneConstraints(deviceId, voiceProcessingEnabled, lowLatency),
     });
   } catch (err) {
-    if (deviceId && err instanceof DOMException && err.name === "OverconstrainedError") {
+    // A stored `micDeviceId` can go STALE — iOS/iPadOS in particular rotate device
+    // ids across sessions/reboots, so a previously-picked mic id no longer exists.
+    // With `deviceId: { exact }` that fails, and depending on the browser it comes
+    // back as OverconstrainedError OR NotFoundError (Safari has used both). Before,
+    // we only retried the default device on OverconstrainedError, so a NotFound left
+    // the user with NO microphone at all even though a perfectly good default mic was
+    // available ("no me detecta ninguno"). Now: whenever a SPECIFIC device was
+    // requested and it fails for a device-selection reason, drop the id and retry the
+    // system default. We still rethrow permission/gesture errors (NotAllowedError,
+    // SecurityError) — retrying the default wouldn't help those and could double a
+    // prompt.
+    const name = err instanceof DOMException ? err.name : "";
+    const deviceSelectionError =
+      name === "OverconstrainedError" || name === "NotFoundError" || name === "NotReadableError";
+    if (deviceId && deviceSelectionError) {
       return navigator.mediaDevices.getUserMedia({
         audio: microphoneConstraints("", voiceProcessingEnabled, lowLatency),
       });

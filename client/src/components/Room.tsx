@@ -15,7 +15,7 @@ import { AmbienceDialog } from "./AmbienceDialog";
 import { SerietecaDialog } from "./SerietecaDialog";
 import { Chat } from "./Chat";
 import { pickFolderAudioFiles } from "../lib/audioFolder";
-import { isAppleWebKit } from "../lib/microphone";
+import { isAppleWebKit, getMicrophoneStream } from "../lib/microphone";
 import { m } from "../paraglide/messages.js";
 
 // "gate" = we already have a name (so no name prompt) but the browser needs a
@@ -130,6 +130,8 @@ export function Room() {
   // Name captured on mount when we defer the auto-join behind the "Entrar" gate
   // (Apple WebKit). The gate button joins with this name, inside the tap.
   const gateNameRef = useRef<string>("");
+  // Guards the one-shot Apple mic auto-detect probe so a re-render can't start it twice.
+  const appleProbeStartedRef = useRef(false);
   const knownPeersRef = useRef<Set<string>>(new Set());
   const lastAltNumRef = useRef<{ digit: string; at: number } | null>(null);
 
@@ -231,13 +233,15 @@ export function Room() {
   }, [roomName]);
 
   // Actually join the room with the given name. Idempotent via joinedRef.
+  // `preStream` is an already-acquired mic (from the Apple auto-detect probe); when
+  // present, join reuses it instead of calling getUserMedia again.
   const doJoin = useCallback(
-    (name: string) => {
+    (name: string, preStream?: MediaStream | null) => {
       if (joinedRef.current) return;
       joinedRef.current = true;
       setJoinState("joining");
       if (disableP2p) sessionStorage.setItem(p2pStorageKey, "1");
-      join(roomName, name, { disableP2p, noMic })
+      join(roomName, name, { disableP2p, noMic, preStream })
         .then(() => setJoinState("joined"))
         .catch((err) => {
           setJoinState("error");
@@ -248,24 +252,62 @@ export function Room() {
     [roomName, join, disableP2p, noMic, p2pStorageKey],
   );
 
-  // On mount: if we already have a name (from ?displayName= or the persisted
-  // one) we normally join immediately. But on Apple WebKit (Safari on iOS/macOS)
-  // getUserMedia only prompts inside a user gesture; an auto-join in this mount
-  // effect runs OUTSIDE any tap, so WebKit would deny the mic silently and drop
-  // the user into listen/chat-only mode. So on Apple we show a "Entrar" gate and
-  // do the actual join from that tap, so the mic prompt appears. Other browsers
-  // (Chrome/Firefox) keep the instant auto-join. If no name yet, the one-time
-  // name prompt already runs inside a click, so it needs no gate.
+  // Apple/iOS auto-detect: try to acquire the mic WITHOUT a tap. On modern iOS/macOS
+  // Safari, once the site's microphone permission is "Allow", getUserMedia succeeds
+  // with no user gesture — so we detect the mic and join straight in, no button. Only
+  // if it fails (older iOS that still demands a gesture, or permission not yet granted)
+  // do we fall back to the "Entrar" gate, whose tap provides the gesture. Bounded by a
+  // timeout so a hung getUserMedia can't stall the whole entry.
+  const tryAppleAutoJoin = useCallback(
+    (name: string) => {
+      if (appleProbeStartedRef.current || joinedRef.current) return;
+      appleProbeStartedRef.current = true;
+      setJoinState("joining"); // show the loader while we probe (up to the timeout)
+      const { micDeviceId, voiceProcessingEnabled, jamMode } = useRoomStore.getState();
+      const micP = getMicrophoneStream(micDeviceId, voiceProcessingEnabled && !jamMode, jamMode);
+      const timeout = new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 6000));
+      const showGate = () => {
+        gateNameRef.current = name;
+        setJoinState("gate");
+      };
+      Promise.race([micP, timeout])
+        .then((stream) => {
+          if (stream) {
+            // getUserMedia won the race with a live mic.
+            if (joinedRef.current) stream.getTracks().forEach((t) => t.stop());
+            else doJoin(name, stream); // permission granted → in with mic, no button
+          } else {
+            // Timeout won → fall back to the tap. getUserMedia may still resolve LATER
+            // with a live stream; stop it so the mic isn't left open (orange indicator).
+            micP.then((late) => late.getTracks().forEach((t) => t.stop())).catch(() => {});
+            if (!joinedRef.current) showGate();
+          }
+        })
+        .catch(() => {
+          // getUserMedia rejected (denied / gesture required) → offer the tap.
+          if (!joinedRef.current) showGate();
+        });
+    },
+    [doJoin],
+  );
+
+  // On mount: if we already have a name (from ?displayName= or the persisted one)
+  // we join immediately. On Apple WebKit (Safari iOS/macOS) getUserMedia only works
+  // inside a user gesture UNLESS the site's mic permission is already "Allow" — so we
+  // first try to auto-detect the mic without a tap (tryAppleAutoJoin): if permission
+  // is granted it succeeds and we go straight in WITH the mic (no button); only if it
+  // fails do we fall back to the "Entrar" tap so the gesture can request the mic.
+  // Other browsers (Chrome/Firefox) keep the instant auto-join. If no name yet, the
+  // one-time name prompt already runs inside a click, so it needs no gate.
   useEffect(() => {
     if (joinedRef.current || joinState === "gate") return;
     const fromQuery = sanitizeName(searchParams.get("displayName") ?? "");
     const name = fromQuery || loadStoredDisplayName();
     if (name) {
       useRoomStore.getState().setDisplayName(name);
-      // noMic joins never request the mic, so no gesture is needed there.
+      // noMic joins never request the mic, so no probe/gesture is needed there.
       if (isAppleWebKit && !noMic) {
-        gateNameRef.current = name;
-        setJoinState("gate");
+        tryAppleAutoJoin(name);
       } else {
         doJoin(name);
       }
@@ -273,7 +315,7 @@ export function Room() {
       setNameInput("");
       setNamePromptOpen(true);
     }
-  }, [doJoin, searchParams, joinState, noMic]);
+  }, [doJoin, tryAppleAutoJoin, searchParams, joinState, noMic]);
 
   // Confirm the name prompt: persist the name, then join (first time) or rename
   // live (already in the room).

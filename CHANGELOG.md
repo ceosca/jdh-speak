@@ -10,6 +10,32 @@
 
 ## 2026-09-09
 
+### Safari/iPhone: detectar el micro automático cuando el permiso ya está en "Permitir" (sin botón)
+
+Seguimiento del gate de abajo. En iPhone con el permiso de micrófono en "Permitir" no se
+detectaba **ningún** micrófono y, además, no se quería tener que pulsar "Entrar".
+
+Dos causas y dos arreglos (solo cliente, sin restart):
+1. **`micDeviceId` guardado obsoleto** (`client/src/lib/microphone.ts`): iOS rota los ids de
+   dispositivo entre sesiones, así que un micro elegido antes deja de existir; con
+   `deviceId:{exact}` eso fallaba. El reintento al micro por defecto solo cubría
+   `OverconstrainedError`; Safari a veces devuelve `NotFoundError` → te quedabas SIN micro
+   pese a haber uno por defecto. Ahora reintenta el default ante cualquier error de
+   selección de dispositivo (Overconstrained/NotFound/NotReadable); se re-lanzan los de
+   permiso (NotAllowed/Security).
+2. **El botón era incondicional en Apple** (`client/src/components/Room.tsx`): ahora, en
+   Apple, primero se **auto-detecta el micro sin tap** (`tryAppleAutoJoin`, con timeout de
+   6s). En iOS/macOS moderno, con permiso "Allow", `getUserMedia` funciona sin gesto → se
+   entra directo **con micro y sin botón**. Solo si eso falla (iOS que aún exige gesto, o
+   permiso no concedido) se cae al gate "Entrar" como respaldo. `join` acepta un
+   `preStream` para reutilizar el micro del probe y no pedirlo dos veces. `?mic=off` y los
+   navegadores no-Apple quedan igual que antes.
+
+**Verificado** por un agente (constraints probe↔join idénticas, sin doble getUserMedia, sin
+loop de efecto, sin fuga de micro tras cerrar el caso late-resolve, cero regresión no-Apple,
+typecheck limpio, servidor intacto). **Pendiente de confirmar en un iPhone real** que ya
+toma el micro sin botón — no hay Safari en la máquina de desarrollo.
+
 ### Safari/Apple: el micrófono ya no cae en "solo texto" (faltaba el gesto de usuario)
 
 **Síntoma:** en Safari (iPhone iOS y macOS) se entraba y NO aparecía el prompt de

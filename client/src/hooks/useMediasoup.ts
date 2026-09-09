@@ -2392,7 +2392,7 @@ export function useMediasoup() {
     async (
       roomName: string,
       displayName: string,
-      opts?: { disableP2p?: boolean; noMic?: boolean },
+      opts?: { disableP2p?: boolean; noMic?: boolean; preStream?: MediaStream | null },
     ) => {
       // Acquire stereo audio + build the outgoing graph BEFORE connecting so
       // it's ready the moment we (re)join. The mic, AudioContext and outgoing
@@ -2405,7 +2405,12 @@ export function useMediasoup() {
       // mode instead of throwing. Either way they can still listen and chat —
       // the outgoing track is outDest's, which is valid (silent) without a mic.
       let stream: MediaStream | null = null;
-      if (!opts?.noMic) {
+      if (opts?.preStream) {
+        // Caller already acquired the mic (the Apple auto-detect probe in Room —
+        // it holds a live gesture-free stream when the permission is granted). Reuse
+        // it verbatim so we don't call getUserMedia a second time on iOS.
+        stream = opts.preStream;
+      } else if (!opts?.noMic) {
         try {
           // Bound the mic acquisition. getUserMedia can HANG indefinitely (not
           // reject) — a stuck permission prompt the user never answers, a device
