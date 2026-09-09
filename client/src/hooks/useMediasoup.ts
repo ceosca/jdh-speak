@@ -2423,6 +2423,8 @@ export function useMediasoup() {
               store.getState().micDeviceId,
               store.getState().voiceProcessingEnabled && !store.getState().jamMode,
               store.getState().jamMode,
+              false, // initial join: prefer the stored mic (ideal), never pin it (exact) —
+              // a stored-but-disconnected device must fall back to default, not fail.
             ),
             new Promise<never>((_, rej) =>
               window.setTimeout(

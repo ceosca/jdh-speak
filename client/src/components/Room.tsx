@@ -264,7 +264,15 @@ export function Room() {
       appleProbeStartedRef.current = true;
       setJoinState("joining"); // show the loader while we probe (up to the timeout)
       const { micDeviceId, voiceProcessingEnabled, jamMode } = useRoomStore.getState();
-      const micP = getMicrophoneStream(micDeviceId, voiceProcessingEnabled && !jamMode, jamMode);
+      // pinDevice=false: prefer the stored mic but never pin it with `exact` — a
+      // last-used mic that isn't connected now must fall back to the default instead
+      // of failing/hanging (which is what was forcing the "Entrar" gate to appear).
+      const micP = getMicrophoneStream(
+        micDeviceId,
+        voiceProcessingEnabled && !jamMode,
+        jamMode,
+        false,
+      );
       const timeout = new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 6000));
       const showGate = () => {
         gateNameRef.current = name;

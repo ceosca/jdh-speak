@@ -32,11 +32,17 @@ export const isAppleWebKit =
 // store — so it's mono, not suppressed).
 // On iOS we also drop the sample-rate hint so WebKit can use the device-native
 // rate (forcing a rate a route can't honour garbles capture); WebRTC/Opus
-// negotiates its own rate regardless. The device is pinned with `exact` so the
-// browser actually switches to the chosen mic — with `ideal` it may silently keep
-// the current/default device, so picking another mic appeared to do nothing.
-// Callers use getMicrophoneStream(), which falls back to the default device if
-// the chosen one is gone (OverconstrainedError).
+// negotiates its own rate regardless.
+// DEVICE PINNING — `pinDevice`:
+//   - true  (explicit switch from Device settings): `deviceId: { exact }` so the
+//     browser ACTUALLY moves to the chosen mic — with `ideal` it may silently keep
+//     the current one, making a manual switch appear to do nothing.
+//   - false (INITIAL join / auto-detect probe): `deviceId: { ideal }`. A stored id
+//     can point to a mic that is NOT currently connected (e.g. the AirPods/interface
+//     you used last time). `exact` on a disconnected device FAILS or even HANGS on
+//     iOS, which is exactly why entering showed no mic and forced the "Entrar" gate.
+//     `ideal` never fails on a missing device — the browser just falls back to the
+//     system default — so entering always gets a working mic without pinning a stale id.
 // lowLatency (jam / "modo ensayo"): ask the browser for the SMALLEST possible
 // capture buffer via the `latency` constraint (seconds). The default capture
 // buffer is often 20-40 ms; requesting ~0 pushes Chrome/Edge toward ~10 ms or
@@ -47,6 +53,7 @@ export function microphoneConstraints(
   deviceId: string,
   voiceProcessingEnabled: boolean,
   lowLatency = false,
+  pinDevice = true,
 ): MediaTrackConstraints {
   return {
     channelCount: isIOS ? 1 : 2,
@@ -55,36 +62,38 @@ export function microphoneConstraints(
     noiseSuppression: voiceProcessingEnabled,
     autoGainControl: voiceProcessingEnabled,
     ...(lowLatency ? { latency: { ideal: 0 } } : {}),
-    ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+    ...(deviceId ? { deviceId: pinDevice ? { exact: deviceId } : { ideal: deviceId } } : {}),
   };
 }
 
-// Acquire the microphone for the selected device. We pin the device with `exact`
-// (see above) so the switch actually takes effect; if that device is
-// gone/unavailable the browser rejects with OverconstrainedError, so we retry on
-// the default device instead of failing the switch and silently keeping the old
-// track.
+// Acquire the microphone. `pinDevice` (see microphoneConstraints):
+//   - true  → explicit device switch: `exact` so the switch takes effect; if that
+//     device is gone the browser rejects with a device-selection error and we retry
+//     the system default instead of failing the switch.
+//   - false → initial join / probe: `ideal`, so a stored-but-disconnected mic can't
+//     fail or hang the entry — it just falls back to the default. The catch-retry
+//     below is then only a belt-and-suspenders for edge browsers.
 export async function getMicrophoneStream(
   deviceId: string,
   voiceProcessingEnabled: boolean,
   lowLatency = false,
+  pinDevice = true,
 ): Promise<MediaStream> {
   try {
     return await navigator.mediaDevices.getUserMedia({
-      audio: microphoneConstraints(deviceId, voiceProcessingEnabled, lowLatency),
+      audio: microphoneConstraints(deviceId, voiceProcessingEnabled, lowLatency, pinDevice),
     });
   } catch (err) {
-    // A stored `micDeviceId` can go STALE — iOS/iPadOS in particular rotate device
-    // ids across sessions/reboots, so a previously-picked mic id no longer exists.
-    // With `deviceId: { exact }` that fails, and depending on the browser it comes
-    // back as OverconstrainedError OR NotFoundError (Safari has used both). Before,
-    // we only retried the default device on OverconstrainedError, so a NotFound left
-    // the user with NO microphone at all even though a perfectly good default mic was
-    // available ("no me detecta ninguno"). Now: whenever a SPECIFIC device was
-    // requested and it fails for a device-selection reason, drop the id and retry the
-    // system default. We still rethrow permission/gesture errors (NotAllowedError,
-    // SecurityError) — retrying the default wouldn't help those and could double a
-    // prompt.
+    // A stored `micDeviceId` can be STALE or DISCONNECTED — iOS/iPadOS rotate device
+    // ids across sessions, and the last-used mic (AirPods, an interface) may simply
+    // not be plugged in now. With `deviceId: { exact }` that fails, and depending on
+    // the browser it comes back as OverconstrainedError OR NotFoundError (Safari has
+    // used both). Before, we only retried the default device on OverconstrainedError,
+    // so a NotFound left the user with NO microphone at all even though a perfectly
+    // good default mic was available ("no me detecta ninguno"). Now: whenever a
+    // SPECIFIC device was requested and it fails for a device-selection reason, drop
+    // the id and retry the system default. We still rethrow permission/gesture errors
+    // (NotAllowedError, SecurityError) — retrying wouldn't help and could double a prompt.
     const name = err instanceof DOMException ? err.name : "";
     const deviceSelectionError =
       name === "OverconstrainedError" || name === "NotFoundError" || name === "NotReadableError";

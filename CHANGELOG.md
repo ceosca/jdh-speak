@@ -10,7 +10,25 @@
 
 ## 2026-09-09
 
-### Safari/iPhone: detectar el micro automático cuando el permiso ya está en "Permitir" (sin botón)
+### iPhone: no fijar (`exact`) el micro guardado en el join — usar `ideal` (la causa real del botón)
+
+El intento anterior no alcanzó. Causa real (dicha por Cristian, no supuesta): su
+`micDeviceId` guardado apunta al **último micro que usó y que ahora NO está conectado**.
+La captura inicial pedía ese id con `deviceId: { exact }`, que sobre un dispositivo
+desconectado **falla o se cuelga** en iOS — el probe se agotaba (6s) y por eso SIEMPRE
+aparecía el botón "Entrar", y como nunca se capturaba nada, iOS tampoco poblaba la lista
+de micrófonos (solo "por defecto").
+
+Fix (solo cliente): la captura **inicial** (join + probe de Apple) ahora pide el micro
+guardado como **preferencia** (`deviceId: { ideal }`), no fijado (`exact`). Un micro
+guardado que no está conectado ya no falla: el navegador cae al micrófono por defecto.
+Con el permiso en "Permitir", esa captura limpia funciona sin gesto → entra con micro y
+**sin botón** (igual que le pasó a la amiga con iOS). El `exact` se mantiene SOLO para
+cuando se elige un micro a propósito en Ajustes (ahí sí debe forzar el cambio).
+`microphoneConstraints`/`getMicrophoneStream` reciben `pinDevice` (default true; el join
+lo pasa false). Al capturarse el default, la lista de micrófonos en Ajustes se puebla.
+
+
 
 Seguimiento del gate de abajo. En iPhone con el permiso de micrófono en "Permitir" no se
 detectaba **ningún** micrófono y, además, no se quería tener que pulsar "Entrar".
