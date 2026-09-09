@@ -470,6 +470,15 @@ async function main() {
       res.status(404).type("text/plain").send("Client not built. Run `pnpm build`.");
       return;
     }
+    // The SPA shell (index.html) references HASHED asset files, so it MUST NOT be
+    // heuristically cached: Express sent it with no Cache-Control at all, and Safari
+    // (very aggressive) then held onto an old index that pointed at OLD asset hashes —
+    // so after a deploy some users kept running the previous bundle no matter what we
+    // shipped ("me sigue todo exactamente igual"). `no-cache` = keep it but REVALIDATE
+    // every load (cheap: the ETag yields a 304 when unchanged), so a new build is
+    // picked up on the very next navigation. The hashed assets under /assets stay
+    // long-cacheable via express.static — only this shell must always be fresh.
+    res.set("Cache-Control", "no-cache");
     res.type("html").send(html);
   });
 
