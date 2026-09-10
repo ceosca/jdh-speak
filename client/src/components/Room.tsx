@@ -15,7 +15,7 @@ import { AmbienceDialog } from "./AmbienceDialog";
 import { SerietecaDialog } from "./SerietecaDialog";
 import { Chat } from "./Chat";
 import { pickFolderAudioFiles } from "../lib/audioFolder";
-import { isAppleWebKit, isIOS, getMicrophoneStream } from "../lib/microphone";
+import { isAppleWebKit, getMicrophoneStream } from "../lib/microphone";
 import { m } from "../paraglide/messages.js";
 
 // "gate" = we already have a name (so no name prompt) but the browser needs a
@@ -258,56 +258,6 @@ export function Room() {
   // if it fails (older iOS that still demands a gesture, or permission not yet granted)
   // do we fall back to the "Entrar" gate, whose tap provides the gesture. Bounded by a
   // timeout so a hung getUserMedia can't stall the whole entry.
-  // TEMP diagnostic: report what actually happened when we tried to get the mic on
-  // entry (error, enumerated inputs, permission state, stored id, UA) to the server so
-  // a real iOS/Safari failure can be READ off the Pi instead of guessed. Best-effort.
-  const postMicDiag = useCallback(async (stage: string, err?: unknown) => {
-    const perms = (navigator as unknown as { permissions?: { query?: (d: unknown) => Promise<{ state?: string }> } }).permissions;
-    let perm = "n/a";
-    try {
-      perm = (await perms?.query?.({ name: "microphone" }))?.state ?? "n/a";
-    } catch (e) {
-      perm = "queryfail:" + ((e as Error)?.name || "?");
-    }
-    let inputs: string[] = [];
-    try {
-      const ds = await navigator.mediaDevices.enumerateDevices();
-      inputs = ds
-        .filter((d) => d.kind === "audioinput")
-        .map((d) => `${d.deviceId ? "id" : "noid"}/${d.label || "nolabel"}`);
-    } catch (e) {
-      inputs = ["enumfail:" + ((e as Error)?.name || "?")];
-    }
-    const errStr =
-      err instanceof DOMException
-        ? `${err.name}: ${err.message}`
-        : err instanceof Error
-          ? err.message
-          : err
-            ? String(err)
-            : null;
-    const body = {
-      stage,
-      err: errStr,
-      perm,
-      inputs,
-      storedMic: useRoomStore.getState().micDeviceId || null,
-      isIOS,
-      isAppleWebKit,
-      ua: navigator.userAgent,
-    };
-    try {
-      await fetch("/api/client-diag", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-        keepalive: true,
-      });
-    } catch {
-      /* best effort */
-    }
-  }, []);
-
   const tryAppleAutoJoin = useCallback(
     (name: string) => {
       if (appleProbeStartedRef.current || joinedRef.current) return;
@@ -332,24 +282,21 @@ export function Room() {
         .then((stream) => {
           if (stream) {
             // getUserMedia won the race with a live mic.
-            void postMicDiag("probe-ok");
             if (joinedRef.current) stream.getTracks().forEach((t) => t.stop());
             else doJoin(name, stream); // permission granted → in with mic, no button
           } else {
             // Timeout won → fall back to the tap. getUserMedia may still resolve LATER
             // with a live stream; stop it so the mic isn't left open (orange indicator).
-            void postMicDiag("probe-timeout");
             micP.then((late) => late.getTracks().forEach((t) => t.stop())).catch(() => {});
             if (!joinedRef.current) showGate();
           }
         })
-        .catch((err) => {
+        .catch(() => {
           // getUserMedia rejected (denied / gesture required) → offer the tap.
-          void postMicDiag("probe-error", err);
           if (!joinedRef.current) showGate();
         });
     },
-    [doJoin, postMicDiag],
+    [doJoin],
   );
 
   // On mount: if we already have a name (from ?displayName= or the persisted one)

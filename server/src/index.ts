@@ -212,20 +212,6 @@ async function main() {
     res.status(201).json({ ok: true, message: result.message });
   });
 
-  // TEMP diagnostic sink: the client POSTs what actually happened when it tried to
-  // acquire the mic on entry (getUserMedia outcome/error, enumerated inputs, permission
-  // state, UA). Logged to the journal so we can read a REAL iOS/Safari failure off the
-  // Pi instead of guessing. No storage, no side effects, best-effort.
-  app.post("/api/client-diag", (req, res) => {
-    const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "?";
-    try {
-      console.log(`[client-diag] ${ip} ${JSON.stringify(req.body).slice(0, 2000)}`);
-    } catch {
-      /* ignore malformed body */
-    }
-    res.status(204).end();
-  });
-
   app.get("/api/audio-proxy", async (req, res) => {
     const raw = typeof req.query.url === "string" ? req.query.url : "";
     if (!raw) {

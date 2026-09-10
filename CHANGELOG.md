@@ -10,6 +10,21 @@
 
 ## 2026-09-09
 
+### ✅ RESUELTO y CONFIRMADO — iPhone: el problema era el bundle viejo cacheado
+
+Confirmado con datos del propio iPhone de Cristian (iOS 18.7 / Safari 26.6, capturado por
+un diagnóstico temporal ya retirado): con el código nuevo el `probe` da `probe-ok`, permiso
+`granted`, detecta los dos micros (EarPods + iPhone) y entra **con micro y sin botón**.
+
+**El bloqueante real era la caché** (ver la entrada del `Cache-Control` más abajo): Safari
+servía un `index.html` viejo que apuntaba al bundle anterior (botón incondicional + `exact`
+del micro), así que **ninguno de los fixes llegaba** ("me sigue todo exactamente igual").
+Al cargar el bundle nuevo (pestaña privada / tras el header `no-cache`), los dos arreglos
+de abajo (`ideal` para el micro + auto-detección sin botón) funcionan. Quedó andando.
+
+Se retiró el diagnóstico temporal (`POST /api/client-diag` + el reporte del cliente) una vez
+leído el dato real.
+
 ### iPhone: no fijar (`exact`) el micro guardado en el join — usar `ideal` (la causa real del botón)
 
 El intento anterior no alcanzó. Causa real (dicha por Cristian, no supuesta): su
