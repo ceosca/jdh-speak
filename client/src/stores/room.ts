@@ -161,6 +161,10 @@ export interface PeerState {
   // True while this peer is streaming audio (file/URL/TV/series/share): their
   // track is kept CENTRED (never spatialised), so music doesn't follow their seat.
   isStreaming: boolean;
+  // Opt-in video: true while this peer has their camera on, and the MediaStream
+  // carrying their video track (null when off). Rendered as a <video> on their card.
+  videoOn: boolean;
+  videoStream: MediaStream | null;
 }
 
 export type RoomMode = "p2p" | "sfu";
@@ -188,6 +192,11 @@ interface RoomState {
   // Jam/ensayo options shown? Hidden by default, toggled by Alt+Shift+J.
   jamUiVisible: boolean;
   isSharingAudio: boolean;
+  // Opt-in camera (video). `cameraOn` is your own toggle state (default OFF, never
+  // persisted — a camera must be turned on deliberately each session), and
+  // `localVideoStream` is your own camera feed for the self-view (null when off).
+  cameraOn: boolean;
+  localVideoStream: MediaStream | null;
   // Local-file streaming (independent of the audio share): the name of the file
   // currently being streamed into the call (null = not streaming), and whether
   // it's playing or paused. Drives the floating file-player window and the
@@ -338,6 +347,9 @@ interface RoomState {
   setMuted: (muted: boolean) => void;
   setDeafened: (deafened: boolean) => void;
   setSharingAudio: (sharing: boolean) => void;
+  // Camera: your own feed (self-view + toggle state) and per-peer video streams.
+  setLocalVideo: (stream: MediaStream | null) => void;
+  setPeerVideo: (peerId: string, stream: MediaStream | null) => void;
   setFileStream: (name: string | null) => void;
   setFileStreamPlaying: (playing: boolean) => void;
   setPlayerIsUrl: (isUrl: boolean) => void;
@@ -419,6 +431,8 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   jamUiVisible: loadJamUiVisible(),
   isDeafened: false,
   isSharingAudio: false,
+  cameraOn: false,
+  localVideoStream: null,
   fileStreamName: null,
   fileStreamPlaying: false,
   playerIsUrl: false,
@@ -484,6 +498,16 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setMuted: (isMuted) => set({ isMuted }),
   setDeafened: (isDeafened) => set({ isDeafened }),
   setSharingAudio: (isSharingAudio) => set({ isSharingAudio }),
+
+  setLocalVideo: (stream) => set({ localVideoStream: stream, cameraOn: !!stream }),
+
+  setPeerVideo: (peerId, stream) =>
+    set((state) => {
+      const peers = new Map(state.peers);
+      const peer = peers.get(peerId);
+      if (peer) peers.set(peerId, { ...peer, videoStream: stream, videoOn: !!stream });
+      return { peers };
+    }),
   setFileStream: (fileStreamName) => set({ fileStreamName }),
   setFileStreamPlaying: (fileStreamPlaying) => set({ fileStreamPlaying }),
   setPlayerIsUrl: (playerIsUrl) => set({ playerIsUrl }),
@@ -699,6 +723,8 @@ export const useRoomStore = create<RoomState>((set, get) => ({
         volume: 1,
         isMusic: false,
         isStreaming: false,
+        videoOn: false,
+        videoStream: null,
       });
       return { peers };
     }),
@@ -784,6 +810,8 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       isMuted: false,
       isDeafened: false,
       isSharingAudio: false,
+      cameraOn: false,
+      localVideoStream: null,
       fileStreamName: null,
       fileStreamPlaying: false,
       playerIsUrl: false,

@@ -37,6 +37,27 @@ export const routerOptions: RouterOptions = {
         ptime: 10,
       },
     },
+    // Video codecs for the opt-in camera. VP8 covers Chrome/Firefox/Android;
+    // H264 (constrained-baseline, packetization-mode 1) is what Safari/iOS
+    // encode, so BOTH must be here or an iPhone camera can't be consumed by a
+    // Chrome peer (and vice-versa). Video only ever flows on the SFU — turning a
+    // camera on forces the room onto the SFU (shouldForceSfu), so there is no P2P
+    // video path to negotiate.
+    {
+      kind: "video",
+      mimeType: "video/VP8",
+      clockRate: 90000,
+    },
+    {
+      kind: "video",
+      mimeType: "video/H264",
+      clockRate: 90000,
+      parameters: {
+        "packetization-mode": 1,
+        "profile-level-id": "42e01f",
+        "level-asymmetry-allowed": 1,
+      },
+    },
   ],
 };
 

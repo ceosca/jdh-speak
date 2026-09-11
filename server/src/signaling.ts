@@ -172,7 +172,11 @@ export function createSignalingServer(
       recordingManager.isRecording(room.name) ||
       room.casters.size > 0 ||
       room.disableP2p ||
-      room.forceSfu
+      room.forceSfu ||
+      // Any camera on → the room must be on the SFU: video is only ever routed
+      // through the server (there is no P2P video path). Releases automatically
+      // when the last camera turns off (or its owner leaves) and nothing else pins.
+      Array.from(room.peers.values()).some((p) => p.camera)
     );
   }
 
@@ -496,8 +500,8 @@ export function createSignalingServer(
             rtpParameters: z.any() as z.ZodType<RtpParameters>,
             // "music" for a caster's stereo track, "share" for a peer's stereo
             // system/tab-audio share, "file" for a peer streaming a local audio
-            // file, "voice" (default) for mics.
-            source: z.enum(["voice", "music", "share", "file"]).optional(),
+            // file, "camera" for an opt-in video track, "voice" (default) for mics.
+            source: z.enum(["voice", "music", "share", "file", "camera"]).optional(),
           })
           .parse(data);
 
@@ -646,6 +650,39 @@ export function createSignalingServer(
         peerId: socket.id,
         streaming: parsed.data.streaming,
       });
+      cb?.({ ok: true });
+    });
+
+    // A peer turned their camera on/off (opt-in video). This drives the room onto
+    // the SFU while any camera is on (shouldForceSfu) and back to automatic P2P/SFU
+    // when the last one turns off. We broadcast the state to the room (for the UI +
+    // a screen-reader announcement) and, on OFF, close that peer's camera producer
+    // server-side so its consumers on the others drop cleanly (the client closes its
+    // own producer too, but the server one would otherwise linger and freeze a last
+    // frame). `applyModeDecision` triggers the transport switch.
+    socket.on("set-camera", (data: unknown, cb?: (res: unknown) => void) => {
+      if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
+      const parsed = z.object({ on: z.boolean() }).safeParse(data);
+      if (!parsed.success) return cb?.({ ok: false, error: "Invalid value" });
+      currentPeer.camera = parsed.data.on;
+      if (!parsed.data.on) {
+        for (const [id, producer] of currentPeer.producers) {
+          if (((producer.appData?.source as string) ?? "") === "camera") {
+            try {
+              producer.close();
+            } catch {
+              /* already closed */
+            }
+            currentPeer.producers.delete(id);
+          }
+        }
+      }
+      socket.to(currentRoom.name).emit("peer-camera", {
+        peerId: socket.id,
+        on: parsed.data.on,
+        by: currentPeer.displayName,
+      });
+      applyModeDecision(currentRoom);
       cb?.({ ok: true });
     });
 

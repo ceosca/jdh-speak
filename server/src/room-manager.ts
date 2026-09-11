@@ -13,6 +13,10 @@ export interface Peer {
   // listeners keep it CENTRED (never spatialised) — music shouldn't move around
   // the room with the person. Broadcast like `muted`.
   streaming: boolean;
+  // True while this peer has their camera on (an opt-in video producer). Any peer
+  // with camera on forces the room onto the SFU (shouldForceSfu), since video is
+  // only ever routed through the server, never P2P.
+  camera: boolean;
   sendTransport: WebRtcTransport | null;
   recvTransport: WebRtcTransport | null;
   producers: Map<string, Producer>;
@@ -230,6 +234,7 @@ export function createPeer(room: Room, peerId: string, displayName: string): Pee
     displayName,
     muted: false,
     streaming: false,
+    camera: false,
     sendTransport: null,
     recvTransport: null,
     producers: new Map(),

@@ -8,6 +8,37 @@
 
 ---
 
+## 2026-09-11
+
+### Video (videollamada opt-in): botón "Cámara" por usuario, por defecto apagado
+
+Nueva función: quien quiera puede encender su cámara y hacer videollamada; quien no la
+pulse sigue en solo audio. La cámara arranca SIEMPRE apagada (no se persiste) y solo se
+enciende con el botón, deliberadamente.
+
+**Decisión de arquitectura:** el video va SIEMPRE por el SFU. Encender una cámara **fuerza
+la sala al SFU** (como ya hacen grabación/caster/`?p2p=off`/Ctrl+Alt+S), así se reusa el
+camino probado de producir/consumir del servidor y se evita reconstruir la renegociación
+P2P en caliente (que no existe en este código y sería frágil). La pista de video es
+SEPARADA de la de audio (nunca se mezcla en `outDest`), así mutear el micro no toca el
+video y viceversa.
+
+- **Servidor:** codecs de video en el router (VP8 + H264 constrained-baseline, para cubrir
+  Chrome/Firefox/Android y Safari/iOS) — `mediasoup-config.ts`. Nuevo `set-camera {on}` que
+  marca `peer.camera`, fuerza/relaja el SFU (`shouldForceSfu`), avisa a la sala
+  (`peer-camera`) y, al apagar, cierra el producer de video del peer. `produce` acepta
+  `source:"camera"`. `signaling.ts` + `room-manager.ts`.
+- **Cliente:** `toggleCamera` (adquiere la cámara dentro del click — Safari/iOS necesita el
+  gesto —, emite `set-camera`, produce el video en el SFU vía `ensureVideoProducer`, que se
+  reejecuta en cada (re)armado de SFU para sobrevivir reconexión/cambio de modo).
+  `consumeProducer` ramifica por `kind`: el video se envuelve en un `MediaStream` por peer y
+  va al store, no al grafo de audio. Self-view local + `<video>` por peer en
+  `ParticipantCard` (self espejado). Botón "Cámara" con `aria-pressed` en `AudioControls`.
+- **Accesibilidad:** el `<video>` es `aria-hidden` (visual); el estado se transmite por
+  texto (", cámara encendida" junto al nombre) y por anuncios al lector de pantalla
+  ("X encendió/apagó su cámara", "Encendiste tu cámara") vía `announceEvent`. Claves i18n
+  `controls_camera*`, `event_camera_*`, `card_camera_on`, `camera_error`.
+
 ## 2026-09-09
 
 ### ✅ RESUELTO y CONFIRMADO — iPhone: el problema era el bundle viejo cacheado

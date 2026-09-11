@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Mic,
   MicOff,
+  Video,
+  VideoOff,
   ScreenShare,
   ScreenShareOff,
   Download,
@@ -37,6 +39,8 @@ function recordingStamp(ts: number | null): string {
 interface AudioControlsProps {
   onToggleMute: () => void;
   onToggleAudioShare: () => void;
+  // Turn your own camera on/off (opt-in video call). Default off.
+  onToggleCamera: () => void;
   // Opens (or closes) the virtual player — the home of local files/folders.
   onOpenPlayer: () => void;
   // Whether the player window is currently showing (for the button's pressed state).
@@ -59,6 +63,7 @@ interface AudioControlsProps {
 export function AudioControls({
   onToggleMute,
   onToggleAudioShare,
+  onToggleCamera,
   onOpenPlayer,
   playerOpen,
   onOpenUrl,
@@ -70,6 +75,7 @@ export function AudioControls({
   const isMuted = useRoomStore((s) => s.isMuted);
   const hasMic = useRoomStore((s) => s.hasMic);
   const isSharingAudio = useRoomStore((s) => s.isSharingAudio);
+  const cameraOn = useRoomStore((s) => s.cameraOn);
   const recordingId = useRoomStore((s) => s.recordingId);
   const recordingStartedAt = useRoomStore((s) => s.recordingStartedAt);
   const voiceProcessingEnabled = useRoomStore((s) => s.voiceProcessingEnabled);
@@ -173,6 +179,21 @@ export function AudioControls({
           <Waves className="h-5 w-5" />
           <span aria-hidden="true" className={lbl}>
             {m.controls_noise_short()}
+          </span>
+        </button>
+
+        {/* Camera (opt-in video call). Off by default; press to turn your camera on.
+            aria-pressed conveys the on/off state to the screen reader. */}
+        <button
+          onClick={onToggleCamera}
+          className={`${btn} ${cameraOn ? active : idle}`}
+          aria-label={cameraOn ? m.controls_camera_off() : m.controls_camera()}
+          aria-pressed={cameraOn}
+          title={cameraOn ? m.controls_camera_off_title() : m.controls_camera_title()}
+        >
+          {cameraOn ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
+          <span aria-hidden="true" className={lbl}>
+            {cameraOn ? m.controls_camera_off_short() : m.controls_camera_short()}
           </span>
         </button>
 

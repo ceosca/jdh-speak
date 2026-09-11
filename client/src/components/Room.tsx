@@ -74,6 +74,7 @@ export function Room() {
     join,
     toggleMute,
     toggleAudioShare,
+    toggleCamera,
     startPlaylist,
     startFolderStream,
     startUrlStream,
@@ -198,6 +199,7 @@ export function Room() {
   const localPeerId = useRoomStore((s) => s.localPeerId);
   const displayName = useRoomStore((s) => s.displayName);
   const peers = useRoomStore((s) => s.peers);
+  const localVideoStream = useRoomStore((s) => s.localVideoStream);
   const isMuted = useRoomStore((s) => s.isMuted);
   const hasMic = useRoomStore((s) => s.hasMic);
   const localSpeaking = useRoomStore((s) => s.localSpeaking);
@@ -759,6 +761,8 @@ export function Room() {
                     volume: 1,
                     isMusic: false,
                     isStreaming: false,
+                    videoOn: !!localVideoStream,
+                    videoStream: localVideoStream,
                   }}
                   isLocal
                   textOnly={!hasMic}
@@ -790,6 +794,7 @@ export function Room() {
           <AudioControls
             onToggleMute={toggleMute}
             onToggleAudioShare={toggleAudioShare}
+            onToggleCamera={toggleCamera}
             onOpenPlayer={openPlayer}
             playerOpen={playerOpen || fileStreamName != null}
             onOpenUrl={openUrl}

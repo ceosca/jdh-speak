@@ -505,6 +505,15 @@ export function useMediasoup() {
   // passthrough) or it goes silent — see tapConsumer.
   const recvInsertableRef = useRef(false);
   const producerRef = useRef<Producer | null>(null);
+  // Opt-in camera (video). `cameraStreamRef` is our own camera MediaStream (kept
+  // across SFU rebuilds — stopTracks:false on the producer — so a reconnect
+  // re-produces from it), `videoProducerRef` the current video producer, and
+  // `peerVideosRef` the consumers+streams of each remote peer's camera. Video is
+  // SFU-only (a camera forces the room onto the SFU).
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+  const videoProducerRef = useRef<Producer | null>(null);
+  const peerVideosRef = useRef<Map<string, { consumer: Consumer; stream: MediaStream }>>(new Map());
+  const toggleCameraRef = useRef<(() => Promise<void>) | null>(null);
   // Network-monitor self-consumer (our own producer returned via the server, as
   // a Jamulus-style timing reference). SFU-only; keyed by the producer id it
   // follows so a re-produce re-establishes it.
@@ -924,6 +933,30 @@ export function useMediasoup() {
     }
     peerAudiosRef.current.clear();
   }, []);
+
+  // Drop one peer's incoming video (camera off, peer left, or SFU teardown): close
+  // the consumer and clear the store so their <video> disappears.
+  const dropPeerVideo = useCallback(
+    (peerId: string) => {
+      const v = peerVideosRef.current.get(peerId);
+      if (v) {
+        try {
+          v.consumer.close();
+        } catch {
+          /* already closed */
+        }
+        peerVideosRef.current.delete(peerId);
+      }
+      useRoomStore.getState().setPeerVideo(peerId, null);
+    },
+    [],
+  );
+
+  const cleanupAllPeerVideo = useCallback(() => {
+    for (const peerId of Array.from(peerVideosRef.current.keys())) {
+      dropPeerVideo(peerId);
+    }
+  }, [dropPeerVideo]);
 
   // --- Outgoing audio graph (mic gain + soft limiter, + optional shared audio) ---
   // Built lazily and reused for the whole session. The produced/added track is
@@ -2112,6 +2145,12 @@ export function useMediasoup() {
   const teardownSfu = useCallback(() => {
     producerRef.current?.close();
     producerRef.current = null;
+    // Close our video producer but KEEP cameraStreamRef alive (stopTracks:false) so
+    // a reconnect / re-setup re-produces it via ensureVideoProducer. Drop everyone
+    // else's incoming video (their consumers belong to the now-closed transport).
+    videoProducerRef.current?.close();
+    videoProducerRef.current = null;
+    cleanupAllPeerVideo();
     sendTransportRef.current?.close();
     sendTransportRef.current = null;
     recvTransportRef.current?.close();
@@ -2140,7 +2179,7 @@ export function useMediasoup() {
       masterBus.gain.value = 1;
     }
     cleanupAllPeerAudio();
-  }, [cleanupAllPeerAudio]);
+  }, [cleanupAllPeerAudio, cleanupAllPeerVideo]);
 
   // --- SFU: consume a producer ---
   const consumeProducer = useCallback(
@@ -2162,11 +2201,29 @@ export function useMediasoup() {
       const consumer = await recvTransport.consume({
         id: res.consumerId,
         producerId: res.producerId,
-        kind: res.kind as "audio",
+        kind: res.kind as "audio" | "video",
         rtpParameters: res.rtpParameters as Parameters<
           typeof recvTransport.consume
         >[0]["rtpParameters"],
       });
+
+      // VIDEO (opt-in camera): no audio graph — wrap the track in a MediaStream and
+      // hand it to the store so the peer's <video> renders it. One video consumer
+      // per peer; a re-consume (mode switch / reconnect) replaces the previous one.
+      if (res.kind === "video") {
+        const existingVideo = peerVideosRef.current.get(peerId);
+        if (existingVideo) {
+          try {
+            existingVideo.consumer.close();
+          } catch {
+            /* already closed */
+          }
+        }
+        const stream = new MediaStream([consumer.track]);
+        peerVideosRef.current.set(peerId, { consumer, stream });
+        store.getState().setPeerVideo(peerId, stream);
+        return;
+      }
 
       {
         const jam = useRoomStore.getState().jamMode;
@@ -2209,6 +2266,35 @@ export function useMediasoup() {
     },
     [emit, store, effectiveGain, refreshSpatial],
   );
+
+  // Produce our camera track on the SFU. Idempotent + self-guarding: no-op unless
+  // the camera is on, we're on a live SFU send transport, and there's no live video
+  // producer yet. Called from toggleCamera (if already SFU) and from setupSfuInner
+  // (so a mode switch / reconnect re-produces the video, like the audio producer).
+  const ensureVideoProducer = useCallback(async () => {
+    const track = cameraStreamRef.current?.getVideoTracks()[0];
+    if (!track || track.readyState === "ended") return;
+    if (videoProducerRef.current && !videoProducerRef.current.closed) return;
+    const sendTransport = sendTransportRef.current;
+    if (modeRef.current !== "sfu" || !sendTransport || sendTransport.closed) return;
+    try {
+      const producer = await sendTransport.produce({
+        track,
+        // Cap the camera at a modest bitrate — the SFU fans this out to every peer,
+        // and this runs on a Raspberry Pi. 640x480@24 is plenty for a face.
+        encodings: [{ maxBitrate: 500_000 }],
+        codecOptions: { videoGoogleStartBitrate: 300 },
+        appData: { source: "camera" },
+        // The camera track is app-owned and reused across SFU rebuilds (reconnect /
+        // mode switch); mediasoup must NOT stop it when this producer closes — we
+        // stop it ourselves only when the user turns the camera off.
+        stopTracks: false,
+      });
+      videoProducerRef.current = producer;
+    } catch (err) {
+      console.error("[camera] produce failed:", err);
+    }
+  }, []);
 
   // --- SFU: set up transports and produce ---
   const setupSfuInner = useCallback(
@@ -2349,6 +2435,10 @@ export function useMediasoup() {
       // Share audio and file audio both mix directly into outDest (no separate
       // producer for either — no rebuild needed on SFU setup).
 
+      // (Re)produce the camera if it's on — so enabling the camera (which switches
+      // the room to SFU), a mode switch, or a reconnect all rebuild the video.
+      void ensureVideoProducer();
+
       // Consume any producers announced while the transports were still being
       // built (their new-producer events arrived too early and were queued).
       while (pendingProducersRef.current.length > 0) {
@@ -2368,6 +2458,7 @@ export function useMediasoup() {
       applyJamSenderPriority,
       applyJamSendPath,
       applyJamMesh,
+      ensureVideoProducer,
       store,
     ],
   );
@@ -2949,6 +3040,7 @@ export function useMediasoup() {
           peerAudiosRef.current.delete(peerId);
           refreshSpatial(); // re-spread the remaining seats
         }
+        dropPeerVideo(peerId); // remove their camera video if any
         store.getState().removePeer(peerId);
         if (!wasMusic) {
           const leaveTs = Date.now();
@@ -3174,6 +3266,23 @@ export function useMediasoup() {
         },
       );
 
+      // A peer turned their camera on/off. ON: their video producer arrives as a
+      // separate new-producer(video) event which we consume and render — here we
+      // just announce it. OFF: drop their video now (their producer was closed
+      // server-side). Announced to the screen reader (Cristian can't see the tile).
+      socket.on(
+        "peer-camera",
+        ({ peerId, on, by }: { peerId: string; on: boolean; by?: string }) => {
+          const name = by || store.getState().peers.get(peerId)?.displayName || "";
+          if (on) {
+            store.getState().announceEvent(m.event_camera_on({ name }));
+          } else {
+            dropPeerVideo(peerId);
+            store.getState().announceEvent(m.event_camera_off({ name }));
+          }
+        },
+      );
+
       // Incoming chat (including the echo of our own messages): render it, chime
       // a distinct cue, and announce it via the user's chosen channel — a polite
       // or assertive ARIA live region, or the browser's spoken TTS (announceChat
@@ -3213,6 +3322,7 @@ export function useMediasoup() {
       applyMicMonitor,
       refreshSpatial,
       applyAmbience,
+      dropPeerVideo,
 
       store,
     ],
@@ -3380,6 +3490,55 @@ export function useMediasoup() {
     if (store.getState().isSharingAudio) await stopAudioShare();
     else await startAudioShare();
   }, [store, startAudioShare, stopAudioShare]);
+
+  // --- Camera (opt-in video) ---
+  // Turning the camera ON: acquire it (inside this click, so Safari/iOS prompts),
+  // tell the server (which forces the room onto the SFU), and produce the track —
+  // right away if we're already on the SFU, otherwise the switch-to-SFU rebuild
+  // produces it (ensureVideoProducer in setupSfu). Turning OFF: close the producer,
+  // stop the camera, and tell the server (which closes it for the others too and
+  // may drop the room back to P2P). Default off; only this button turns it on.
+  const toggleCamera = useCallback(async () => {
+    if (store.getState().cameraOn) {
+      videoProducerRef.current?.close();
+      videoProducerRef.current = null;
+      cameraStreamRef.current?.getTracks().forEach((t) => t.stop());
+      cameraStreamRef.current = null;
+      store.getState().setLocalVideo(null);
+      socketRef.current?.emit("set-camera", { on: false });
+      store.getState().announceEvent(m.event_camera_off_self());
+      playCue(sharedAudioContext, "share-stop");
+      return;
+    }
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          frameRate: { ideal: 24 },
+          facingMode: "user",
+        },
+        audio: false,
+      });
+    } catch (err) {
+      console.warn("[camera] getUserMedia failed:", err);
+      store.getState().announce(m.camera_error());
+      return;
+    }
+    cameraStreamRef.current = stream;
+    store.getState().setLocalVideo(stream); // self-view + cameraOn=true
+    // If the camera track is stopped from the OS/browser UI, reflect it as off.
+    stream.getVideoTracks()[0]?.addEventListener("ended", () => {
+      if (store.getState().cameraOn) void toggleCameraRef.current?.();
+    });
+    socketRef.current?.emit("set-camera", { on: true }); // forces the room to SFU
+    await ensureVideoProducer(); // produces now if already SFU; else setupSfu will
+    store.getState().announceEvent(m.event_camera_on_self());
+    playCue(sharedAudioContext, "share-start");
+  }, [store, ensureVideoProducer]);
+  // Stable ref so the track-"ended" listener can call the latest toggleCamera.
+  toggleCameraRef.current = toggleCamera;
 
   // --- File streaming: stream a local audio file into the call as a SEPARATE
   // stereo "file" producer. Independent of the audio share; the file is decoded
@@ -4676,6 +4835,7 @@ export function useMediasoup() {
     toggleMute,
     toggleDeafen,
     toggleAudioShare,
+    toggleCamera,
     startPlaylist,
     startFolderStream,
     startUrlStream,
