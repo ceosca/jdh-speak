@@ -8,6 +8,33 @@
 
 ---
 
+## 2026-09-12
+
+### iPhone: audio en estéreo cuando el mic tiene varias cápsulas (se oía "solo a la izquierda")
+
+**Síntoma:** el audio transmitido desde un iPhone se oía por un solo micrófono, a la
+izquierda, no en estéreo — incluso con la supresión de ruido desactivada, y aunque un mic
+estéreo externo (Maono Wave T5) SÍ sonaba en estéreo en otras apps. No era límite de Safari.
+
+**Causa (investigada con agentes + documentación — Apple forum, addpipe, RFC 7587, MDN):**
+`client/src/lib/microphone.ts` FORZABA `channelCount: 1` en iOS. Al pedir 1 canal a un
+device de varias cápsulas (los micros del iPhone, o un Maono), Safari devuelve solo la
+cápsula IZQUIERDA y descarta la derecha → mono/izquierda. El resto del pipeline (grafo Web
+Audio + Opus) ya iba estéreo; el único cuello era la captura.
+
+**Fix (solo cliente):** `channelCount: { ideal: 2 }` en todas las plataformas (nunca
+`exact` — Safari puede tirar OverconstrainedError). El device entrega sus canales REALES:
+estéreo si tiene varias cápsulas, mono si tiene una. El estéreo real necesita la supresión
+de ruido OFF (echoCancellation colapsa a mono en WebKit), que ya es el default = la ruta de
+alta calidad. NO se tocó el Opus (sigue estéreo end-to-end), así que no se rompe el estéreo
+de la música compartida ni el caso mono actual.
+
+**Verificado end-to-end** con un mic sintético estéreo (300 Hz en L, 900 Hz en R): la pista
+producida Y la recibida por otro peer tienen 2 canales distintos (L≈300/R≈900, mismo nivel),
+tanto en P2P como en SFU. Queda pendiente confirmar en el iPhone real si el mic INTEGRADO
+entrega 2 canales por getUserMedia (el externo Maono seguro que sí); el diagnóstico `micCh`
+loguea el conteo real de canales al server cuando alguien entra.
+
 ## 2026-09-11
 
 ### Ronda de UI + accesibilidad (auditoría con 4 agentes)
