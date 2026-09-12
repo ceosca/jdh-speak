@@ -44,7 +44,7 @@
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
     color-scheme: light;
-    --status-ok: #15803d;
+    --status-ok: #166534;
     --status-info: #1d4ed8;
     --status-danger: #b91c1c;
     --color-sonic-900: #f4f2fa;
