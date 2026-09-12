@@ -24,8 +24,11 @@ import { m } from "../paraglide/messages.js";
 // a single "Entrar" button and only join when it's tapped.
 type JoinState = "idle" | "gate" | "joining" | "joined" | "error";
 
-// The main room joined at the base domain "/". Any "/<roomName>" joins that room.
-const DEFAULT_ROOM = "jdh";
+// The room joined at the base domain "/". It is its OWN independent room —
+// deliberately NOT "jdh", so "/" and "/jdh" are SEPARATE rooms that don't share
+// participants. Any "/<roomName>" joins that named room; "/principal" is just the
+// explicit path for this same base room.
+const DEFAULT_ROOM = "principal";
 
 // Max gap between two Alt+<same number> presses for the second to count as a
 // "copy that message" double-press rather than a fresh readback.
