@@ -120,18 +120,30 @@ export function ParticipantCard({
         </div>
       )}
 
-      {/* Name + mic status, read together: "Name, micrófono activado". Camera state
-          appended so a screen-reader user knows who is on video. */}
-      <p className="max-w-[150px] truncate text-center text-sm text-sonic-100">
-        <span className="font-medium">{nameWithYou}</span>, {micStatus}
-        {peer.videoOn ? `, ${m.card_camera_on()}` : ""}
+      {/* Name + mic status. VISUALLY two lines (name truncates, status never does,
+          so a long name can't hide the mic state); for the screen reader a single
+          sr-only span keeps the exact combined phrase "Name, micrófono activado"
+          (with the comma NVDA already reads). The visible spans are aria-hidden so
+          nothing is read twice. Camera state appended in both. */}
+      <p className="flex max-w-[150px] flex-col items-center text-center text-sm">
+        <span aria-hidden="true" className="w-full truncate font-medium text-sonic-100">
+          {nameWithYou}
+        </span>
+        <span aria-hidden="true" className="text-xs text-sonic-300">
+          {micStatus}
+          {peer.videoOn ? `, ${m.card_camera_on()}` : ""}
+        </span>
+        <span className="sr-only">
+          {nameWithYou}, {micStatus}
+          {peer.videoOn ? `, ${m.card_camera_on()}` : ""}
+        </span>
       </p>
 
       {/* Talking badge — extra cue (dot animation + text, not colour alone). */}
       {speaking && (
         <span
           aria-hidden="true"
-          className="flex items-center gap-1.5 rounded-full bg-green-500/15 px-2 py-0.5 text-xs font-medium text-green-300"
+          className="flex items-center gap-1.5 rounded-full bg-green-500/15 px-2 py-0.5 text-xs font-medium text-[var(--status-ok)]"
         >
           <span className="h-2 w-2 animate-pulse rounded-full bg-green-400" />
           {m.card_speaking_now()}
@@ -142,7 +154,7 @@ export function ParticipantCard({
       {isLocal && onChangeName && (
         <button
           onClick={onChangeName}
-          className="flex items-center gap-1.5 rounded-lg bg-sonic-700 px-3 py-1 text-xs font-medium text-sonic-200 transition-colors hover:bg-sonic-600"
+          className="flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-sonic-600 bg-sonic-700 px-3 py-1 text-xs font-medium text-sonic-200 transition-colors hover:bg-sonic-600"
         >
           <UserPen aria-hidden="true" className="h-3.5 w-3.5" />
           {m.room_change_name()}
@@ -177,11 +189,12 @@ export function ParticipantCard({
               type="range"
               min="0"
               max="4"
-              step="0.01"
+              step="0.05"
               value={peer.volume}
               onChange={handleVolume}
               className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-sonic-600 accent-sonic-accent"
               aria-label={m.card_volume_for({ name: peer.displayName })}
+              aria-valuetext={`${Math.round(peer.volume * 100)} %`}
             />
           </div>
         </div>
@@ -199,11 +212,12 @@ export function ParticipantCard({
               type="range"
               min="0"
               max="4"
-              step="0.01"
+              step="0.05"
               value={micGain ?? 1}
               onChange={handleMicGain}
               className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-sonic-600 accent-sonic-accent"
               aria-label={m.card_your_mic_level()}
+              aria-valuetext={`${Math.round((micGain ?? 1) * 100)} %`}
             />
           </div>
         </div>

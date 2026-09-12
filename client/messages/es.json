@@ -179,6 +179,7 @@
   "chat_just_now": "ahora mismo",
   "chat_announcement": "{sender}: {text} — enviado {time}",
   "chat_announce_label": "Anunciar mensajes nuevos",
+  "chat_announce_short": "Avisos",
   "chat_announce_polite": "Cortés",
   "chat_announce_assertive": "Asertivo",
   "chat_announce_tts": "En voz alta",
@@ -336,6 +337,7 @@
   "announce_bitrate_original": "{name} restauró la calidad original (128 kbps)",
 
   "room_participants_heading": "Participantes",
+  "room_participants_count": "{n} participantes",
   "controls_heading": "Controles de audio",
   "room_change_name": "Cambiar nombre",
 
@@ -365,6 +367,7 @@
   "name_prompt_placeholder": "Escribe tu nombre",
   "name_prompt_confirm": "Entrar",
   "name_prompt_save": "Guardar",
+  "name_prompt_cancel": "Cancelar",
 
   "room_enter_heading": "Entrar a la sala",
   "room_enter_desc": "Toca «Entrar» para unirte con tu micrófono. El navegador te pedirá permiso del micrófono.",

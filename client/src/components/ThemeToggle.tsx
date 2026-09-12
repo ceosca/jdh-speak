@@ -34,7 +34,7 @@ export function ThemeToggle() {
   return (
     <button
       onClick={cycle}
-      className="flex items-center gap-1.5 rounded-lg bg-sonic-700 px-2 py-1 text-sonic-200 transition-colors hover:bg-sonic-600"
+      className="flex items-center gap-1.5 rounded-lg border border-sonic-600 bg-sonic-700 px-2 py-1 text-sonic-200 transition-colors hover:bg-sonic-600"
       aria-label={m.theme_button_label({ mode: themeName(theme) })}
       title={m.theme_button_title({ mode: themeName(theme) })}
     >

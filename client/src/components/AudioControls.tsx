@@ -101,7 +101,9 @@ export function AudioControls({
   // the visible label is aria-hidden, so there is no double-read and no regression.
   const btn =
     "flex min-w-[68px] flex-col items-center justify-center gap-1 rounded-xl px-3 py-2 text-[11px] font-medium leading-tight transition-all";
-  const idle = "bg-sonic-700 text-sonic-200 hover:bg-sonic-600";
+  // Border so idle buttons read as clickable on the light theme (bg-sonic-700 is
+  // nearly the page colour there); harmless on dark (matches the bar's own border).
+  const idle = "border border-sonic-600 bg-sonic-700 text-sonic-200 hover:bg-sonic-600";
   const active = "bg-sonic-accent text-white hover:bg-sonic-accent/90";
   const danger = "bg-red-600 text-white hover:bg-red-500"; // muted mic (universal red)
   const lbl = "whitespace-nowrap"; // the visible text under each icon

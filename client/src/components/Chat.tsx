@@ -128,7 +128,9 @@ export function Chat({ onSend, onTypingTick, onNudge, onClose, focusSignal }: Ch
 
   return (
     <aside
-      className="flex w-full flex-col border-l border-sonic-700 bg-sonic-800 sm:w-80"
+      // Mobile: full-screen overlay (was a narrow column that left a dead strip
+      // beside `main`). Desktop (sm+): the original static side panel, unchanged.
+      className="fixed inset-0 z-20 flex w-full flex-col bg-sonic-800 sm:static sm:inset-auto sm:z-auto sm:w-80 sm:border-l sm:border-sonic-700"
       aria-label={m.chat_panel_label()}
       // Escape from anywhere in the panel closes it (Room restores focus to the
       // toggle). Bubbles up from the listbox/composer/buttons.
@@ -150,6 +152,13 @@ export function Chat({ onSend, onTypingTick, onNudge, onClose, focusSignal }: Ch
           <label htmlFor="chat-announce-mode" className="sr-only">
             {m.chat_announce_label()}
           </label>
+          {/* Visible cue (bell + "Avisos") so a sighted user knows the dropdown is
+              about message announcements, not something cryptic. Decorative only —
+              the sr-only <label> + title still name the control for the reader. */}
+          <Bell aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-sonic-400" />
+          <span aria-hidden="true" className="text-xs text-sonic-400">
+            {m.chat_announce_short()}
+          </span>
           <select
             id="chat-announce-mode"
             value={chatAnnounceMode}

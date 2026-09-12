@@ -32,11 +32,21 @@
    main text keep working. Values chosen for WCAG-AA contrast on light. */
 :root {
   color-scheme: dark;
+  /* Status colours for the state badges (P2P/SFU/REC, "Hablando ahora").
+     DARK values = the greens/blues/reds the badges already used, so dark is
+     unchanged. LIGHT overrides (below) drop to ~700 shades so the same tenue
+     backgrounds reach WCAG-AA on a light surface. Use via text-[var(--status-*)]. */
+  --status-ok: #4ade80;
+  --status-info: #60a5fa;
+  --status-danger: #f87171;
 }
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
     color-scheme: light;
+    --status-ok: #15803d;
+    --status-info: #1d4ed8;
+    --status-danger: #b91c1c;
     --color-sonic-900: #f4f2fa;
     --color-sonic-800: #ffffff;
     --color-sonic-700: #e9e5f5;
@@ -55,6 +65,9 @@
 
 :root[data-theme="light"] {
   color-scheme: light;
+  --status-ok: #15803d;
+  --status-info: #1d4ed8;
+  --status-danger: #b91c1c;
   --color-sonic-900: #f4f2fa;
   --color-sonic-800: #ffffff;
   --color-sonic-700: #e9e5f5;
@@ -89,6 +102,13 @@ body {
 
 .speaking-ring {
   animation: speaking-pulse 1.2s ease-in-out infinite;
+}
+
+/* Tailwind Preflight sets `dialog { margin: 0 }`, which kills the native
+   centering of <dialog>. Restore `margin: auto` so URL/TV/Serieteca/Ambience/
+   Spatial dialogs center over the viewport (the native `inset: 0` stays). */
+dialog {
+  margin: auto;
 }
 
 /* Focus visible for accessibility */

@@ -136,8 +136,23 @@ export function Room() {
   const appleProbeStartedRef = useRef(false);
   const knownPeersRef = useRef<Set<string>>(new Set());
   const lastAltNumRef = useRef<{ digit: string; at: number } | null>(null);
+  // Element that opened the chat / name prompt, so focus returns there on close.
+  const chatTriggerRef = useRef<HTMLElement | null>(null);
+  const changeNameTriggerRef = useRef<HTMLElement | null>(null);
 
-  const closeChat = useCallback(() => setChatOpen(false), []);
+  // Close the chat and hand focus back to whatever opened it (the chat button in
+  // the control bar), matching closeSettings in AudioControls.
+  const closeChat = useCallback(() => {
+    setChatOpen(false);
+    chatTriggerRef.current?.focus();
+  }, []);
+  const toggleChat = useCallback(() => {
+    setChatOpen((open) => {
+      // Remember the trigger only when opening, so closing can restore focus.
+      if (!open) chatTriggerRef.current = document.activeElement as HTMLElement | null;
+      return !open;
+    });
+  }, []);
 
   // "Abrir archivos": hidden multi-file picker (no upload-confirmation dialog,
   // that only happens for directories). One or many files → a playlist, ordered
@@ -340,8 +355,18 @@ export function Room() {
   }, [nameInput, rename, doJoin]);
 
   const openChangeName = useCallback(() => {
+    // Remember the "Cambiar nombre" button so focus returns to it on cancel/close.
+    changeNameTriggerRef.current = document.activeElement as HTMLElement | null;
     setNameInput(useRoomStore.getState().displayName ?? "");
     setNamePromptOpen(true);
+  }, []);
+
+  // Cancel the name prompt WITHOUT joining/renaming. Only offered when already in
+  // the room (reopened via "Cambiar nombre"); the first-visit prompt has no cancel
+  // because a name is required to enter. Returns focus to the trigger button.
+  const cancelNamePrompt = useCallback(() => {
+    setNamePromptOpen(false);
+    changeNameTriggerRef.current?.focus();
   }, []);
 
   useEffect(() => {
@@ -560,7 +585,15 @@ export function Room() {
         return;
       }
 
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      // Don't let single-letter shortcuts (m/a/f) or Ctrl+End fire while typing in
+      // a form field — including a <select> (native type-ahead) or a contentEditable.
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLSelectElement ||
+        (e.target instanceof HTMLElement && e.target.isContentEditable)
+      )
+        return;
 
       // Ctrl+End → jump to the bottom-most player control ("Abrir archivos"),
       // when the player is showing. Otherwise let the browser handle it.
@@ -616,8 +649,16 @@ export function Room() {
           e.preventDefault();
           submitName();
         }}
+        onKeyDown={(e) => {
+          // Escape cancels — only when already in the room (first visit must enter).
+          if (e.key === "Escape" && joinedRef.current) {
+            e.preventDefault();
+            cancelNamePrompt();
+          }
+        }}
         className="w-full max-w-sm rounded-2xl border border-sonic-600 bg-sonic-800 p-6 shadow-2xl"
         role="dialog"
+        aria-modal="true"
         aria-labelledby="name-prompt-title"
       >
         <h2 id="name-prompt-title" className="mb-4 text-lg font-semibold text-sonic-100">
@@ -643,6 +684,17 @@ export function Room() {
         >
           {joinedRef.current ? m.name_prompt_save() : m.name_prompt_confirm()}
         </button>
+        {/* Cancel only when already joined (reopened via "Cambiar nombre"). On the
+            first visit there's no cancel — a name is required to enter. */}
+        {joinedRef.current && (
+          <button
+            type="button"
+            onClick={cancelNamePrompt}
+            className="mt-2 w-full rounded-lg border border-sonic-600 bg-sonic-700 px-4 py-2.5 font-medium text-sonic-200 hover:bg-sonic-600"
+          >
+            {m.name_prompt_cancel()}
+          </button>
+        )}
       </form>
     </div>
   ) : null;
@@ -730,7 +782,7 @@ export function Room() {
           <ThemeToggle />
           {isRecording && (
             <span
-              className="flex items-center gap-1.5 rounded bg-red-500/20 px-1.5 py-0.5 text-xs font-medium text-red-400"
+              className="flex items-center gap-1.5 rounded bg-red-500/20 px-1.5 py-0.5 text-xs font-medium text-[var(--status-danger)]"
               title={m.room_recording_title()}
             >
               <Circle aria-hidden="true" className="h-2.5 w-2.5 animate-pulse fill-red-500 text-red-500" />
@@ -739,14 +791,20 @@ export function Room() {
           )}
           <span
             className={`rounded px-1.5 py-0.5 text-xs font-medium ${
-              mode === "p2p" ? "bg-green-500/20 text-green-400" : "bg-blue-500/20 text-blue-400"
+              mode === "p2p"
+                ? "bg-green-500/20 text-[var(--status-ok)]"
+                : "bg-blue-500/20 text-[var(--status-info)]"
             }`}
           >
             {mode === "p2p" ? "P2P" : "SFU"}
           </span>
-          <div className="flex items-center gap-1">
+          <div
+            className="flex items-center gap-1"
+            role="img"
+            aria-label={m.room_participants_count({ n: peerList.length + 1 })}
+          >
             <Users aria-hidden="true" className="h-4 w-4" />
-            <span>{peerList.length + 1}</span>
+            <span aria-hidden="true">{peerList.length + 1}</span>
           </div>
         </div>
       </header>
@@ -811,7 +869,7 @@ export function Room() {
             onOpenUrl={openUrl}
             onOpenTv={() => setTvOpen(true)}
             onOpenSerieteca={() => setSerietecaOpen(true)}
-            onToggleChat={() => setChatOpen((o) => !o)}
+            onToggleChat={toggleChat}
             chatOpen={chatOpen}
           />
         </div>
