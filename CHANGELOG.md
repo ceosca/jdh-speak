@@ -10,6 +10,33 @@
 
 ## 2026-09-11
 
+### Ronda de UI + accesibilidad (auditoría con 4 agentes)
+
+Auditoría visual y de accesibilidad (2 agentes en paralelo), arreglos (1 agente) y
+verificación (1 agente), para incluir mejor a usuarios videntes sin romper nada de lo que
+ya funciona para los ciegos con NVDA. Todo cliente. Regla: la accesibilidad manda sobre lo
+visual, y el modo oscuro quedó idéntico.
+
+- **Diálogos nativos centrados**: `dialog { margin: auto }` (Tailwind Preflight los pegaba
+  arriba-izquierda). URL/TV/Serieteca/Ambience/Spatial.
+- **Atajos de teclado**: el guard ahora excluye `<select>`/contenteditable, así teclear
+  en un select (m/a/f/Ctrl+End) no dispara la acción global.
+- **Prompt "Cambiar nombre"**: `aria-modal`, Escape + botón Cancelar al reabrirlo en sala,
+  y el foco vuelve al disparador. Primera visita sin Cancelar (deben poner nombre).
+- **Contraste en tema claro**: badges de estado (P2P/SFU/REC, "Hablando ahora") pasan a
+  colores theme-aware (variables `--status-ok/-info/-danger`; verde-800 en claro para
+  WCAG-AA estricto). El dark usa los mismos tonos de antes (idéntico).
+- **Tarjeta de participante**: nombre y estado del micro en dos líneas visibles (un nombre
+  largo ya no oculta el estado) + una frase combinada `sr-only` para el lector (lee una
+  sola vez, con el estado incluido).
+- **Foco y móvil**: cerrar el chat devuelve el foco al botón; el chat es pantalla completa
+  en móvil (antes quedaba una franja muerta); botones "idle" con borde (visibles en claro).
+- **Sliders de volumen**: `step` 0.05 + `aria-valuetext` en % (usables con lector en móvil).
+- **Etiquetas**: el select de avisos del chat muestra "Avisos" (campana) visible; el conteo
+  de participantes expone "N participantes".
+- **Pendiente (a propósito, sin tocar)**: validar la fiabilidad de la live-region en
+  VoiceOver iOS en un dispositivo real.
+
 ### Video (videollamada opt-in): botón "Cámara" por usuario, por defecto apagado
 
 Nueva función: quien quiera puede encender su cámara y hacer videollamada; quien no la
