@@ -19,10 +19,14 @@ export function ThemeToggle() {
   const [theme, setTheme] = useState<Theme>(() => loadTheme());
 
   const cycle = () => {
-    const next = ORDER[(ORDER.indexOf(theme) + 1) % ORDER.length];
-    setTheme(next);
-    applyTheme(next);
-    saveTheme(next);
+    // Functional updater so rapid clicks chain correctly (each reads the true
+    // previous value, not a stale render's), and apply/persist the computed next.
+    setTheme((prev) => {
+      const next = ORDER[(ORDER.indexOf(prev) + 1) % ORDER.length];
+      applyTheme(next);
+      saveTheme(next);
+      return next;
+    });
   };
 
   const Icon = theme === "system" ? Monitor : theme === "light" ? Sun : Moon;
