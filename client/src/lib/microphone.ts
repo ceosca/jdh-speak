@@ -25,11 +25,20 @@ export const isAppleWebKit =
 
 // Mic capture constraints. One per-user choice:
 //   - voiceProcessingEnabled: echo cancel / noise suppress / auto gain.
-// Voice is captured as stereo (2 channels) — EXCEPT on iPhone/iPad, which capture
-// MONO (1 channel). iOS mics are mono anyway, so a "stereo" capture there is just
-// a fake dual-mono that can garble; a real single channel is cleaner. The iPhone
-// then sends a clean mono signal (and iOS defaults voice processing OFF — see the
-// store — so it's mono, not suppressed).
+// CHANNELS — `channelCount: { ideal: 2 }` on EVERY platform, iOS included. `ideal`
+// (never `exact`) means the browser gives the device's REAL channel count: a mic
+// with two capsules (a stereo interface like the Maono Wave T5, or an iPhone with
+// multiple built-in mics) captures **stereo (2 channels)**, a single-capsule mic
+// captures **mono (1)** — exactly "stereo if it has several mics, mono if one".
+// The old code FORCED `channelCount: 1` on iOS, so Safari handed back only the LEFT
+// capsule of a stereo device — that was the "se oye por un solo micrófono, a la
+// izquierda" bug, NOT a Safari limitation (external stereo mics prove WebKit can do
+// it). Stereo capture needs voice processing OFF (echo cancel / noise suppression
+// force the WebKit voice-processing unit to mono regardless); it's OFF by default
+// here, which is the high-quality path. With processing ON you simply get mono back
+// — harmless. Downstream is already stereo end-to-end (the Web Audio graph preserves
+// channels and Opus is produced stereo), so capturing the real channels is all it
+// took. The rest of the pipeline never collapses it.
 // On iOS we also drop the sample-rate hint so WebKit can use the device-native
 // rate (forcing a rate a route can't honour garbles capture); WebRTC/Opus
 // negotiates its own rate regardless.
@@ -56,7 +65,12 @@ export function microphoneConstraints(
   pinDevice = true,
 ): MediaTrackConstraints {
   return {
-    channelCount: isIOS ? 1 : 2,
+    // `ideal: 2` (never `exact` — Safari can throw OverconstrainedError on the
+    // channelCount constraint): the device gives its REAL channel count, so a
+    // multi-capsule mic (iPhone's built-in mics, a Maono stereo interface) captures
+    // stereo and a single-capsule mic captures mono. Real stereo needs voice
+    // processing OFF (below), which is the default.
+    channelCount: { ideal: 2 },
     ...(isIOS ? {} : { sampleRate: 48000 }),
     echoCancellation: voiceProcessingEnabled,
     noiseSuppression: voiceProcessingEnabled,
