@@ -1,6 +1,11 @@
 @import "tailwindcss";
 
 @theme {
+  /* DARK palette (the default — the app was dark-first). The `sonic` ramp goes
+     900 = darkest (page background) … 100 = lightest (main text). Every component
+     uses these as bg-/text-/border-sonic-*, i.e. via `var(--color-sonic-*)`, so
+     LIGHT MODE just redefines these variables INVERTED (below) and the whole UI
+     flips with no component change. */
   --color-sonic-900: #0c0a14;
   --color-sonic-800: #141220;
   --color-sonic-700: #1e1a30;
@@ -14,6 +19,62 @@
   --color-sonic-glow: #a78bfa;
   --color-speaking: #22d3ee;
   --color-muted: #f43f5e;
+}
+
+/* --- Light / dark mode ---------------------------------------------------
+   Default is dark. The LIGHT palette applies in two cases:
+     1. The user hasn't chosen a theme (no data-theme) AND their OS prefers light
+        → automatic adaptation to the browser/phone mode.
+     2. The user explicitly picked Light (data-theme="light") → always light.
+   Picking Dark (data-theme="dark") always keeps the dark defaults above.
+   The ramp is INVERTED so 900 becomes the lightest surface and 100 the darkest
+   text — same semantic roles, flipped, so bg-sonic-900 = page, text-sonic-100 =
+   main text keep working. Values chosen for WCAG-AA contrast on light. */
+:root {
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    color-scheme: light;
+    --color-sonic-900: #f4f2fa;
+    --color-sonic-800: #ffffff;
+    --color-sonic-700: #e9e5f5;
+    --color-sonic-600: #d3ccea;
+    --color-sonic-500: #b3a9dd;
+    --color-sonic-400: #605884;
+    --color-sonic-300: #453e6b;
+    --color-sonic-200: #29234c;
+    --color-sonic-100: #161228;
+    --color-sonic-accent: #6a3df0;
+    --color-sonic-glow: #7c5cfc;
+    --color-speaking: #0e7490;
+    --color-muted: #dc2626;
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --color-sonic-900: #f4f2fa;
+  --color-sonic-800: #ffffff;
+  --color-sonic-700: #e9e5f5;
+  --color-sonic-600: #d3ccea;
+  --color-sonic-500: #b3a9dd;
+  --color-sonic-400: #605884;
+  --color-sonic-300: #453e6b;
+  --color-sonic-200: #29234c;
+  --color-sonic-100: #161228;
+  --color-sonic-accent: #6a3df0;
+  --color-sonic-glow: #7c5cfc;
+  --color-speaking: #0e7490;
+  --color-muted: #dc2626;
+}
+
+/* Paint the base surfaces from the tokens so there is no unthemed flash behind
+   the React tree (and the correct theme shows before the app mounts). */
+body {
+  background-color: var(--color-sonic-900);
+  color: var(--color-sonic-100);
 }
 
 @keyframes speaking-pulse {

@@ -6,6 +6,7 @@ import { useMediasoup } from "../hooks/useMediasoup";
 import { formatMessage, messageContent } from "../lib/chat";
 import { getInstanceName } from "../lib/branding";
 import { ParticipantCard } from "./ParticipantCard";
+import { ThemeToggle } from "./ThemeToggle";
 import { AudioControls } from "./AudioControls";
 import { FileStreamPlayer } from "./FileStreamPlayer";
 import { UrlDialog } from "./UrlDialog";
@@ -701,9 +702,18 @@ export function Room() {
     );
   }
 
-  // Before joining (waiting for the first-visit name), show only the prompt.
+  // Before joining (waiting for the first-visit name), show only the prompt, with
+  // the theme toggle reachable in the corner (a sighted first-timer can pick
+  // light/dark before entering; it also already follows their system by default).
   if (joinState === "idle") {
-    return <div className="min-h-dvh bg-sonic-900">{namePrompt}</div>;
+    return (
+      <div className="min-h-dvh bg-sonic-900">
+        <div className="flex justify-end p-3">
+          <ThemeToggle />
+        </div>
+        {namePrompt}
+      </div>
+    );
   }
 
   const peerList = Array.from(peers.values());
@@ -717,6 +727,7 @@ export function Room() {
           <h1 className="text-lg font-semibold text-sonic-100">{roomName}</h1>
         </div>
         <div className="flex items-center gap-3 text-sm text-sonic-300">
+          <ThemeToggle />
           {isRecording && (
             <span
               className="flex items-center gap-1.5 rounded bg-red-500/20 px-1.5 py-0.5 text-xs font-medium text-red-400"

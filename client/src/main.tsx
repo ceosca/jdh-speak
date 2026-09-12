@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 // Side-effect import: pins <html lang="es"> before anything reads the locale.
 import "./lib/i18n";
+// Side-effect import: applies the saved light/dark theme before first paint.
+import "./lib/theme";
 import { Room } from "./components/Room";
 import "./index.css";
 
