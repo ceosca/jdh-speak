@@ -10,6 +10,18 @@
 
 ## 2026-09-12
 
+### Entrada: un consumo fallido ya no aborta el join ("Cannot consume")
+
+Edu vio "Cannot consume" al entrar justo cuando su ingreso llevó la sala de P2P (5) a SFU
+(6). El bucle que consume los producers existentes al entrar hacía `await
+consumeProducer(...)` **sin try/catch**, así que un producer que se cerró o corrió la
+transición P2P→SFU tumbaba **toda la entrada** y le mostraba el error. Ahora cada consumo se
+protege por separado (como ya hacía el handler de `new-producer`): se saltea y sigue; si el
+producer es real, re-llega por `new-producer`, así que ese peer no queda mudo. **Verificado**
+end-to-end (dos pestañas: una produce, otra entra y consume en SFU — entra sin error).
+Cliente = build, sin restart. El servidor además loguea el `canConsume` fallido como carrera
+benigna (para visibilidad); se activa en el próximo restart, no se reinició ahora.
+
 ### iPhone built-in: mono CENTRADO (no "solo izquierda") + gate que se auto-recupera (no más limbo)
 
 Seguimiento del de abajo. Dato real: los micrófonos INTEGRADOS del iPhone seguían saliendo
