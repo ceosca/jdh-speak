@@ -2771,11 +2771,19 @@ export function useMediasoup() {
             await createP2pConnection(peer.peerId, true);
           }
         } else {
-          // SFU mode: set up transports, then consume existing producers.
+          // SFU mode: set up transports, then consume existing producers. Each
+          // consume is INDEPENDENTLY guarded: a single producer that can't be
+          // consumed right now (it closed, or raced the P2P→SFU switch that this
+          // very join triggered — the classic "Cannot consume") must NOT abort the
+          // whole entry (that showed the joiner a "Cannot consume" error screen).
+          // Skip it and keep going; if it's real it re-arrives as a `new-producer`
+          // event (also caught), so that peer just isn't silent for a moment.
           await setupSfu(joinRes.rtpCapabilities);
           for (const peer of joinRes.peers) {
             for (const prod of peer.producers) {
-              await consumeProducer(peer.peerId, prod.producerId, prod.source);
+              await consumeProducer(peer.peerId, prod.producerId, prod.source).catch((err) => {
+                console.error("[sfu] join consume failed (skipped, non-fatal):", err);
+              });
             }
           }
         }

@@ -557,6 +557,13 @@ export function createSignalingServer(
           .parse(data);
 
         if (!currentRoom.router.canConsume({ producerId, rtpCapabilities })) {
+          // Usually a benign RACE: the producer closed (peer left / muted-off /
+          // mode switch) between being advertised and this consume. The client
+          // skips it (non-fatal), so log it for visibility but don't treat it as
+          // an error the operator must act on.
+          console.log(
+            `[sfu] consume skipped for ${socket.id} in ${currentRoom.name}: producer ${producerId} not consumable (closed/raced)`,
+          );
           cb({ ok: false, error: "Cannot consume" });
           return;
         }
