@@ -976,8 +976,26 @@ export function useMediasoup() {
     limiter.attack.value = MIC_LIMITER.attack;
     limiter.release.value = MIC_LIMITER.release;
     const outDest = ctx.createMediaStreamDestination();
+    // Force the produced track to be a real 2-channel stream, and — critically — turn
+    // a MONO mic into DUAL-MONO (L=R, centred), not left-only. WebKit's getUserMedia
+    // hands the iPhone's BUILT-IN mics back as MONO (a documented Safari limitation,
+    // bug #210231 — no web API reaches the native AVFAudio stereo built-in capture),
+    // and a mono track negotiated as stereo Opus (stereo=1) ends up ONLY in the LEFT
+    // channel. The `stereoizer` GainNode is fixed at 2 channels with the "speakers"
+    // up-mix, so a mono input is duplicated to both channels (centred) while a REAL
+    // stereo input (an external stereo interface like the Maono, or shared music that
+    // mixes into outDest) passes through untouched. So: built-in iPhone → centred;
+    // external stereo mic / shared music → true stereo. No Opus renegotiation needed.
+    const stereoizer = ctx.createGain();
+    stereoizer.channelCount = 2;
+    stereoizer.channelCountMode = "explicit";
+    stereoizer.channelInterpretation = "speakers";
+    outDest.channelCount = 2;
+    outDest.channelCountMode = "explicit";
+    outDest.channelInterpretation = "speakers";
     micGain.connect(limiter);
-    limiter.connect(outDest);
+    limiter.connect(stereoizer);
+    stereoizer.connect(outDest);
     // Spatialised self-monitor: when the monitor is on AND spatial audio is on,
     // your own voice is played back through YOUR seat, so you hear yourself
     // where the room hears you (and can hear your own position change as you

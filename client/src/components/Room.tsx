@@ -137,6 +137,11 @@ export function Room() {
   const gateNameRef = useRef<string>("");
   // Guards the one-shot Apple mic auto-detect probe so a re-render can't start it twice.
   const appleProbeStartedRef = useRef(false);
+  // Background retry timer for the Apple auto-detect: even after the "Entrar" gate
+  // shows, we keep re-attempting getUserMedia so the iPhone SELF-RECOVERS and joins
+  // on its own once the mic frees up (e.g. right after a reload while it was busy) —
+  // so nobody is ever stranded on the gate with no way in ("limbo").
+  const appleRetryTimerRef = useRef<number | null>(null);
   const knownPeersRef = useRef<Set<string>>(new Set());
   const lastAltNumRef = useRef<{ digit: string; at: number } | null>(null);
   // Element that opened the chat / name prompt, so focus returns there on close.
@@ -283,39 +288,51 @@ export function Room() {
     (name: string) => {
       if (appleProbeStartedRef.current || joinedRef.current) return;
       appleProbeStartedRef.current = true;
+      gateNameRef.current = name;
       setJoinState("joining"); // show the loader while we probe (up to the timeout)
-      const { micDeviceId, voiceProcessingEnabled, jamMode } = useRoomStore.getState();
-      // pinDevice=false: prefer the stored mic but never pin it with `exact` — a
-      // last-used mic that isn't connected now must fall back to the default instead
-      // of failing/hanging (which is what was forcing the "Entrar" gate to appear).
-      const micP = getMicrophoneStream(
-        micDeviceId,
-        voiceProcessingEnabled && !jamMode,
-        jamMode,
-        false,
-      );
-      const timeout = new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 6000));
-      const showGate = () => {
-        gateNameRef.current = name;
-        setJoinState("gate");
-      };
-      Promise.race([micP, timeout])
-        .then((stream) => {
-          if (stream) {
-            // getUserMedia won the race with a live mic.
-            if (joinedRef.current) stream.getTracks().forEach((t) => t.stop());
-            else doJoin(name, stream); // permission granted → in with mic, no button
-          } else {
-            // Timeout won → fall back to the tap. getUserMedia may still resolve LATER
-            // with a live stream; stop it so the mic isn't left open (orange indicator).
+
+      // One getUserMedia attempt, bounded so a hung call can't stall entry. Resolves
+      // true if we joined (or already had). pinDevice=false: prefer the stored mic
+      // but never pin it with `exact` (a disconnected last-used mic must fall back to
+      // the default instead of failing/hanging).
+      const attempt = (): Promise<boolean> => {
+        const { micDeviceId, voiceProcessingEnabled, jamMode } = useRoomStore.getState();
+        const micP = getMicrophoneStream(micDeviceId, voiceProcessingEnabled && !jamMode, jamMode, false);
+        const timeout = new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 8000));
+        return Promise.race([micP, timeout])
+          .then((stream) => {
+            if (joinedRef.current) {
+              stream?.getTracks().forEach((t) => t.stop());
+              return true;
+            }
+            if (stream) {
+              doJoin(name, stream); // permission granted → in with mic, no button
+              return true;
+            }
+            // Timeout won: stop a late-resolving stream so the mic isn't left open.
             micP.then((late) => late.getTracks().forEach((t) => t.stop())).catch(() => {});
-            if (!joinedRef.current) showGate();
-          }
-        })
-        .catch(() => {
-          // getUserMedia rejected (denied / gesture required) → offer the tap.
-          if (!joinedRef.current) showGate();
+            return false;
+          })
+          .catch(() => false); // rejected (denied, or mic busy right after a reload)
+      };
+
+      // Loop: first attempt shows the loader; on failure we show the "Entrar" gate so
+      // a tap can enter immediately, BUT we KEEP re-attempting in the background so the
+      // iPhone auto-joins on its own once the mic becomes available — no more limbo.
+      // A reload while the mic was busy frees it within a couple of seconds, so a
+      // retry lands it without anyone touching the phone. Retries a bounded number of
+      // times (~2 min) then leaves the gate for a manual tap.
+      let tries = 0;
+      const loop = () => {
+        if (joinedRef.current) return;
+        void attempt().then((joined) => {
+          if (joined || joinedRef.current) return;
+          setJoinState("gate"); // offer the manual tap (no-op if already showing)
+          tries += 1;
+          if (tries < 30) appleRetryTimerRef.current = window.setTimeout(loop, 4000);
         });
+      };
+      loop();
     },
     [doJoin],
   );
@@ -345,6 +362,13 @@ export function Room() {
       setNamePromptOpen(true);
     }
   }, [doJoin, tryAppleAutoJoin, searchParams, joinState, noMic]);
+
+  // Stop the Apple auto-detect background retry loop when the component unmounts.
+  useEffect(() => {
+    return () => {
+      if (appleRetryTimerRef.current != null) window.clearTimeout(appleRetryTimerRef.current);
+    };
+  }, []);
 
   // Confirm the name prompt: persist the name, then join (first time) or rename
   // live (already in the room).
