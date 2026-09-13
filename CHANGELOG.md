@@ -10,6 +10,28 @@
 
 ## 2026-09-12
 
+### iPhone built-in: mono CENTRADO (no "solo izquierda") + gate que se auto-recupera (no más limbo)
+
+Seguimiento del de abajo. Dato real: los micrófonos INTEGRADOS del iPhone seguían saliendo
+**solo por la izquierda** aun con `ideal:2` (el Maono externo sí anda estéreo).
+
+- **Investigado con doc: el estéreo del mic INTEGRADO del iPhone NO es posible desde web.**
+  Límite documentado de WebKit (bug #210231, abierto desde 2020: getUserMedia no soporta
+  `channelCount` en Safari y las fuentes caen a un canal). El estéreo built-in solo existe en
+  la API nativa AVFAudio, inalcanzable desde Safari. Estéreo real del iPhone = solo mic
+  externo estéreo (Maono) o app nativa. No se puede prometer built-in estéreo en web.
+- **Fix del "solo izquierda":** un "stereoizer" (GainNode 2ch explícito, up-mix "speakers")
+  entre el limitador y `outDest` duplica el mono a **dual-mono (L=R, centrado)** y deja pasar
+  el estéreo real intacto (Maono, música compartida). Sin renegociar Opus. Verificado el
+  nodo en Chromium (mono→L=R iguales; estéreo→L/R distintos). Falta confirmar por oído en
+  iPhone real que ahora suene centrado.
+- **Fix del limbo:** tras una recarga con el micro ocupado, el auto-detect de Apple mostraba
+  el gate "Entrar" sin reintentar → quien no podía tocar el teléfono quedaba afuera (le pasó
+  a Franco en un corte). Ahora el gate se **auto-recupera**: reintenta getUserMedia en
+  segundo plano (cada 4s, ~2 min) y entra solo cuando el micro se libera. El botón sigue para
+  entrada manual. (Nota operativa: un cliente ya desconectado NO se recupera con un restart
+  del server — solo recargando/tocando el teléfono; un restart corto tampoco fuerza recarga.)
+
 ### iPhone: audio en estéreo cuando el mic tiene varias cápsulas (se oía "solo a la izquierda")
 
 **Síntoma:** el audio transmitido desde un iPhone se oía por un solo micrófono, a la
