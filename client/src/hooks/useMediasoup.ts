@@ -613,6 +613,15 @@ export function useMediasoup() {
     // and stays at full volume. Null until the file path is first started.
     fileVolumeGain: GainNode | null;
     micStream: MediaStream | null;
+    // Mono-centering stage (see ensureOutGraph). `centerRKeep` passes the mic's own
+    // R channel; `centerLToR` cross-feeds L into the R output. When the mic's R is
+    // detected SILENT (iPhone built-in arrives as 2ch with R=zeros, or a genuine mono
+    // mic), detectMonoCentering flips these so R := L → the mono is CENTRED instead of
+    // left-only; a real stereo mic keeps its R. `centerAnalyserR` taps the raw mic R
+    // for that detection.
+    centerRKeep: GainNode;
+    centerLToR: GainNode;
+    centerAnalyserR: AnalyserNode;
     // Self-monitor spatialisation (see applyMicMonitor).
     monitorAir: BiquadFilterNode;
     monitorPanner: PannerNode;
@@ -630,6 +639,8 @@ export function useMediasoup() {
   } | null>(null);
   // Audio share (system / tab audio mixed into the voice track via outDest)
   const displayStreamRef = useRef<MediaStream | null>(null);
+  // Timer for the one-shot mono-centering detection (see detectMonoCentering).
+  const monoDetectTimerRef = useRef<number | null>(null);
   // Local anti-spam guard for instant "thunk" feedback (the server enforces the
   // same 5-per-10s budget authoritatively).
   const chatLimiterRef = useRef(new RateLimiter());
@@ -976,26 +987,37 @@ export function useMediasoup() {
     limiter.attack.value = MIC_LIMITER.attack;
     limiter.release.value = MIC_LIMITER.release;
     const outDest = ctx.createMediaStreamDestination();
-    // Force the produced track to be a real 2-channel stream, and — critically — turn
-    // a MONO mic into DUAL-MONO (L=R, centred), not left-only. WebKit's getUserMedia
-    // hands the iPhone's BUILT-IN mics back as MONO (a documented Safari limitation,
-    // bug #210231 — no web API reaches the native AVFAudio stereo built-in capture),
-    // and a mono track negotiated as stereo Opus (stereo=1) ends up ONLY in the LEFT
-    // channel. The `stereoizer` GainNode is fixed at 2 channels with the "speakers"
-    // up-mix, so a mono input is duplicated to both channels (centred) while a REAL
-    // stereo input (an external stereo interface like the Maono, or shared music that
-    // mixes into outDest) passes through untouched. So: built-in iPhone → centred;
-    // external stereo mic / shared music → true stereo. No Opus renegotiation needed.
-    const stereoizer = ctx.createGain();
-    stereoizer.channelCount = 2;
-    stereoizer.channelCountMode = "explicit";
-    stereoizer.channelInterpretation = "speakers";
     outDest.channelCount = 2;
     outDest.channelCountMode = "explicit";
     outDest.channelInterpretation = "speakers";
+    // MONO-CENTERING STAGE. MEASURED on a real iPhone: WebKit's getUserMedia hands the
+    // BUILT-IN mics back as a 2-CHANNEL track whose RIGHT channel is filled with ZEROS
+    // (a mono signal masquerading as stereo — no web API reaches the native AVFAudio
+    // stereo built-in capture; WebKit bug #210231). Negotiated as stereo Opus that
+    // plays back ONLY on the LEFT. A real stereo mic (external interface like the
+    // Maono) has signal in BOTH channels. So we split the mic and cross-feed L into the
+    // R output ONLY when R is silent: `centerRKeep` (R→R) starts at 1 and `centerLToR`
+    // (L→R) at 0 (stereo default); detectMonoCentering measures the mic's R after
+    // connect and, if silent, ramps to R:=L → the mono is CENTRED. Real stereo keeps
+    // its R untouched. Shared music/files mix straight into outDest (already stereo),
+    // bypassing this stage. `centerAnalyserR` taps the raw mic R for the detection.
+    const micSplit = ctx.createChannelSplitter(2);
+    const micMerge = ctx.createChannelMerger(2);
+    const centerRKeep = ctx.createGain();
+    centerRKeep.gain.value = 1;
+    const centerLToR = ctx.createGain();
+    centerLToR.gain.value = 0;
+    const centerAnalyserR = ctx.createAnalyser();
+    centerAnalyserR.fftSize = 2048;
     micGain.connect(limiter);
-    limiter.connect(stereoizer);
-    stereoizer.connect(outDest);
+    limiter.connect(micSplit);
+    micSplit.connect(micMerge, 0, 0); // mic L -> output L (always)
+    micSplit.connect(centerRKeep, 1); // mic R -> keep-gain -> output R
+    centerRKeep.connect(micMerge, 0, 1);
+    micSplit.connect(centerLToR, 0); // mic L -> cross-feed-gain -> output R (when R silent)
+    centerLToR.connect(micMerge, 0, 1);
+    micSplit.connect(centerAnalyserR, 1); // tap the raw mic R for silence detection
+    micMerge.connect(outDest);
     // Spatialised self-monitor: when the monitor is on AND spatial audio is on,
     // your own voice is played back through YOUR seat, so you hear yourself
     // where the room hears you (and can hear your own position change as you
@@ -1033,6 +1055,9 @@ export function useMediasoup() {
       activeSlot: 0,
       fileVolumeGain: null,
       micStream: null,
+      centerRKeep,
+      centerLToR,
+      centerAnalyserR,
       monitorAir,
       monitorPanner,
       secondarySource: null,
@@ -1044,6 +1069,39 @@ export function useMediasoup() {
     };
     return outGraphRef.current;
   }, [store]);
+
+  // One-shot detection of a SILENT right channel (the iPhone built-in mic arrives as
+  // 2ch with R=zeros; a genuine mono mic is also effectively R-silent). Samples the
+  // mic's R for ~1.2 s and, if it stays essentially zero, cross-fades R := L so the
+  // mono is CENTRED instead of left-only. A real stereo mic (R has a noise floor well
+  // above the threshold) keeps its R untouched. Re-runs on every mic (re)connect.
+  const detectMonoCentering = useCallback((g: NonNullable<typeof outGraphRef.current>) => {
+    if (monoDetectTimerRef.current != null) {
+      window.clearInterval(monoDetectTimerRef.current);
+      monoDetectTimerRef.current = null;
+    }
+    const an = g.centerAnalyserR;
+    const buf = new Float32Array(an.fftSize);
+    let peakR = 0;
+    let n = 0;
+    monoDetectTimerRef.current = window.setInterval(() => {
+      an.getFloatTimeDomainData(buf);
+      for (let i = 0; i < buf.length; i++) {
+        const a = Math.abs(buf[i]);
+        if (a > peakR) peakR = a;
+      }
+      if (++n < 24) return; // ~1.2 s (24 * 50 ms)
+      window.clearInterval(monoDetectTimerRef.current!);
+      monoDetectTimerRef.current = null;
+      // Exactly-zero R = a phantom/mono channel (real mics never hit exactly 0 — they
+      // carry a noise floor orders of magnitude above 1e-6). Centre by R := L.
+      if (peakR < 1e-6) {
+        const now = sharedAudioContext.currentTime;
+        g.centerRKeep.gain.setTargetAtTime(0, now, 0.08);
+        g.centerLToR.gain.setTargetAtTime(1, now, 0.08);
+      }
+    }, 50);
+  }, []);
 
   // (Re)route the raw mic into the outgoing graph. Idempotent for a given
   // stream; re-runs when the mic is re-acquired (track died / device change).
@@ -1057,8 +1115,14 @@ export function useMediasoup() {
       // The mic monitor edge lives on micGain (a permanent node), not on
       // micSource — so it survives this re-acquisition and needs no re-wiring here.
       g.micStream = stream;
+      // Reset to the STEREO default, then re-detect: a device change (e.g. plugging in
+      // a stereo Maono, or back to the built-in) re-evaluates whether to centre.
+      const now = sharedAudioContext.currentTime;
+      g.centerRKeep.gain.setTargetAtTime(1, now, 0.05);
+      g.centerLToR.gain.setTargetAtTime(0, now, 0.05);
+      detectMonoCentering(g);
     },
-    [ensureOutGraph],
+    [ensureOutGraph, detectMonoCentering],
   );
 
   // --- Device selection (set in the lobby or via the in-call settings) ---
