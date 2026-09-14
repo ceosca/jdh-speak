@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useRoomStore } from "../stores/room";
 import { canSelectSpeaker, canSelectElementSink } from "../lib/audio-devices";
 import { m } from "../paraglide/messages.js";
@@ -60,12 +60,52 @@ export function DeviceSettings() {
   const netMonitorHintId = useId();
   const netMonitorSelectId = useId();
 
+  // One-shot guard so the label-unlock (a throwaway getUserMedia) is attempted at
+  // most once per mount — never in a loop.
+  const unlockedRef = useRef(false);
+
   const refresh = useCallback(async () => {
     try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
+      let devices = await navigator.mediaDevices.enumerateDevices();
+      let micList = devices.filter((d) => d.kind === "audioinput" && d.deviceId);
+
+      // "Solo aparece Predeterminado y no deja elegir": browsers hand back the
+      // device list WITHOUT labels/ids until mic permission is unlocked in THIS
+      // page context. A returning user has already granted it, so the list should
+      // be pickable — but enumerateDevices alone won't reveal it until some
+      // getUserMedia runs. If permission is ALREADY granted and the list is still
+      // bare, do a throwaway getUserMedia to unlock the labels, then re-enumerate.
+      // Guarded so it only fires when permission is 'granted' (never a surprise
+      // prompt) and only once per mount. Safari/iOS don't support the mic
+      // permission query → we skip this and rely on the existing gesture path
+      // (the "Probar" button / the join gate), so the iOS mic gate is untouched.
+      const bare = micList.length === 0 || micList.every((d) => !d.label);
+      if (bare && !unlockedRef.current) {
+        unlockedRef.current = true;
+        let granted = false;
+        try {
+          const perm = await navigator.permissions?.query({
+            name: "microphone" as PermissionName,
+          });
+          granted = perm?.state === "granted";
+        } catch {
+          // permissions.query unsupported (Safari/iOS) or blocked — don't unlock.
+        }
+        if (granted) {
+          try {
+            const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+            s.getTracks().forEach((t) => t.stop());
+            devices = await navigator.mediaDevices.enumerateDevices();
+            micList = devices.filter((d) => d.kind === "audioinput" && d.deviceId);
+          } catch {
+            // Unlock failed (device busy, etc.) — leave the lists as they are.
+          }
+        }
+      }
+
       // Pre-permission entries come back with empty ids/labels — drop them;
       // the explicit "Default" option covers that case.
-      setMics(devices.filter((d) => d.kind === "audioinput" && d.deviceId));
+      setMics(micList);
       setSpeakers(devices.filter((d) => d.kind === "audiooutput" && d.deviceId));
     } catch {
       // enumerateDevices unavailable — leave the lists empty (Default only).

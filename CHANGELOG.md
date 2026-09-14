@@ -8,6 +8,35 @@
 
 ---
 
+## 2026-09-13
+
+### Dispositivos/volúmenes persistentes + lista que no se traba en "Predeterminado"
+
+Objetivo: que la elección de micrófono, altavoz, volúmenes y supresión se guarde por
+navegador y vuelva al reconectar; y que si el dispositivo guardado ya no está, el sistema
+detecte los disponibles sin quedar trabado en fantasmas ni bloqueado en "Predeterminado".
+
+- **Ya estaba resuelto (verificado en el código):** todo se persiste en `localStorage` y se
+  restaura al iniciar — micrófono (`micDeviceId`), altavoz (`speakerDeviceId`), monitor de red
+  y dispositivo secundario, ganancia de mic (`micGain`), volumen de archivo (`fileVolume`) y la
+  supresión (`voiceProcessingEnabled`). Ante un dispositivo fantasma: la captura cae al default
+  (`getMicrophoneStream` pide `ideal` en el join y reintenta el default si un `exact` falla), la
+  salida cae a `""` (`applySpeakerToContext`), y los selects muestran "Predeterminado" pero
+  **conservan** el id guardado, así que **se vuelven a seleccionar solos** cuando el dispositivo
+  se reconecta.
+- **El hueco que faltaba (arreglado):** "que solo aparezca Predeterminado y no deje elegir
+  ninguno". Pasa porque el navegador entrega la lista de `enumerateDevices()` **sin etiquetas**
+  hasta que algún `getUserMedia` desbloquea el permiso en esa carga de página → la lista queda
+  vacía y solo se ve "Predeterminado". Ahora `DeviceSettings` detecta la lista vacía/sin
+  etiquetas y, **solo si el permiso ya está `granted`** (consultado con `navigator.permissions`,
+  así nunca hay prompt sorpresa), hace un `getUserMedia` de un toque, lo cierra y re-enumera →
+  la lista se puebla y se puede elegir un dispositivo específico. En Safari/iOS `permissions`
+  no soporta micrófono → no dispara nada y sigue el gate por gesto de siempre (el gate de iOS
+  queda intacto). En llamada el mic ya está vivo → la lista ya tiene etiquetas → no dispara.
+- Verificado: typecheck + build del cliente OK; el desbloqueo no corre sin permiso (probado en
+  el navegador con el micro bloqueado: no dispara, no hay loop). **Cambio de cliente = build,
+  sin restart** (no corta llamadas activas).
+
 ## 2026-09-12
 
 ### Entrada: un consumo fallido ya no aborta el join ("Cannot consume")
