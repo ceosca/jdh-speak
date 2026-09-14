@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Mic,
   MicOff,
+  Volume2,
+  VolumeX,
   Video,
   VideoOff,
   ScreenShare,
@@ -38,6 +40,9 @@ function recordingStamp(ts: number | null): string {
 
 interface AudioControlsProps {
   onToggleMute: () => void;
+  // Master speaker mute (local): silence everything out your speakers while your mic
+  // keeps transmitting. Anti-acople for whoever streams an event.
+  onToggleSpeakers: () => void;
   onToggleAudioShare: () => void;
   // Turn your own camera on/off (opt-in video call). Default off.
   onToggleCamera: () => void;
@@ -62,6 +67,7 @@ interface AudioControlsProps {
 // handled in Room; its download links appear here only while a recording exists.
 export function AudioControls({
   onToggleMute,
+  onToggleSpeakers,
   onToggleAudioShare,
   onToggleCamera,
   onOpenPlayer,
@@ -73,6 +79,7 @@ export function AudioControls({
   chatOpen,
 }: AudioControlsProps) {
   const isMuted = useRoomStore((s) => s.isMuted);
+  const speakersMuted = useRoomStore((s) => s.speakersMuted);
   const hasMic = useRoomStore((s) => s.hasMic);
   const isSharingAudio = useRoomStore((s) => s.isSharingAudio);
   const cameraOn = useRoomStore((s) => s.cameraOn);
@@ -159,6 +166,30 @@ export function AudioControls({
               : isMuted
                 ? m.controls_unmute_short()
                 : m.controls_mute_short()}
+          </span>
+        </button>
+
+        {/* Silenciar altavoces — master output mute (local). Silences EVERYTHING out
+            your speakers (peers, reverb, a shared tab, a played file/TV, monitors) while
+            your mic keeps transmitting. For whoever streams an event with noise
+            suppression off: the rest of the call can't bleed back into their open mic
+            (no acople). Muted = red + VolumeX, same unmistakable convention as the mic. */}
+        <button
+          onClick={onToggleSpeakers}
+          className={`${btn} ${speakersMuted ? danger : idle}`}
+          aria-label={
+            speakersMuted ? m.controls_unmute_speakers() : m.controls_mute_speakers()
+          }
+          aria-pressed={speakersMuted}
+          title={
+            speakersMuted
+              ? m.controls_unmute_speakers_title()
+              : m.controls_mute_speakers_title()
+          }
+        >
+          {speakersMuted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
+          <span aria-hidden="true" className={lbl}>
+            {speakersMuted ? m.controls_unmute_speakers_short() : m.controls_mute_speakers_short()}
           </span>
         </button>
 

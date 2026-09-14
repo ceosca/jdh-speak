@@ -10,6 +10,31 @@
 
 ## 2026-09-13
 
+### Botón "Silenciar altavoces" (mute de salida local, anti-acople)
+
+Nuevo control en la barra, al lado de silenciar micrófono. Silencia **todo lo que sale
+por tus altavoces** —los demás participantes, la cola de reverb, una pestaña compartida, un
+archivo/URL/TV reproducido y los monitores de mic/segunda placa— **sin cortar lo que
+transmitís**. Para quien transmite un evento con la reducción de ruido apagada: con los
+altavoces en silencio, el audio del resto de la llamada no se le filtra al micrófono abierto
+(no hay acople) y su propia fuente no se duplica por los altavoces → el audio sale limpio.
+
+- **Cómo:** un único nodo `masterMute` (ganancia) entre TODO el audio local y el dispositivo
+  de salida. Antes cada camino iba directo a `AudioContext.destination`; ahora `masterBus`
+  (peers + monitor de red), `reverbWet`, `fileVolumeGain` (archivo/URL/TV), el monitor de la
+  placa secundaria y el monitor del propio mic pasan por `masterMute` → `destination`.
+  "Silenciar altavoces" pone su ganancia en 0 (con rampa, sin clic). En modo ensayo (jam) el
+  mix de peers sale por su propio `<audio>` de baja latencia, así que además se silencia ese
+  elemento. El metrónomo del jam queda fuera a propósito (ruta de latencia). El micrófono y
+  todo lo que se envía a la sala **no** se tocan.
+- **Estado:** local y por sesión (no se persiste, para no dejar a nadie sin oír tras recargar
+  sin darse cuenta). Se anuncia al lector de pantalla ("Altavoces silenciados/activados"),
+  transitorio (no va al chat, porque es local). Botón rojo + ícono de altavoz tachado cuando
+  está silenciado, misma convención que el mute de micrófono.
+- **Verificado:** typecheck + lint + build OK; la página carga sin errores del grafo de audio.
+  La confirmación acústica final (que no haya acople al transmitir) es prueba de oído en la
+  llamada real. **Cambio de cliente = build, sin restart.**
+
 ### Dispositivos/volúmenes persistentes + lista que no se traba en "Predeterminado"
 
 Objetivo: que la elección de micrófono, altavoz, volúmenes y supresión se guarde por

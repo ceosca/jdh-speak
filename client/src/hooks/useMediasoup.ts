@@ -140,7 +140,18 @@ const sharedAudioContext = new AudioContext({
 // Fail-safe: if per-element sinks aren't supported (Safari/Firefox), stays on the
 // plain destination, so nothing breaks.
 const masterBus = sharedAudioContext.createGain();
-masterBus.connect(sharedAudioContext.destination);
+// Master SPEAKER mute: the SINGLE node between ALL local playback and the output
+// device. Everything speaker-bound routes here — the peer mix (masterBus), the
+// reverb tail (reverbWet), a shared tab, a played file/URL/TV (fileVolumeGain) and
+// the mic/secondary monitors — so "Silenciar altavoces" (speakersMuted → gain 0)
+// kills every sound out the speakers while the mic keeps transmitting. Anti-acople
+// for whoever streams an event: with the speakers silent, the rest of the call
+// can't bleed back into their open mic, and their own source doesn't duplicate out.
+// The metronome (jam) stays direct — it's a jam-only latency path. Module-scoped
+// like masterBus so the module-level graph nodes can reach it.
+const masterMute = sharedAudioContext.createGain();
+masterMute.connect(sharedAudioContext.destination);
+masterBus.connect(masterMute);
 let jamOutEl: HTMLAudioElement | null = null;
 let jamOutDest: MediaStreamAudioDestinationNode | null = null;
 function routeMasterOutput(jam: boolean, speakerDeviceId: string) {
@@ -163,7 +174,7 @@ function routeMasterOutput(jam: boolean, speakerDeviceId: string) {
       .catch(() => {});
     jamOutEl.play().catch(() => {});
   } else {
-    masterBus.connect(sharedAudioContext.destination);
+    masterBus.connect(masterMute);
     if (jamOutEl) {
       try {
         jamOutEl.pause();
@@ -1042,7 +1053,7 @@ export function useMediasoup() {
     reverbWet.gain.value = 0;
     reverbInput.connect(reverbConvolver);
     reverbConvolver.connect(reverbWet);
-    reverbWet.connect(ctx.destination);
+    reverbWet.connect(masterMute);
     // The monitor edge is wired by applyMicMonitor (called right after this and
     // whenever the monitor / spatial settings change).
     outGraphRef.current = {
@@ -1130,6 +1141,7 @@ export function useMediasoup() {
   const speakerDeviceId = useRoomStore((s) => s.speakerDeviceId);
   const voiceProcessingEnabled = useRoomStore((s) => s.voiceProcessingEnabled);
   const jamMode = useRoomStore((s) => s.jamMode);
+  const speakersMuted = useRoomStore((s) => s.speakersMuted);
   const networkMonitor = useRoomStore((s) => s.networkMonitor);
   const secondaryEnabled = useRoomStore((s) => s.secondaryEnabled);
   const secondaryDeviceId = useRoomStore((s) => s.secondaryDeviceId);
@@ -1160,6 +1172,21 @@ export function useMediasoup() {
   useEffect(() => {
     routeMasterOutput(jamMode, speakerDeviceId);
   }, [jamMode, speakerDeviceId]);
+
+  // "Silenciar altavoces": drive the master mute from the flag. masterMute (the sole
+  // node before the output device) at 0 silences ALL local playback — peers, reverb
+  // tail, shared tab, played file/URL/TV, mic/secondary monitors — while the mic keeps
+  // transmitting. In jam the peer mix plays through jamOutEl (bypasses masterMute), so
+  // mute that element too for parity. Runs after routeMasterOutput so jamOutEl exists;
+  // ramped so it never clicks. See the anti-acople note on masterMute.
+  useEffect(() => {
+    masterMute.gain.setTargetAtTime(
+      speakersMuted ? 0 : 1,
+      sharedAudioContext.currentTime,
+      GAIN_RAMP,
+    );
+    if (jamOutEl) jamOutEl.muted = speakersMuted;
+  }, [speakersMuted, jamMode]);
 
   // Jam PEER mesh over WebTransport: hear the others at 2.5 ms Opus over QUIC instead
   // of mediasoup's 10 ms path. When it's up we mute masterBus so the mediasoup peer
@@ -1684,14 +1711,14 @@ export function useMediasoup() {
         // stacks, so a disconnect/reconnect cycle keeps exactly one connection.
         // Tapped at secondaryGain (post-gain) so the monitor matches what's sent.
         try {
-          g.secondaryGain.disconnect(sharedAudioContext.destination);
+          g.secondaryGain.disconnect(masterMute);
         } catch {
           /* not connected */
         }
-        g.secondaryGain.connect(sharedAudioContext.destination);
+        g.secondaryGain.connect(masterMute);
       } else {
         try {
-          g.secondaryGain.disconnect(sharedAudioContext.destination);
+          g.secondaryGain.disconnect(masterMute);
         } catch {
           /* already disconnected */
         }
@@ -1723,7 +1750,7 @@ export function useMediasoup() {
       secondarySource.connect(secondaryGain);
       secondaryGain.connect(graph.outDest);
       // Monitor tapped at secondaryGain (post-gain) so it matches what's sent.
-      if (mon) secondaryGain.connect(ctx.destination);
+      if (mon) secondaryGain.connect(masterMute);
 
       graph.secondarySource = secondarySource;
       graph.secondaryGain = secondaryGain;
@@ -1750,9 +1777,8 @@ export function useMediasoup() {
   const applyMicMonitor = useCallback(() => {
     const g = outGraphRef.current;
     if (!g) return;
-    const ctx = sharedAudioContext;
     try {
-      g.micGain.disconnect(ctx.destination);
+      g.micGain.disconnect(masterMute);
     } catch {
       /* not connected */
     }
@@ -1788,9 +1814,9 @@ export function useMediasoup() {
       g.monitorPanner.positionZ.value = z;
       g.micGain.connect(g.monitorAir);
       g.monitorAir.connect(g.monitorPanner);
-      g.monitorPanner.connect(ctx.destination);
+      g.monitorPanner.connect(masterMute);
     } else {
-      g.micGain.connect(ctx.destination);
+      g.micGain.connect(masterMute);
     }
     // Wet send: hear your OWN monitored voice in the room's ambience too (only
     // while monitoring, so you don't hear a reverb tail without the dry tap).
@@ -2064,11 +2090,11 @@ export function useMediasoup() {
     const g = outGraphRef.current;
     if (!g?.displaySource) return;
     try {
-      g.displaySource.disconnect(sharedAudioContext.destination);
+      g.displaySource.disconnect(masterMute);
     } catch {
       /* not connected */
     }
-    if (shareMonitor) g.displaySource.connect(sharedAudioContext.destination);
+    if (shareMonitor) g.displaySource.connect(masterMute);
   }, [shareMonitor]);
 
   // --- P2P: create a peer connection ---
@@ -3479,6 +3505,15 @@ export function useMediasoup() {
     }
   }, [store, effectiveGain]);
 
+  // "Silenciar altavoces": just flip the flag — the effect above drives the graph.
+  // Local-only (others don't need to know), so a bare transient announce, not an
+  // announceEvent logged to the room's chat.
+  const toggleSpeakers = useCallback(() => {
+    const next = !store.getState().speakersMuted;
+    store.getState().setSpeakersMuted(next);
+    store.getState().announce(next ? m.announce_speakers_muted() : m.announce_speakers_unmuted());
+  }, [store]);
+
   const setPeerVolume = useCallback(
     (peerId: string, volume: number) => {
       store.getState().setPeerVolume(peerId, volume);
@@ -3561,7 +3596,7 @@ export function useMediasoup() {
     displaySource.connect(g.outDest);
     // Optionally also play it out your selected playback device so you hear it
     // where you listen (the live effect keeps this in sync when toggled).
-    if (store.getState().shareMonitor) displaySource.connect(sharedAudioContext.destination);
+    if (store.getState().shareMonitor) displaySource.connect(masterMute);
     g.displaySource = displaySource;
     displayStreamRef.current = displayStream;
 
@@ -3653,7 +3688,7 @@ export function useMediasoup() {
         // that feeds the room, so lowering "volume for all" lowers it for the
         // streamer too (and the crossfade is audible locally). One shared
         // connection on the volume node — no per-slot source → destination wires.
-        g.fileVolumeGain.connect(sharedAudioContext.destination);
+        g.fileVolumeGain.connect(masterMute);
         // Also feed the ambience reverb, so the music you play is heard "in" the
         // room's space too (wet return handled by reverbWet; dry until picked).
         g.fileVolumeGain.connect(g.reverbInput);
@@ -4924,6 +4959,7 @@ export function useMediasoup() {
     unmute,
     toggleMute,
     toggleDeafen,
+    toggleSpeakers,
     toggleAudioShare,
     toggleCamera,
     startPlaylist,

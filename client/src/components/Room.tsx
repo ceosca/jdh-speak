@@ -77,6 +77,7 @@ export function Room() {
   const {
     join,
     toggleMute,
+    toggleSpeakers,
     toggleAudioShare,
     toggleCamera,
     startPlaylist,
@@ -889,6 +890,7 @@ export function Room() {
         <div className="mx-auto max-w-4xl">
           <AudioControls
             onToggleMute={toggleMute}
+            onToggleSpeakers={toggleSpeakers}
             onToggleAudioShare={toggleAudioShare}
             onToggleCamera={toggleCamera}
             onOpenPlayer={openPlayer}

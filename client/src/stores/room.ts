@@ -186,6 +186,13 @@ interface RoomState {
   // Local controls
   isMuted: boolean;
   isDeafened: boolean;
+  // Master SPEAKER mute (local, session-only): silences ALL local playback — every
+  // peer, the reverb tail, a shared tab, a played file/URL/TV and the mic/secondary
+  // monitors — WITHOUT touching what you transmit. For whoever streams an event with
+  // noise suppression OFF: muting the speakers stops the rest of the call bleeding
+  // back into their open mic (no feedback/acople) and stops their own source
+  // duplicating out the speakers. Not persisted (a live control; resets each visit).
+  speakersMuted: boolean;
   // Are YOU speaking right now (from your mic level, gated by mute)? Drives the
   // "you are talking" indicator on your own card. Visual only — never announced.
   localSpeaking: boolean;
@@ -346,6 +353,7 @@ interface RoomState {
   setHasMic: (hasMic: boolean) => void;
   setMuted: (muted: boolean) => void;
   setDeafened: (deafened: boolean) => void;
+  setSpeakersMuted: (muted: boolean) => void;
   setSharingAudio: (sharing: boolean) => void;
   // Camera: your own feed (self-view + toggle state) and per-peer video streams.
   setLocalVideo: (stream: MediaStream | null) => void;
@@ -430,6 +438,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   localSpeaking: false,
   jamUiVisible: loadJamUiVisible(),
   isDeafened: false,
+  speakersMuted: false,
   isSharingAudio: false,
   cameraOn: false,
   localVideoStream: null,
@@ -497,6 +506,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setHasMic: (hasMic) => set({ hasMic }),
   setMuted: (isMuted) => set({ isMuted }),
   setDeafened: (isDeafened) => set({ isDeafened }),
+  setSpeakersMuted: (speakersMuted) => set({ speakersMuted }),
   setSharingAudio: (isSharingAudio) => set({ isSharingAudio }),
 
   setLocalVideo: (stream) => set({ localVideoStream: stream, cameraOn: !!stream }),
@@ -809,6 +819,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       hasMic: true,
       isMuted: false,
       isDeafened: false,
+      speakersMuted: false,
       isSharingAudio: false,
       cameraOn: false,
       localVideoStream: null,
