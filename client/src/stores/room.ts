@@ -30,6 +30,14 @@ const SPEAKER_DEVICE_KEY = "jdh-speak:speakerDeviceId";
 // so you can hear your server-return separately from the primary output). "" = same
 // as the primary speaker.
 const NET_MONITOR_DEVICE_KEY = "jdh-speak:netMonitorDeviceId";
+// Saved device LABELS, persisted alongside the ids. Browsers can hand the SAME physical
+// device a different deviceId across a close/reopen (especially audiooutput), which made
+// a saved speaker fall back to "Default" (Edu's report). Keeping the label lets us re-find
+// the device by name and heal the id. See resolveSavedDevice (lib/audio-devices).
+const MIC_LABEL_KEY = "jdh-speak:micDeviceLabel";
+const SPEAKER_LABEL_KEY = "jdh-speak:speakerDeviceLabel";
+const NET_MONITOR_LABEL_KEY = "jdh-speak:netMonitorDeviceLabel";
+const SECONDARY_LABEL_KEY = "jdh-speak:secondaryDeviceLabel";
 const VOICE_PROCESSING_KEY = "jdh-speak:voiceProcessing";
 const JAM_MODE_KEY = "jdh-speak:jamMode";
 const JAM_BUF_MIN_KEY = "jdh-speak:jamBufferMinMs";
@@ -249,6 +257,12 @@ interface RoomState {
   micDeviceId: string;
   speakerDeviceId: string;
   netMonitorDeviceId: string;
+  // Saved labels for the devices above (+ secondary). Persisted so a device whose
+  // deviceId rotated across a reopen can be re-found by name and its id healed.
+  micDeviceLabel: string;
+  speakerDeviceLabel: string;
+  netMonitorDeviceLabel: string;
+  secondaryDeviceLabel: string;
   // Browser voice processing (echo cancellation, noise suppression and
   // automatic gain). Defaults OFF everywhere (iPhone/iPad included — they send a
   // clean mono signal instead; see loadVoiceProcessing / microphoneConstraints).
@@ -379,9 +393,11 @@ interface RoomState {
   setPlayerTime: (time: number) => void;
   setPlayerDuration: (duration: number) => void;
   setMicGain: (gain: number) => void;
-  setMicDeviceId: (deviceId: string) => void;
-  setSpeakerDeviceId: (deviceId: string) => void;
-  setNetMonitorDeviceId: (deviceId: string) => void;
+  // Device setters take an optional label: pass it when the USER picks a device (so we
+  // remember its name); omit it when only healing a rotated id (keeps the saved label).
+  setMicDeviceId: (deviceId: string, label?: string) => void;
+  setSpeakerDeviceId: (deviceId: string, label?: string) => void;
+  setNetMonitorDeviceId: (deviceId: string, label?: string) => void;
   setVoiceProcessingEnabled: (enabled: boolean) => void;
   setJamMode: (enabled: boolean) => void;
   setJamBufferMinMs: (ms: number) => void;
@@ -405,7 +421,7 @@ interface RoomState {
   setAmbience: (id: string) => void;
   setServerAmbiences: (list: { id: string; name: string }[]) => void;
   setSecondaryEnabled: (enabled: boolean) => void;
-  setSecondaryDeviceId: (deviceId: string) => void;
+  setSecondaryDeviceId: (deviceId: string, label?: string) => void;
   setSecondaryMonitor: (monitor: boolean) => void;
   setRecording: (recording: boolean, recordingId?: string | null) => void;
   announce: (message: string) => void;
@@ -461,6 +477,10 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   micDeviceId: loadString(MIC_DEVICE_KEY),
   speakerDeviceId: loadString(SPEAKER_DEVICE_KEY),
   netMonitorDeviceId: loadString(NET_MONITOR_DEVICE_KEY),
+  micDeviceLabel: loadString(MIC_LABEL_KEY),
+  speakerDeviceLabel: loadString(SPEAKER_LABEL_KEY),
+  netMonitorDeviceLabel: loadString(NET_MONITOR_LABEL_KEY),
+  secondaryDeviceLabel: loadString(SECONDARY_LABEL_KEY),
   voiceProcessingEnabled: loadVoiceProcessing(),
   jamMode: loadString(JAM_MODE_KEY) === "true",
   jamBufferMinMs: loadJamBufferMs(JAM_BUF_MIN_KEY, JAM_BUF_MIN_DEFAULT),
@@ -567,17 +587,24 @@ export const useRoomStore = create<RoomState>((set, get) => ({
     }
     set({ micGain });
   },
-  setMicDeviceId: (micDeviceId) => {
+  setMicDeviceId: (micDeviceId, label) => {
     saveString(MIC_DEVICE_KEY, micDeviceId);
-    set({ micDeviceId });
+    if (label !== undefined) saveString(MIC_LABEL_KEY, label);
+    set(label !== undefined ? { micDeviceId, micDeviceLabel: label } : { micDeviceId });
   },
-  setSpeakerDeviceId: (speakerDeviceId) => {
+  setSpeakerDeviceId: (speakerDeviceId, label) => {
     saveString(SPEAKER_DEVICE_KEY, speakerDeviceId);
-    set({ speakerDeviceId });
+    if (label !== undefined) saveString(SPEAKER_LABEL_KEY, label);
+    set(label !== undefined ? { speakerDeviceId, speakerDeviceLabel: label } : { speakerDeviceId });
   },
-  setNetMonitorDeviceId: (netMonitorDeviceId) => {
+  setNetMonitorDeviceId: (netMonitorDeviceId, label) => {
     saveString(NET_MONITOR_DEVICE_KEY, netMonitorDeviceId);
-    set({ netMonitorDeviceId });
+    if (label !== undefined) saveString(NET_MONITOR_LABEL_KEY, label);
+    set(
+      label !== undefined
+        ? { netMonitorDeviceId, netMonitorDeviceLabel: label }
+        : { netMonitorDeviceId },
+    );
   },
   setVoiceProcessingEnabled: (voiceProcessingEnabled) => {
     saveString(VOICE_PROCESSING_KEY, String(voiceProcessingEnabled));
@@ -635,9 +662,14 @@ export const useRoomStore = create<RoomState>((set, get) => ({
     saveString(SECONDARY_ENABLED_KEY, String(secondaryEnabled));
     set({ secondaryEnabled });
   },
-  setSecondaryDeviceId: (secondaryDeviceId) => {
+  setSecondaryDeviceId: (secondaryDeviceId, label) => {
     saveString(SECONDARY_DEVICE_KEY, secondaryDeviceId);
-    set({ secondaryDeviceId });
+    if (label !== undefined) saveString(SECONDARY_LABEL_KEY, label);
+    set(
+      label !== undefined
+        ? { secondaryDeviceId, secondaryDeviceLabel: label }
+        : { secondaryDeviceId },
+    );
   },
   setSecondaryMonitor: (secondaryMonitor) => {
     saveString(SECONDARY_MONITOR_KEY, String(secondaryMonitor));

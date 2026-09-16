@@ -8,6 +8,30 @@
 
 ---
 
+## 2026-09-16
+
+### La placa primaria de reproducción ahora SÍ se guarda (match por etiqueta, no solo por id)
+
+Edu: si elegía una de sus placas como salida primaria (Altavoz), al cerrar y volver a abrir le
+quedaba la predeterminada; la secundaria sí se guardaba. **Causa raíz:** guardábamos solo el
+`deviceId`, y el navegador puede darle al MISMO dispositivo físico un `deviceId` distinto entre
+cierres/aperturas — pasa sobre todo con las salidas (`audiooutput`), no tanto con las entradas
+(`audioinput`). Por eso la secundaria (una entrada) coincidía por id y persistía, y el altavoz
+(salida) no coincidía → el selector caía a "Predeterminado". No era la persistencia en sí.
+
+- **Fix de raíz:** ahora guardamos también la **etiqueta** (nombre) del dispositivo elegido, en
+  `micDeviceLabel`/`speakerDeviceLabel`/`secondaryDeviceLabel`/`netMonitorDeviceLabel`.
+  `resolveSavedDevice` (`lib/audio-devices.ts`) resuelve la selección: por id si sigue presente,
+  si no **por etiqueta** (re-encuentra el dispositivo aunque su id haya rotado) y **sana** el id
+  guardado con el nuevo; si de verdad no está, cae a Predeterminado (se sigue recordando por si
+  se reconecta). Aplica a las 4 listas (mic, altavoz, secundaria, monitor de red). Al abrir
+  Ajustes se sana y hace backfill de la etiqueta (una vez, idempotente, no cicla).
+- **Nota:** una selección guardada ANTES de esta versión no tiene etiqueta todavía, así que Edu
+  debe elegir su placa **una vez** después de actualizar; de ahí en más queda fija aunque el id
+  rote.
+- **Verificado:** resolver 7/7 y el sanado 6/6 en Node (convergente + idempotente); typecheck +
+  lint + build OK; la página carga sin loop de render. **Cliente = build, sin restart.**
+
 ## 2026-09-13
 
 ### Botón "Silenciar altavoces" (mute de salida local, anti-acople)

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useRoomStore } from "../stores/room";
-import { canSelectSpeaker, canSelectElementSink } from "../lib/audio-devices";
+import { canSelectSpeaker, canSelectElementSink, resolveSavedDevice } from "../lib/audio-devices";
 import { m } from "../paraglide/messages.js";
 
 // Mic/speaker pickers. This component only reads/writes the store — the
@@ -11,11 +11,14 @@ import { m } from "../paraglide/messages.js";
 export function DeviceSettings() {
   const micDeviceId = useRoomStore((s) => s.micDeviceId);
   const speakerDeviceId = useRoomStore((s) => s.speakerDeviceId);
+  const micDeviceLabel = useRoomStore((s) => s.micDeviceLabel);
+  const speakerDeviceLabel = useRoomStore((s) => s.speakerDeviceLabel);
   const setMicDeviceId = useRoomStore((s) => s.setMicDeviceId);
   const setSpeakerDeviceId = useRoomStore((s) => s.setSpeakerDeviceId);
 
   const secondaryEnabled = useRoomStore((s) => s.secondaryEnabled);
   const secondaryDeviceId = useRoomStore((s) => s.secondaryDeviceId);
+  const secondaryDeviceLabel = useRoomStore((s) => s.secondaryDeviceLabel);
   const secondaryMonitor = useRoomStore((s) => s.secondaryMonitor);
   const setSecondaryEnabled = useRoomStore((s) => s.setSecondaryEnabled);
   const setSecondaryDeviceId = useRoomStore((s) => s.setSecondaryDeviceId);
@@ -30,6 +33,7 @@ export function DeviceSettings() {
   const setJamMode = useRoomStore((s) => s.setJamMode);
   const setNetworkMonitor = useRoomStore((s) => s.setNetworkMonitor);
   const netMonitorDeviceId = useRoomStore((s) => s.netMonitorDeviceId);
+  const netMonitorDeviceLabel = useRoomStore((s) => s.netMonitorDeviceLabel);
   const setNetMonitorDeviceId = useRoomStore((s) => s.setNetMonitorDeviceId);
   const jamBufferMinMs = useRoomStore((s) => s.jamBufferMinMs);
   const setJamBufferMinMs = useRoomStore((s) => s.setJamBufferMinMs);
@@ -152,10 +156,56 @@ export function DeviceSettings() {
     return () => window.clearInterval(id);
   }, []);
 
-  // A stored device that's gone (unplugged) renders as Default; the media
+  // Resolve each saved selection to a deviceId that actually exists NOW — by id, then
+  // by label (the device's id may have rotated across a reopen; the label re-finds it).
+  // A device that's truly gone (unplugged) resolves to "" = Default; the media
   // constraints use `ideal`, so capture falls back to the default device too.
-  const micValue = mics.some((d) => d.deviceId === micDeviceId) ? micDeviceId : "";
-  const speakerValue = speakers.some((d) => d.deviceId === speakerDeviceId) ? speakerDeviceId : "";
+  const micValue = resolveSavedDevice(micDeviceId, micDeviceLabel, mics).value;
+  const speakerValue = resolveSavedDevice(speakerDeviceId, speakerDeviceLabel, speakers).value;
+  const secondaryValue = resolveSavedDevice(secondaryDeviceId, secondaryDeviceLabel, mics).value;
+  const netMonitorValue = resolveSavedDevice(netMonitorDeviceId, netMonitorDeviceLabel, speakers).value;
+
+  // Heal + backfill: once the device list is known, persist the CURRENT id+label of the
+  // resolved device. This heals a rotated id (so the next reopen matches by id) and
+  // backfills the label for selections saved before labels existed. Writes only when
+  // something actually changed, so it can't loop. Never clears a saved-but-absent device
+  // (that stays remembered for when it's reconnected).
+  useEffect(() => {
+    const heal = (
+      list: MediaDeviceInfo[],
+      id: string,
+      label: string,
+      setter: (deviceId: string, label?: string) => void,
+    ) => {
+      const { value } = resolveSavedDevice(id, label, list);
+      if (!value) return;
+      const dev = list.find((d) => d.deviceId === value);
+      if (dev?.label && (value !== id || dev.label !== label)) setter(value, dev.label);
+    };
+    heal(mics, micDeviceId, micDeviceLabel, setMicDeviceId);
+    heal(speakers, speakerDeviceId, speakerDeviceLabel, setSpeakerDeviceId);
+    heal(mics, secondaryDeviceId, secondaryDeviceLabel, setSecondaryDeviceId);
+    heal(speakers, netMonitorDeviceId, netMonitorDeviceLabel, setNetMonitorDeviceId);
+  }, [
+    mics,
+    speakers,
+    micDeviceId,
+    micDeviceLabel,
+    speakerDeviceId,
+    speakerDeviceLabel,
+    secondaryDeviceId,
+    secondaryDeviceLabel,
+    netMonitorDeviceId,
+    netMonitorDeviceLabel,
+    setMicDeviceId,
+    setSpeakerDeviceId,
+    setSecondaryDeviceId,
+    setNetMonitorDeviceId,
+  ]);
+
+  // When the user picks a device, remember its label too (for id-healing later).
+  const labelOf = (list: MediaDeviceInfo[], id: string) =>
+    list.find((d) => d.deviceId === id)?.label ?? "";
 
   const selectClass =
     "w-full rounded-lg border border-sonic-600 bg-sonic-700 px-2.5 py-1.5 text-sm text-sonic-100 transition-colors focus:border-sonic-accent focus:outline-none";
@@ -169,7 +219,7 @@ export function DeviceSettings() {
         <select
           id={micSelectId}
           value={micValue}
-          onChange={(e) => setMicDeviceId(e.target.value)}
+          onChange={(e) => setMicDeviceId(e.target.value, labelOf(mics, e.target.value))}
           onFocus={() => void refresh()}
           aria-describedby={mics.length === 0 ? micHintId : undefined}
           className={selectClass}
@@ -194,7 +244,7 @@ export function DeviceSettings() {
           <select
             id={speakerSelectId}
             value={speakerValue}
-            onChange={(e) => setSpeakerDeviceId(e.target.value)}
+            onChange={(e) => setSpeakerDeviceId(e.target.value, labelOf(speakers, e.target.value))}
             onFocus={() => void refresh()}
             className={selectClass}
           >
@@ -235,8 +285,8 @@ export function DeviceSettings() {
             </label>
             <select
               id={secondarySelectId}
-              value={mics.some((d) => d.deviceId === secondaryDeviceId) ? secondaryDeviceId : ""}
-              onChange={(e) => setSecondaryDeviceId(e.target.value)}
+              value={secondaryValue}
+              onChange={(e) => setSecondaryDeviceId(e.target.value, labelOf(mics, e.target.value))}
               onFocus={() => void refresh()}
               className={selectClass}
             >
@@ -454,10 +504,10 @@ export function DeviceSettings() {
             </label>
             <select
               id={netMonitorSelectId}
-              value={
-                speakers.some((d) => d.deviceId === netMonitorDeviceId) ? netMonitorDeviceId : ""
+              value={netMonitorValue}
+              onChange={(e) =>
+                setNetMonitorDeviceId(e.target.value, labelOf(speakers, e.target.value))
               }
-              onChange={(e) => setNetMonitorDeviceId(e.target.value)}
               onFocus={() => void refresh()}
               className={selectClass}
             >
