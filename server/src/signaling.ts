@@ -95,9 +95,21 @@ export function createSignalingServer(
 ) {
   const io = new Server(httpServer, {
     cors: { origin: "*" },
-    transports: ["websocket"],
-    pingInterval: 5000,
-    pingTimeout: 10000,
+    // Accept BOTH transports. The client tries WebSocket first (lowest latency) and
+    // falls back to HTTP long-polling when the WS upgrade can't complete (some mobile
+    // carriers, CGNAT, corporate proxies, captive middleboxes — exactly the weak
+    // networks Franco/Edu are on). The server was websocket-ONLY, so that client
+    // fallback connected to nothing: WS blocked AND polling refused → the user just
+    // "couldn't connect / dropped". Allowing polling (with the default WS upgrade) is
+    // the single highest-value reliability fix.
+    transports: ["websocket", "polling"],
+    // Heartbeat: ride out a transient stall instead of force-dropping weak links. The
+    // old 5s/10s was STRICTER than socket.io's defaults — ~10-15s of dead air (a Wi-Fi
+    // roam, a congestion burst, a mobile handover) tripped it and bounced the user out
+    // of the call (full teardown+rejoin). 25s ping / 30s timeout tolerates a real blip,
+    // like mainstream conferencing apps, and leans on ICE liveness for genuine drops.
+    pingInterval: 25000,
+    pingTimeout: 30000,
   });
 
   // When a finished recording is auto-discarded (TTL), tell the room so
@@ -384,7 +396,11 @@ export function createSignalingServer(
       const parsed = z
         .object({
           targetPeerId: z.string(),
-          type: z.enum(["offer", "answer", "ice-candidate"]),
+          // "renegotiate" is a nudge: a peer whose P2P leg failed asks the OTHER side
+          // to re-offer (used when only one side detected the ICE failure). The
+          // lower-id peer owns the offer — see the client's glare convention — so this
+          // lets the higher-id peer trigger a rebuild without both sides offering.
+          type: z.enum(["offer", "answer", "ice-candidate", "renegotiate"]),
           payload: z.any(),
         })
         .safeParse(data);
@@ -485,6 +501,63 @@ export function createSignalingServer(
       } catch (err) {
         cb({ ok: false, error: err instanceof Error ? err.message : "Connect failed" });
       }
+    });
+
+    // ICE restart for an SFU transport whose media path died (NAT rebinding / route
+    // change) while the signaling socket stayed up. The client detects the transport
+    // going "failed"/"disconnected" (its connectionstatechange) and asks for fresh ICE
+    // parameters; mediasoup re-gathers and the client applies them with
+    // transport.restartIce(...). This recovers a silently-dead SFU leg WITHOUT a full
+    // page refresh — the "Edu heard everyone but Franco" class of bug, SFU side.
+    socket.on("restart-ice", async (data: unknown, cb: (res: unknown) => void) => {
+      try {
+        if (!currentPeer) {
+          cb({ ok: false, error: "Not in a room" });
+          return;
+        }
+        const { direction } = z.object({ direction: z.enum(["send", "recv"]) }).parse(data);
+        const transport =
+          direction === "send" ? currentPeer.sendTransport : currentPeer.recvTransport;
+        if (!transport) {
+          cb({ ok: false, error: "Transport not found" });
+          return;
+        }
+        const iceParameters = await transport.restartIce();
+        console.log(`[sfu] restart-ice (${direction}) for ${socket.id} in ${currentRoom?.name}`);
+        cb({ ok: true, iceParameters });
+      } catch (err) {
+        cb({ ok: false, error: err instanceof Error ? err.message : "restart-ice failed" });
+      }
+    });
+
+    // Resync: return every OTHER peer's current producers so a client that may have
+    // missed a `new-producer` (a race during a mode switch/reconnect, or a consume
+    // that skipped) can consume whoever it's missing — instead of staying silent for
+    // that peer until a manual refresh. The client calls this after a reconnect / ICE
+    // recovery and from its media watchdog.
+    socket.on("get-producers", (_data: unknown, cb: (res: unknown) => void) => {
+      if (!currentRoom || !currentPeer) {
+        cb({ ok: false, error: "Not in a room" });
+        return;
+      }
+      const producers: {
+        peerId: string;
+        producerId: string;
+        kind: string;
+        source: string;
+      }[] = [];
+      for (const [id, p] of currentRoom.peers) {
+        if (id === socket.id) continue;
+        for (const prod of p.producers.values()) {
+          producers.push({
+            peerId: id,
+            producerId: prod.id,
+            kind: prod.kind,
+            source: (prod.appData?.source as string) ?? "voice",
+          });
+        }
+      }
+      cb({ ok: true, producers });
     });
 
     socket.on("produce", async (data: unknown, cb: (res: unknown) => void) => {

@@ -10,6 +10,48 @@
 
 ## 2026-09-16
 
+### Robustez de conexión: recuperar cortes de media sin refrescar (P2P + SFU)
+
+Franco (y a veces Edu) se caían seguido y a veces alguien quedaba mudo para otro (Edu oía a
+todos menos a Franco) hasta refrescar. Cristian/Pablo casi no. En otras apps no les pasa.
+**Causa raíz:** la app solo se recuperaba cuando se caía el WEBSOCKET de señalización. Pero
+el media WebRTC (UDP, a veces por TURN) puede morir solo —NAT rebinding, cambio de ruta,
+ráfaga de pérdida— con el websocket vivo. Ahí no había NI detección NI reconstrucción: la
+pata quedaba muerta en silencio hasta un refresh. Le pega a quien tiene peor red.
+
+Cuatro frentes, todos de raíz:
+
+- **P2P — recuperación de ICE (el bug principal).** El `RTCPeerConnection` solo escuchaba
+  `connectionstatechange` para reaplicar bitrate en "connected"; nunca actuaba ante
+  "failed"/"disconnected". Ahora, ante fallo, la pata se reconstruye sola: el peer de id MENOR
+  re-ofrece (convención anti-glare); el de id mayor manda un nudge `renegotiate` para que el
+  menor re-ofrezca. "disconnected" espera una gracia (4s, suele auto-sanar); "failed"
+  reconstruye ya. Reintentos acotados (máx 10) para no tormentear. Esto arregla "Edu oía a
+  todos menos a Franco".
+- **SFU — recuperación de transports.** Los transports mediasoup no observaban
+  `connectionstatechange`. Ahora, ante fallo: ICE restart pidiendo nuevos `iceParameters` al
+  server (nuevo handler `restart-ice`); si no engancha en 2 intentos, escala a reconexión
+  completa (rebuild de todo el stack).
+- **Resync de oyente.** Nuevo handler `get-producers`: tras reconectar / recuperar ICE (y cada
+  ~15s por el watchdog), el cliente pide los producers actuales y consume el que le falte —
+  cierra la carrera del `new-producer` perdido (lado oyente de "queda mudo alguien").
+- **Menos caídas falsas en redes flojas.** El server aceptaba SOLO websocket → el fallback a
+  polling del cliente no tenía a quién hablarle (se caía en redes que bloquean/degradan el
+  WS). Ahora acepta **websocket + polling**. Heartbeat aflojado de 5s/10s (más estricto que el
+  default) a **25s/30s** para aguantar un bache sin echar al usuario. `iceConsentTimeout` de
+  mediasoup 20→30. Log server-side cuando un transport muere (antes era invisible).
+- **Watchdog + limpieza.** Un intervalo (3s, solo en llamada) es red de seguridad sobre los
+  eventos por si el navegador se pierde una transición. Todos los timers/estados de
+  recuperación se limpian en teardown y al desmontar (sin leaks).
+
+**Verificado antes de dar por cerrado:** simulación de TODOS los escenarios de corte (11 grupos:
+P2P failed/disconnected/transitorio/sostenido/flapping/reset, oferta-vs-nudge por id, SFU
+2×restart→reconexión, resync con/sin faltantes, clasificación de estados) — todo pasa; tests
+del server sin regresiones (3 fallas de recording preexistentes); typecheck + lint + build OK;
+prueba en vivo de 2 peers (conectan, P2P establecido RTT 1ms, sin errores de consola); e
+integración real de los endpoints nuevos (polling aceptado, `get-producers`/`restart-ice`
+cableados, `renegotiate` se relaya). **Requiere restart del server** (cambió `signaling.ts`).
+
 ### La placa primaria de reproducción ahora SÍ se guarda (match por etiqueta, no solo por id)
 
 Edu: si elegía una de sus placas como salida primaria (Altavoz), al cerrar y volver a abrir le

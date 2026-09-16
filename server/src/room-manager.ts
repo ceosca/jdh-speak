@@ -250,6 +250,22 @@ export async function createWebRtcTransport(room: Room) {
   // Reduce latency: set max incoming bitrate
   await transport.setMaxIncomingBitrate(1500000);
 
+  // Surface a dying media path server-side (it used to be totally invisible: the
+  // signaling socket stays up while the UDP media fails, so a peer went silently mute
+  // until they refreshed). Recovery is client-driven (it detects the same failure and
+  // asks for an ICE restart), so here we only LOG — mediasoup closes the transport on
+  // its own consent timeout, and closing frees its ports/producers/consumers.
+  transport.on("icestatechange", (state) => {
+    if (state === "disconnected" || state === "closed") {
+      console.warn(`[sfu] transport ${transport.id} icestate=${state} in ${room.name}`);
+    }
+  });
+  transport.on("dtlsstatechange", (state) => {
+    if (state === "failed" || state === "closed") {
+      console.warn(`[sfu] transport ${transport.id} dtlsstate=${state} in ${room.name}`);
+    }
+  });
+
   return {
     transport,
     params: {

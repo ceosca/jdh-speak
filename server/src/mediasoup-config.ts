@@ -103,5 +103,9 @@ export const transportOptions: WebRtcTransportOptions = {
   enableUdp: true,
   enableTcp: false,
   preferUdp: true,
-  iceConsentTimeout: 20,
+  // Grace before mediasoup drops a transport whose ICE consent (liveness) checks stop
+  // getting answered. 20 was BELOW the default (30) — a ~20s media stall on a weak SFU
+  // peer (Franco/Edu) cut their audio. 30 rides out a real blip; genuine death still
+  // closes it, and the client's transport watchdog now recovers via restart-ice anyway.
+  iceConsentTimeout: 30,
 };

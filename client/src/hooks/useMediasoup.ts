@@ -7,6 +7,14 @@ import { applySpeakerToContext, canSelectElementSink } from "../lib/audio-device
 import { isIOS, getMicrophoneStream } from "../lib/microphone";
 import { playCue, preloadCueSamples, playTypingTick } from "../lib/sounds";
 import { getIceServers } from "../lib/ice";
+import {
+  isFailingState,
+  isTerminalState,
+  isHealthyState,
+  p2pRecoveryAction,
+  shouldKeepRetrying,
+  missingProducerIds,
+} from "../lib/connection-recovery";
 import { autoSeat, seatToPoint, type SpatialSeat } from "../lib/spatial";
 import { ambienceName, ambienceIrUrl } from "../lib/ambience";
 import { analyseImpulse, buildReverbImpulse, wetGainFor } from "../lib/ir-analysis";
@@ -258,6 +266,13 @@ const MAINT_PROBE_MS = 8000;
 // spinner. Both are generous — they only fire on a genuine stuck state, not a slow link.
 const MIC_ACQUIRE_TIMEOUT_MS = 12000;
 const CONNECT_TIMEOUT_MS = 25000;
+// Media-path recovery timings. A WebRTC connection reporting "disconnected" often
+// self-heals within a couple of seconds (a brief reorder/route flap), so we wait this
+// grace before rebuilding; "failed" is terminal and recovers immediately. The watchdog
+// polls connection state on this interval as a safety net over the state-change events.
+const P2P_ICE_GRACE_MS = 4000;
+const SFU_ICE_GRACE_MS = 4000;
+const MEDIA_WATCHDOG_MS = 3000;
 // Jam receive cushion: NOT 0 (0 makes NetEQ choppy on the slightest reordering — see
 // above). It's now the user's "Buffer de jitter" slider (jamBufferMinMs, ms), applied
 // live to every receiver, so they trade latency vs stability themselves; default 30 ms
@@ -591,6 +606,28 @@ export function useMediasoup() {
   // queued candidates and build a dead connection.
   const offerSeqRef = useRef<Map<string, number>>(new Map());
   const modeRef = useRef<RoomMode>("p2p");
+  // --- Media-path recovery (independent of the signaling socket) ---
+  // A P2P peer's grace timer: "disconnected" may self-heal, so we wait briefly before
+  // rebuilding; "failed" recovers immediately (no timer). Keyed by peerId.
+  const p2pGraceTimersRef = useRef<Map<string, number>>(new Map());
+  // Per-peer recovery attempt counters (reset to 0 on a healthy state) — bound retries
+  // and back off a flapping link.
+  const p2pRecoverAttemptsRef = useRef<Map<string, number>>(new Map());
+  // SFU transport recovery: grace timers + attempt counters, keyed by "send"/"recv".
+  const sfuGraceTimersRef = useRef<Map<"send" | "recv", number>>(new Map());
+  const sfuRecoverAttemptsRef = useRef<Map<"send" | "recv", number>>(new Map());
+  // producerIds we currently hold a consumer for — used by the resync to consume only
+  // what we're MISSING (a missed new-producer / a raced consume) without double-consuming.
+  const consumedProducerIdsRef = useRef<Set<string>>(new Set());
+  // The media watchdog interval (a safety net over the event handlers): polls every
+  // connection's state and triggers recovery even if a state-change event was missed.
+  const watchdogTimerRef = useRef<number | null>(null);
+  // Recovery entry points held in refs so the connection builders can call them without
+  // a useCallback ordering / circular-dependency knot (the builder creates the handler
+  // that triggers recovery, and recovery rebuilds via the builder).
+  const recoverP2pPeerRef = useRef<(peerId: string) => void>(() => {});
+  const recoverSfuTransportRef = useRef<(direction: "send" | "recv") => void>(() => {});
+  const resyncProducersRef = useRef<() => void>(() => {});
   // Producers announced while the SFU transports were still being built —
   // consumed at the end of setupSfu instead of being silently dropped.
   const pendingProducersRef = useRef<Array<{ peerId: string; producerId: string; source: string }>>(
@@ -2182,21 +2219,47 @@ export function useMediasoup() {
         refreshSpatial();
       };
 
-      // RE-APPLY the room bitrate once the connection is actually ESTABLISHED.
-      // Root cause of "some join at low quality until we cycle the bitrate": the
-      // encoder bitrate set at addTrack() (above, before negotiation) does NOT
-      // reliably stick — the sender sits at a low default until setParameters is
-      // called on the LIVE connection. That is exactly what a manual bitrate cycle
-      // does; here we do it automatically so a joiner reaches full quality on their
-      // own. Applied for BOTH directions (offerer and answerer) on every fresh PC.
-      pc.addEventListener("connectionstatechange", () => {
-        if (pc.connectionState !== "connected") return;
-        const s = pc.getSenders().find((x) => x.track?.kind === "audio");
-        // Re-apply immediately, then again after a beat: some Chrome builds only
-        // honour the encoder target once media is actually flowing.
-        void setSenderMaxBitrate(s, roomBitrateRef.current);
-        window.setTimeout(() => void setSenderMaxBitrate(s, roomBitrateRef.current), 1200);
-      });
+      // Connection-state handler: (1) on "connected", re-apply the room bitrate (the
+      // encoder target set at addTrack doesn't reliably stick until the PC is live —
+      // this is the automatic version of a manual bitrate cycle) and clear any pending
+      // recovery for this peer; (2) on "failed"/"disconnected", schedule ICE recovery
+      // so a dead media leg rebuilds itself instead of staying silent until a refresh
+      // (the "Edu heard everyone but Franco" bug). Both `connectionstatechange` and
+      // `iceconnectionstatechange` are watched — browsers differ in which fires first.
+      const onP2pState = () => {
+        const st = pc.connectionState;
+        if (isHealthyState(st)) {
+          const t = p2pGraceTimersRef.current.get(peerId);
+          if (t != null) {
+            window.clearTimeout(t);
+            p2pGraceTimersRef.current.delete(peerId);
+          }
+          p2pRecoverAttemptsRef.current.set(peerId, 0);
+          if (st === "connected") {
+            const s = pc.getSenders().find((x) => x.track?.kind === "audio");
+            void setSenderMaxBitrate(s, roomBitrateRef.current);
+            window.setTimeout(() => void setSenderMaxBitrate(s, roomBitrateRef.current), 1200);
+          }
+          return;
+        }
+        if (!isFailingState(st)) return; // "connecting"/"new" — nothing to do
+        // Only the CURRENT pc for this peer may schedule recovery (a stale replaced pc
+        // firing late must not stomp the fresh one). A grace timer already pending wins.
+        if (p2pConnectionsRef.current.get(peerId) !== pc) return;
+        if (p2pGraceTimersRef.current.has(peerId)) return;
+        const delay = isTerminalState(st) ? 0 : P2P_ICE_GRACE_MS;
+        const timer = window.setTimeout(() => {
+          p2pGraceTimersRef.current.delete(peerId);
+          const cur = p2pConnectionsRef.current.get(peerId);
+          // Recover only if THIS pc is still the live one and still unhealthy.
+          if (cur !== pc) return;
+          if (isHealthyState(pc.connectionState)) return;
+          recoverP2pPeerRef.current(peerId);
+        }, delay);
+        p2pGraceTimersRef.current.set(peerId, timer);
+      };
+      pc.addEventListener("connectionstatechange", onP2pState);
+      pc.addEventListener("iceconnectionstatechange", onP2pState);
 
       p2pConnectionsRef.current.set(peerId, pc);
 
@@ -2246,6 +2309,10 @@ export function useMediasoup() {
     }
     p2pConnectionsRef.current.clear();
     pendingCandidatesRef.current.clear();
+    // Cancel any pending recovery timers so they can't fire against torn-down peers.
+    for (const t of p2pGraceTimersRef.current.values()) window.clearTimeout(t);
+    p2pGraceTimersRef.current.clear();
+    p2pRecoverAttemptsRef.current.clear();
     cleanupAllPeerAudio();
   }, [cleanupAllPeerAudio]);
 
@@ -2286,6 +2353,12 @@ export function useMediasoup() {
       wtMeshRef.current = null;
       masterBus.gain.value = 1;
     }
+    // Reset SFU recovery state: the consumed-producer set and any pending transport
+    // recovery timers belong to the transports we just closed.
+    consumedProducerIdsRef.current.clear();
+    for (const t of sfuGraceTimersRef.current.values()) window.clearTimeout(t);
+    sfuGraceTimersRef.current.clear();
+    sfuRecoverAttemptsRef.current.clear();
     cleanupAllPeerAudio();
   }, [cleanupAllPeerAudio, cleanupAllPeerVideo]);
 
@@ -2314,6 +2387,12 @@ export function useMediasoup() {
           typeof recvTransport.consume
         >[0]["rtpParameters"],
       });
+
+      // Track that we now hold this producer, so the resync (get-producers) only
+      // consumes what we're MISSING and never double-consumes. Dropped when the
+      // producer closes (peer left / muted-off) so a later re-advertise re-consumes it.
+      consumedProducerIdsRef.current.add(res.producerId);
+      consumer.observer.on("close", () => consumedProducerIdsRef.current.delete(res.producerId));
 
       // VIDEO (opt-in camera): no audio graph — wrap the track in a MediaStream and
       // hand it to the store so the peer's <video> renders it. One video consumer
@@ -2375,6 +2454,160 @@ export function useMediasoup() {
     [emit, store, effectiveGain, refreshSpatial],
   );
 
+  // --- Media-path recovery (runs independently of the signaling socket) ------------
+  // Recover a P2P leg whose ICE died (NAT rebinding / route flap) while the signaling
+  // socket stayed up. The LOWER-id peer owns the (re)offer (the glare convention used at
+  // join and switch-to-p2p); the higher-id side sends a "renegotiate" nudge so the lower
+  // side re-offers. Rebuilding the whole PC (createP2pConnection already closes the stale
+  // one and re-runs the tested offer/answer path) is a superset of a bare ICE restart and
+  // reuses code we trust. Bounded + backed-off so a flapping link can't storm restarts.
+  const recoverP2pPeer = useCallback(
+    (peerId: string) => {
+      if (modeRef.current !== "p2p") return; // switched to SFU meanwhile — not our job
+      const socket = socketRef.current;
+      const myId = socket?.id;
+      if (!socket || !myId) return;
+      const attempt = (p2pRecoverAttemptsRef.current.get(peerId) ?? 0) + 1;
+      p2pRecoverAttemptsRef.current.set(peerId, attempt);
+      if (!shouldKeepRetrying(attempt)) {
+        console.warn(`[p2p] giving up recovery for ${peerId} after ${attempt - 1} tries`);
+        return;
+      }
+      const action = p2pRecoveryAction(myId, peerId);
+      console.warn(`[p2p] recovering leg to ${peerId} (attempt ${attempt}, ${action})`);
+      if (action === "nudge") {
+        // Ask the offer owner (lower id) to re-offer. If the nudge is lost, the watchdog
+        // re-triggers on the next tick.
+        socket.emit("p2p-signal", { targetPeerId: peerId, type: "renegotiate", payload: {} });
+        return;
+      }
+      // We own the offer → rebuild as offerer (fresh ICE), serialized behind any
+      // in-flight transition so it never interleaves with a mode switch.
+      void runTransition(async () => {
+        if (modeRef.current !== "p2p") return;
+        await createP2pConnection(peerId, true);
+      }).catch((err) => console.error("[p2p] recovery rebuild failed:", err));
+    },
+    [runTransition, createP2pConnection],
+  );
+  useEffect(() => {
+    recoverP2pPeerRef.current = recoverP2pPeer;
+  }, [recoverP2pPeer]);
+
+  // Recover an SFU transport whose ICE died. First try a cheap ICE restart (mediasoup
+  // re-gathers; the transport's consumers/producers survive). If it keeps failing,
+  // escalate to a full reconnect — socket.disconnect().connect() runs the tested rejoin
+  // that rebuilds the whole SFU stack and re-consumes everyone. Bounded + backed off.
+  const recoverSfuTransport = useCallback(
+    (direction: "send" | "recv") => {
+      if (modeRef.current !== "sfu") return;
+      const transport =
+        direction === "send" ? sendTransportRef.current : recvTransportRef.current;
+      const socket = socketRef.current;
+      if (!transport || transport.closed || !socket) return;
+      const attempt = (sfuRecoverAttemptsRef.current.get(direction) ?? 0) + 1;
+      sfuRecoverAttemptsRef.current.set(direction, attempt);
+      if (attempt > 2) {
+        // Two ICE restarts didn't hold → rebuild the whole stack via a reconnect.
+        console.warn(`[sfu] ${direction} transport unrecovered — forcing full reconnect`);
+        sfuRecoverAttemptsRef.current.set(direction, 0);
+        try {
+          socket.disconnect().connect();
+        } catch {
+          /* torn down */
+        }
+        return;
+      }
+      console.warn(`[sfu] restarting ICE on ${direction} transport (attempt ${attempt})`);
+      void (async () => {
+        try {
+          const res = await emit<{
+            iceParameters: Parameters<typeof transport.restartIce>[0]["iceParameters"];
+          }>("restart-ice", { direction });
+          await transport.restartIce({ iceParameters: res.iceParameters });
+          // Successful restart re-establishes the media; consumers survived, but resync
+          // in case a producer was advertised while we were down.
+          resyncProducersRef.current();
+        } catch (err) {
+          console.error(`[sfu] restart-ice (${direction}) failed:`, err);
+          // Leave it to the watchdog to escalate on the next tick.
+        }
+      })();
+    },
+    [emit],
+  );
+  useEffect(() => {
+    recoverSfuTransportRef.current = recoverSfuTransport;
+  }, [recoverSfuTransport]);
+
+  // Resync consumers: ask the server for every peer's current producers and consume the
+  // ones we're MISSING (a missed new-producer, or a consume that raced a mode switch) so
+  // we never stay silent for someone until a refresh — the listener side of "Edu heard
+  // everyone but Franco". SFU-only (P2P media is direct). Idempotent + cheap.
+  const resyncProducers = useCallback(() => {
+    if (modeRef.current !== "sfu") return;
+    const recv = recvTransportRef.current;
+    if (!recv || recv.closed) return;
+    void (async () => {
+      try {
+        const res = await emit<{
+          producers: { peerId: string; producerId: string; source: string }[];
+        }>("get-producers", {});
+        const missing = missingProducerIds(res.producers, consumedProducerIdsRef.current);
+        for (const producerId of missing) {
+          const p = res.producers.find((x) => x.producerId === producerId);
+          if (!p) continue;
+          await consumeProducer(p.peerId, p.producerId, p.source).catch((err) =>
+            console.error("[sfu] resync consume failed (skipped):", err),
+          );
+        }
+      } catch (err) {
+        console.error("[sfu] get-producers failed:", err);
+      }
+    })();
+  }, [emit, consumeProducer]);
+  useEffect(() => {
+    resyncProducersRef.current = resyncProducers;
+  }, [resyncProducers]);
+
+  // Media watchdog — a safety net OVER the per-connection state-change events (some
+  // browsers coalesce/miss a transition). Catches a connection stuck in "failed" that the
+  // event handler didn't act on, and periodically resyncs SFU consumers (the only thing
+  // that recovers a missed producer, which is unrelated to ICE events). Runs only while
+  // joined; the event handlers remain the primary, prompter mechanism (incl. the grace
+  // for "disconnected").
+  const watchdogTickRef = useRef(0);
+  const startMediaWatchdog = useCallback(() => {
+    if (watchdogTimerRef.current != null) return;
+    watchdogTimerRef.current = window.setInterval(() => {
+      watchdogTickRef.current += 1;
+      if (modeRef.current === "p2p") {
+        for (const [peerId, pc] of p2pConnectionsRef.current) {
+          if (pc.connectionState === "failed" && !p2pGraceTimersRef.current.has(peerId)) {
+            recoverP2pPeerRef.current(peerId);
+          }
+        }
+      } else if (modeRef.current === "sfu") {
+        for (const dir of ["send", "recv"] as const) {
+          const t = dir === "send" ? sendTransportRef.current : recvTransportRef.current;
+          if (t && !t.closed && t.connectionState === "failed" && !sfuGraceTimersRef.current.has(dir)) {
+            recoverSfuTransportRef.current(dir);
+          }
+        }
+        // Resync every ~5th tick (~15s): cheap, only consumes what's missing.
+        if (watchdogTickRef.current % 5 === 0) resyncProducersRef.current();
+      }
+    }, MEDIA_WATCHDOG_MS);
+  }, []);
+  const stopMediaWatchdog = useCallback(() => {
+    if (watchdogTimerRef.current != null) {
+      window.clearInterval(watchdogTimerRef.current);
+      watchdogTimerRef.current = null;
+    }
+  }, []);
+  // Safety net: clear the watchdog interval on unmount even if leave() wasn't called.
+  useEffect(() => stopMediaWatchdog, [stopMediaWatchdog]);
+
   // Produce our camera track on the SFU. Idempotent + self-guarding: no-op unless
   // the camera is on, we're on a live SFU send transport, and there's no live video
   // producer yet. Called from toggleCamera (if already SFU) and from setupSfuInner
@@ -2428,6 +2661,40 @@ export function useMediasoup() {
         });
       }
 
+      // Watch a transport's ICE/DTLS health and recover a dead media path WITHOUT a page
+      // refresh: "failed" recovers now, "disconnected" waits a short grace (it often
+      // self-heals), "connected" clears any pending recovery. Recovery = ICE restart, then
+      // a full reconnect if that doesn't hold (see recoverSfuTransport). This is the SFU
+      // analog of the P2P leg recovery — the transport used to go dead silently.
+      const wireTransportRecovery = (transport: Transport, direction: "send" | "recv") => {
+        transport.on("connectionstatechange", (state: string) => {
+          if (state === "connected") {
+            const t = sfuGraceTimersRef.current.get(direction);
+            if (t != null) {
+              window.clearTimeout(t);
+              sfuGraceTimersRef.current.delete(direction);
+            }
+            sfuRecoverAttemptsRef.current.set(direction, 0);
+            return;
+          }
+          if (!isFailingState(state)) return; // "connecting"/"new"
+          const live =
+            direction === "send" ? sendTransportRef.current : recvTransportRef.current;
+          if (live !== transport || transport.closed) return; // stale/closed transport
+          if (sfuGraceTimersRef.current.has(direction)) return;
+          const delay = isTerminalState(state) ? 0 : SFU_ICE_GRACE_MS;
+          const timer = window.setTimeout(() => {
+            sfuGraceTimersRef.current.delete(direction);
+            const now =
+              direction === "send" ? sendTransportRef.current : recvTransportRef.current;
+            if (now !== transport || transport.closed) return;
+            if (!isFailingState(transport.connectionState)) return;
+            recoverSfuTransportRef.current(direction);
+          }, delay);
+          sfuGraceTimersRef.current.set(direction, timer);
+        });
+      };
+
       // Create send transport
       const sendRes = await emit<{ ok: boolean; params: Record<string, unknown> }>(
         "create-transport",
@@ -2437,6 +2704,7 @@ export function useMediasoup() {
         ...(sendRes.params as Parameters<typeof device.createSendTransport>[0]),
         iceServers: getIceServers(),
       });
+      wireTransportRecovery(sendTransport, "send");
 
       sendTransport.on("connect", async ({ dtlsParameters }, callback, errback) => {
         try {
@@ -2482,6 +2750,7 @@ export function useMediasoup() {
         iceServers: getIceServers(),
         ...(useInsertable ? { additionalSettings: { encodedInsertableStreams: true } } : {}),
       } as Parameters<typeof device.createRecvTransport>[0]);
+      wireTransportRecovery(recvTransport, "recv");
 
       recvTransport.on("connect", async ({ dtlsParameters }, callback, errback) => {
         try {
@@ -2885,9 +3154,14 @@ export function useMediasoup() {
             }
             await joinAndSetup();
           });
+          // Resync consumers after a (re)join so a producer advertised during the outage
+          // isn't missed. No-op in P2P. Idempotent.
+          resyncProducersRef.current();
           if (!hasJoined) {
             hasJoined = true;
             resolveReady();
+            // Start the media watchdog once we're actually in the room (idempotent).
+            startMediaWatchdog();
           }
         } catch (err) {
           if (hasJoined) {
@@ -3225,9 +3499,22 @@ export function useMediasoup() {
           payload,
         }: {
           fromPeerId: string;
-          type: "offer" | "answer" | "ice-candidate";
+          type: "offer" | "answer" | "ice-candidate" | "renegotiate";
           payload: RTCSessionDescriptionInit | RTCIceCandidateInit;
         }) => {
+          if (type === "renegotiate") {
+            // The peer's leg to us failed and it asked us to re-offer. Only act if WE own
+            // the offer (lower id) and we're still in P2P — otherwise ignore (the higher-id
+            // side must not offer). Rebuild as offerer via the tested path.
+            const myId = socketRef.current?.id;
+            if (modeRef.current === "p2p" && myId && myId < fromPeerId) {
+              void runTransition(async () => {
+                if (modeRef.current !== "p2p") return;
+                await createP2pConnection(fromPeerId, true);
+              }).catch((err) => console.error("[p2p] renegotiate rebuild failed:", err));
+            }
+            return;
+          }
           if (type === "offer") {
             // Candidates already queued for this peer belong to a previous
             // session — a session's candidates always arrive after its offer —
@@ -3439,7 +3726,7 @@ export function useMediasoup() {
       refreshSpatial,
       applyAmbience,
       dropPeerVideo,
-
+      startMediaWatchdog,
       store,
     ],
   );
@@ -4848,6 +5135,7 @@ export function useMediasoup() {
   );
 
   const leave = useCallback(() => {
+    stopMediaWatchdog();
     detachSharedAudio();
     teardownP2p();
     teardownSfu();
@@ -4944,7 +5232,7 @@ export function useMediasoup() {
       }
     }
     store.getState().reset();
-  }, [teardownP2p, teardownSfu, detachSharedAudio, store]);
+  }, [teardownP2p, teardownSfu, detachSharedAudio, stopMediaWatchdog, store]);
 
   useEffect(() => {
     return () => {
