@@ -6,6 +6,7 @@ import { useMediasoup } from "../hooks/useMediasoup";
 import { formatMessage, messageContent } from "../lib/chat";
 import { getInstanceName } from "../lib/branding";
 import { ParticipantCard } from "./ParticipantCard";
+import { VideoGallery } from "./VideoGallery";
 import { ThemeToggle } from "./ThemeToggle";
 import { AudioControls } from "./AudioControls";
 import { FileStreamPlayer } from "./FileStreamPlayer";
@@ -840,7 +841,33 @@ export function Room() {
       {/* Participants (top) + optional chat side panel. */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <main className="min-w-0 flex-1 overflow-y-auto p-6">
-          <section aria-labelledby="participants-heading" className="mx-auto max-w-4xl">
+          <section aria-labelledby="participants-heading" className="mx-auto max-w-5xl">
+            {/* Video gallery — only when at least one camera is on. Big 16:9 tiles in a
+                count-aware grid (see VideoGallery); purely visual (the roster below stays
+                the accessible source of truth). */}
+            {(() => {
+              const videoTiles = [];
+              if (localPeerId && displayName && localVideoStream) {
+                videoTiles.push({
+                  peer: {
+                    peerId: localPeerId,
+                    displayName,
+                    isSpeaking: localSpeaking,
+                    isMuted,
+                    volume: 1,
+                    isMusic: false,
+                    isStreaming: false,
+                    videoOn: true,
+                    videoStream: localVideoStream,
+                  },
+                  isLocal: true,
+                });
+              }
+              for (const peer of peerList) {
+                if (peer.videoOn || peer.videoStream) videoTiles.push({ peer, isLocal: false });
+              }
+              return <VideoGallery tiles={videoTiles} />;
+            })()}
             <h2
               id="participants-heading"
               className="mb-4 text-sm font-semibold uppercase tracking-wide text-sonic-400"

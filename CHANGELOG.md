@@ -8,7 +8,30 @@
 
 ---
 
-## 2026-09-16
+## 2026-09-17
+
+### Galería de video de verdad (cámaras grandes, no "hileras" apretadas)
+
+Kati: con las cámaras encendidas, la gente se veía como una hilera de miniaturas apretadas,
+difícil de ver a cada uno. **Causa:** el video era una franja de 128px DENTRO de cada card de
+participante, en una grilla de 2/3/4 columnas pensada para audio → con cámaras quedaban tiles
+minúsculos y chatos.
+
+- **Nuevo `VideoGallery`** (`client/src/components/VideoGallery.tsx`): cuando hay ≥1 cámara
+  encendida, se muestra una galería aparte con tiles **16:9 grandes** cuya cantidad de columnas
+  se adapta a cuántas cámaras hay Y al ancho de pantalla (`galleryColumns`): 1 cámara = un tile
+  grande centrado; 2 = lado a lado; 3 = fila de 3; 4 = 2×2; 6 = 3×2; 9 = 3×3; con tope de
+  columnas por viewport (móvil 2, tablet 3, desktop 4) que se reajusta al rotar/redimensionar.
+  Nombre + estado de mic sobre cada tile, ring verde + "Hablando ahora" para quien habla,
+  self-view espejado. Es puramente visual (`aria-hidden`) — el roster accesible de abajo sigue
+  siendo la fuente de verdad para lectores de pantalla, así que no se pierde accesibilidad.
+- El **video se sacó de las cards** (`ParticipantCard`): el roster vuelve a mostrar el avatar +
+  nombre + estado + controles (compacto, para identificar y controlar), y la galería es donde se
+  VE a la gente en grande — el patrón de toda videollamada (galería + lista de participantes).
+- **Verificado VISUALMENTE con capturas en el componente real** (inyectando video falso por el
+  store): 1, 4 y 6 cámaras en desktop, tema oscuro y claro, self espejado, ring de "hablando",
+  punto de mic mute, y el caso SIN cámaras (galería oculta, roster normal); + el layout móvil
+  (2 columnas) en un harness con el mismo CSS. **Cliente = build, sin restart.**
 
 ### El micrófono guardado se restaura de verdad (aunque el navegador le rote el id) + a11y de los selectores
 

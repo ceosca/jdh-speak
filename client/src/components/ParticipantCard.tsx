@@ -70,12 +70,6 @@ export function ParticipantCard({
 
   const nameWithYou = isLocal ? `${peer.displayName} (${m.card_you()})` : peer.displayName;
 
-  // Opt-in camera video. Shown in place of the avatar circle when on. Muted (the
-  // <video> carries no audio — audio flows through the Web Audio graph) and, for
-  // your own self-view, mirrored like every video-call app. The stream is set via a
-  // ref callback (srcObject can't be a JSX attribute).
-  const videoStream = peer.videoStream ?? null;
-
   // "Talking now" indicator: VISUAL ONLY (everything below is aria-hidden), so it
   // never floods the screen reader — the SR already reads mute status by the name.
   // Not shown for a muted peer or a music stream (their level isn't "talking").
@@ -87,38 +81,24 @@ export function ParticipantCard({
         speaking ? "border-green-400/80 ring-2 ring-green-400/40" : "border-sonic-600"
       }`}
     >
-      {/* Camera video (opt-in) OR the decorative avatar. Both are aria-hidden — the
-          screen reader gets name + status from the text below, and a camera on/off
-          announcement is spoken separately. Green glowing ring while talking. */}
-      {videoStream ? (
-        <video
-          aria-hidden="true"
-          autoPlay
-          playsInline
-          muted
-          ref={(el) => {
-            if (el && el.srcObject !== videoStream) el.srcObject = videoStream;
-          }}
-          className={`h-32 w-full rounded-lg bg-black object-cover transition-all ${
-            speaking ? "ring-2 ring-green-400/70" : ""
-          } ${isLocal ? "-scale-x-100" : ""}`}
-        />
-      ) : (
-        <div
-          aria-hidden="true"
-          className={`flex h-14 w-14 items-center justify-center rounded-full text-lg font-bold transition-all ${
-            speaking
-              ? "border-2 border-green-400 bg-sonic-700 text-green-100 shadow-[0_0_14px_rgba(74,222,128,0.55)] ring-4 ring-green-400/50"
-              : peer.isMusic
-                ? "border-2 border-sonic-accent bg-sonic-accent/20 text-sonic-accent"
-                : peer.isMuted
-                  ? "border-2 border-sonic-600 bg-sonic-700 text-sonic-400"
-                  : "border-2 border-sonic-500 bg-sonic-700 text-sonic-200"
-          }`}
-        >
-          {peer.isMusic ? <Music className="h-6 w-6" /> : getInitials(peer.displayName)}
-        </div>
-      )}
+      {/* Decorative avatar (aria-hidden — the screen reader gets name + status from the
+          text below). The camera VIDEO is NOT here: when cameras are on it shows in the
+          dedicated VideoGallery above (big legible tiles), while this roster stays compact
+          for identity + controls. A green glowing ring marks who's talking. */}
+      <div
+        aria-hidden="true"
+        className={`flex h-14 w-14 items-center justify-center rounded-full text-lg font-bold transition-all ${
+          speaking
+            ? "border-2 border-green-400 bg-sonic-700 text-green-100 shadow-[0_0_14px_rgba(74,222,128,0.55)] ring-4 ring-green-400/50"
+            : peer.isMusic
+              ? "border-2 border-sonic-accent bg-sonic-accent/20 text-sonic-accent"
+              : peer.isMuted
+                ? "border-2 border-sonic-600 bg-sonic-700 text-sonic-400"
+                : "border-2 border-sonic-500 bg-sonic-700 text-sonic-200"
+        }`}
+      >
+        {peer.isMusic ? <Music className="h-6 w-6" /> : getInitials(peer.displayName)}
+      </div>
 
       {/* Name + mic status. VISUALLY two lines (name truncates, status never does,
           so a long name can't hide the mic state); for the screen reader a single
