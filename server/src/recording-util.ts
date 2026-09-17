@@ -199,7 +199,18 @@ export function decideMode(
   currentMode: RoomMode,
   forceSfu: boolean,
 ): ModeDecision {
-  const target: RoomMode = peerCount > 5 || forceSfu ? "sfu" : "p2p";
+  // HYSTERESIS around the P2P↔SFU boundary. Without it, a peer flapping at the edge (a
+  // flaky mobile that keeps reconnecting, or its stale socket lingering while the new one
+  // is already in) toggles the count 5↔6 and THRASHES the whole room between modes — and
+  // every switch tears down + rebuilds every transport, which is exactly when a weak
+  // peer's leg gets lost and someone stops hearing them ("Edu no escucha a Franco"). So:
+  // ENTER the SFU at 6+, but once on the SFU STAY there until the room drops to 4 or fewer.
+  // Between 5 and 6 the mode is sticky — a single joiner/leaver at the edge changes nothing.
+  // forceSfu (recording / caster / camera / ?p2p=off / manual) always pins the SFU.
+  let target: RoomMode;
+  if (forceSfu) target = "sfu";
+  else if (currentMode === "sfu") target = peerCount >= 5 ? "sfu" : "p2p";
+  else target = peerCount >= 6 ? "sfu" : "p2p";
   if (target === currentMode) return { mode: currentMode, action: "none" };
   return {
     mode: target,

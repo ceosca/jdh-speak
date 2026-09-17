@@ -10,6 +10,35 @@
 
 ## 2026-09-17
 
+### "Edu no escucha a Franco": el flapping P2P↔SFU en el borde 5↔6 (causa raíz)
+
+Diagnosticado EN VIVO desde los logs (Edu quedó conectado sin recargar). La sala "jdh" era de
+5, pero Edu (celular, red inestable) **reconectaba con un socket nuevo mientras el viejo seguía
+vivo** (el ping timeout tarda ahora 30 s — que además había alargado yo al aflojar el
+heartbeat). Ese Edu **duplicado** hacía 6 peers → la sala **flapeaba P2P↔SFU** en cada
+reconexión, y cada switch reconstruye TODOS los transportes; en una de esas transiciones la pata
+hacia Franco (el de peor red) quedaba muerta/sin crear y no se rearmaba → Edu no lo escuchaba.
+Recargar a Edu lo arreglaba porque reconstruía todo su stack.
+
+Tres fixes de raíz:
+- **Deduplicación de sesión** (`signaling.ts`): al reconectar, el cliente reenvía su token de
+  membresía; si ya hay un peer con ESE token en la sala (el socket viejo aún sin timeout), se lo
+  tira al toque y se le cierra el socket — en vez de esperar 30 s. Un segundo DISPOSITIVO carga
+  fresco y tiene otro token, así que nunca se lo dedupea por error. (`Peer.token` nuevo.)
+- **Histéresis en `decideMode`** (`recording-util.ts`): se entra al SFU a los 6, pero una vez en
+  SFU se queda hasta caer a 4 o menos. Entre 5 y 6 el modo es "pegajoso" → un peer que flapea en
+  el borde ya no thrashea la sala entera. Test unitario nuevo.
+- **Malla P2P completa** (watchdog, `useMediasoup.ts`): la recuperación previa arreglaba patas
+  MUERTAS ("failed"), no patas FALTANTES. Ahora, cada ~9 s en P2P, si falta una conexión hacia un
+  peer que la sala dice presente, se la (re)establece (id menor ofrece, id mayor manda nudge) —
+  cierra exactamente el caso "no tengo pata hacia Franco".
+
+**Verificado:** dedup con test de integración (socket viejo tirado, queda un solo Edu, aviso
+peer-left); histéresis 6/6 unit; suite del server sin regresiones nuevas; typecheck+lint+build
+OK. **Requiere restart del server** (cambió signaling/room-manager/recording-util) — reconecta a
+todos brevemente, lo que además rearma el stack de Edu y le devuelve a Franco.
+
+
 ### Botón "Girar cám." — cambiar entre cámara frontal y trasera (celulares)
 
 En el teléfono, un botón para alternar la cámara frontal ↔ trasera durante la videollamada.

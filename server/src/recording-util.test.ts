@@ -190,10 +190,22 @@ describe("decideMode", () => {
   });
 
   it("uses P2P for <=5 peers when not recording", () => {
-    // 5 is the upper bound of the full-mesh range; switch back down from the SFU.
-    assert.deepEqual(decideMode(5, "sfu", false), { mode: "p2p", action: "switch-to-p2p" });
     assert.deepEqual(decideMode(3, "p2p", false), { mode: "p2p", action: "none" });
     assert.deepEqual(decideMode(1, "p2p", false), { mode: "p2p", action: "none" });
+    // From P2P, 5 is still within the mesh range — no switch.
+    assert.deepEqual(decideMode(5, "p2p", false), { mode: "p2p", action: "none" });
+  });
+
+  it("hysteresis: once on SFU it stays until the room drops to <=4 (no 5<->6 thrash)", () => {
+    // The bug this fixes: a flaky peer flapping the count 5<->6 used to thrash the whole
+    // room P2P<->SFU on every join/leave. Now the boundary is sticky.
+    assert.deepEqual(decideMode(6, "p2p", false), { mode: "sfu", action: "switch-to-sfu" });
+    // Drops to 5 while on SFU -> STAY on SFU (was the thrash back to P2P).
+    assert.deepEqual(decideMode(5, "sfu", false), { mode: "sfu", action: "none" });
+    // Back up to 6 -> still SFU, no action.
+    assert.deepEqual(decideMode(6, "sfu", false), { mode: "sfu", action: "none" });
+    // Only when it truly empties to 4 or fewer does it return to P2P.
+    assert.deepEqual(decideMode(4, "sfu", false), { mode: "p2p", action: "switch-to-p2p" });
   });
 
   it("forces SFU when forceSfu is set even within the P2P range (<=5 peers)", () => {

@@ -304,6 +304,29 @@ export function createSignalingServer(
         );
 
         const peer = createPeer(room, socket.id, displayName);
+        peer.token = myToken;
+
+        // Drop any STALE DUPLICATE of this same session before deciding the mode. A flaky
+        // mobile (Edu) reconnects with a NEW socket while its OLD socket hasn't hit the ping
+        // timeout yet (now 30 s) — so the room briefly holds TWO peers for one person, which
+        // pushes the count over the P2P↔SFU boundary and flaps the whole room's mode on every
+        // reconnect. That churn is what leaves a weak peer's leg (Franco's) dead and someone
+        // unable to hear them. Same membership token = same session reconnecting (a second
+        // DEVICE loads fresh and gets a different token, so it's never falsely dropped), so we
+        // tear the old one down now and force-close its socket instead of waiting it out.
+        if (isMember) {
+          for (const [id, p] of room.peers) {
+            if (id !== socket.id && p.token === myToken) {
+              console.log(`[ws] dropping stale duplicate of "${displayName}" (${id}) on reconnect`);
+              teardownPeer(room, id, { announceLeft: true });
+              try {
+                io.sockets.sockets.get(id)?.disconnect(true);
+              } catch {
+                /* socket already gone */
+              }
+            }
+          }
+        }
 
         // Register a caster / P2P-disable BEFORE deciding the mode, so the join
         // response (and the new peer's own setup) already reflects the forced-SFU

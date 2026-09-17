@@ -2663,9 +2663,27 @@ export function useMediasoup() {
     watchdogTimerRef.current = window.setInterval(() => {
       watchdogTickRef.current += 1;
       if (modeRef.current === "p2p") {
+        // (a) Recover a DEAD leg (stuck "failed").
         for (const [peerId, pc] of p2pConnectionsRef.current) {
           if (pc.connectionState === "failed" && !p2pGraceTimersRef.current.has(peerId)) {
             recoverP2pPeerRef.current(peerId);
+          }
+        }
+        // (b) MESH COMPLETENESS — recover a MISSING leg. If a mode-switch race ever left us
+        // with no connection at all to a peer we should be meshed with, there's no "failed"
+        // PC to catch above, so this is the only thing that heals it: the exact
+        // "Edu no escucha a Franco" case. Every ~9 s, for each peer the room says is here,
+        // if we hold no PC to them, (re)establish it (lower id offers, higher id nudges —
+        // recoverP2pPeer picks). Casters (music, send-only) never mesh, so skip them.
+        if (watchdogTickRef.current % 3 === 0) {
+          const myId = socketRef.current?.id;
+          if (myId) {
+            for (const [peerId, ps] of store.getState().peers) {
+              if (peerId === myId || ps.isMusic) continue;
+              if (!p2pConnectionsRef.current.has(peerId) && !p2pGraceTimersRef.current.has(peerId)) {
+                recoverP2pPeerRef.current(peerId);
+              }
+            }
           }
         }
       } else if (modeRef.current === "sfu") {
@@ -2679,7 +2697,7 @@ export function useMediasoup() {
         if (watchdogTickRef.current % 5 === 0) resyncProducersRef.current();
       }
     }, MEDIA_WATCHDOG_MS);
-  }, []);
+  }, [store]);
   const stopMediaWatchdog = useCallback(() => {
     if (watchdogTimerRef.current != null) {
       window.clearInterval(watchdogTimerRef.current);

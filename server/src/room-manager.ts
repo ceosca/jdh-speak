@@ -5,6 +5,11 @@ import type { ChatMessage } from "./chat-util.js";
 export interface Peer {
   id: string;
   displayName: string;
+  // Membership token of this session (see the join handler). Same across a socket.io
+  // reconnect (the client re-sends its stored token), so it identifies "the same user
+  // reconnecting" — used to drop a stale duplicate peer immediately instead of waiting
+  // out the ping timeout, which would otherwise inflate the count and flap the room mode.
+  token?: string;
   // Mirrors the client's mute toggle (set via producer-pause/-resume, which
   // fire in P2P mode too) so late joiners can render existing peers' state.
   muted: boolean;
