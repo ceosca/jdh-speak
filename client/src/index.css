@@ -11,7 +11,11 @@
   --color-sonic-700: #1e1a30;
   --color-sonic-600: #2a2440;
   --color-sonic-500: #3d3560;
-  --color-sonic-400: #6b5fa0;
+  /* 400 = secondary/hint text on dark. Was #6b5fa0 = only ~3.0-3.3:1 on the sonic-700/800
+     surfaces → failed WCAG 2.2 SC 1.4.3 for the 12px hints (device pickers, etc.). #8b7fc0
+     is ≥4.5:1 on all dark surfaces and still clearly dimmer than sonic-300. Light theme's
+     400 is unchanged (it already passes on white). */
+  --color-sonic-400: #8b7fc0;
   --color-sonic-300: #9b8fd0;
   --color-sonic-200: #c4bbee;
   --color-sonic-100: #e8e4f8;

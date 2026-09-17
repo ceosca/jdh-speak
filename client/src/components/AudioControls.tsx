@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   Mic,
   MicOff,
@@ -92,9 +92,14 @@ export function AudioControls({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsPanelRef = useRef<HTMLDivElement>(null);
   const settingsBtnRef = useRef<HTMLButtonElement>(null);
+  const settingsHeadingId = useId();
 
+  // On open, move focus to the dialog CONTAINER (not the first select) so a screen reader
+  // announces "Ajustes, diálogo" and the user knows a panel opened, then tabs into the
+  // controls. The device list still refreshes/unlocks on open via DeviceSettings' own mount
+  // effect (it mounts when the panel opens), so we don't lose that by not focusing a select.
   useEffect(() => {
-    if (settingsOpen) settingsPanelRef.current?.querySelector("select")?.focus();
+    if (settingsOpen) settingsPanelRef.current?.focus();
   }, [settingsOpen]);
 
   const closeSettings = useCallback(() => {
@@ -133,15 +138,22 @@ export function AudioControls({
         {m.controls_heading()}
       </h2>
 
-      {/* Device pickers popover (mic/speaker). */}
+      {/* Device pickers popover (mic/speaker). Focusable container (tabIndex -1) named by
+          its heading, so opening it announces "Ajustes, diálogo" to a screen reader. */}
       {settingsOpen && (
         <div
           ref={settingsPanelRef}
-          className="absolute bottom-full left-1/2 z-10 mb-3 w-72 -translate-x-1/2 rounded-xl border border-sonic-600 bg-sonic-800 p-4 shadow-2xl"
+          tabIndex={-1}
+          className="absolute bottom-full left-1/2 z-10 mb-3 w-72 -translate-x-1/2 rounded-xl border border-sonic-600 bg-sonic-800 p-4 shadow-2xl focus:outline-none"
           role="dialog"
-          aria-label={m.settings_heading()}
+          aria-labelledby={settingsHeadingId}
         >
-          <h3 className="mb-3 text-sm font-semibold text-sonic-100">{m.settings_heading()}</h3>
+          <h3
+            id={settingsHeadingId}
+            className="mb-3 text-sm font-semibold text-sonic-100"
+          >
+            {m.settings_heading()}
+          </h3>
           <DeviceSettings />
         </div>
       )}
@@ -328,6 +340,7 @@ export function AudioControls({
           className={`${btn} ${settingsOpen ? active : idle}`}
           aria-label={m.settings_open()}
           aria-expanded={settingsOpen}
+          aria-haspopup="dialog"
           title={m.settings_open()}
         >
           <Settings className="h-5 w-5" />

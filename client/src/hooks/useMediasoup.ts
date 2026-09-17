@@ -3,7 +3,7 @@ import { io, type Socket } from "socket.io-client";
 import { Device } from "mediasoup-client";
 import type { Transport, Producer, Consumer } from "mediasoup-client/types";
 import { forceOpusParams } from "../lib/sdp-munger";
-import { applySpeakerToContext, canSelectElementSink } from "../lib/audio-devices";
+import { applySpeakerToContext, canSelectElementSink, resolveSavedDevice } from "../lib/audio-devices";
 import { isIOS, getMicrophoneStream } from "../lib/microphone";
 import { playCue, preloadCueSamples, playTypingTick } from "../lib/sounds";
 import { getIceServers } from "../lib/ice";
@@ -1613,6 +1613,16 @@ export function useMediasoup() {
       const old = localStreamRef.current;
       localStreamRef.current = stream;
       connectMicToGraph(stream);
+      // Remember the picked device's REAL label from the live track (the dropdown label
+      // can be empty when permission hasn't unlocked names yet). Only when the acquired
+      // device IS the requested one (same id) — never overwrite the choice with a
+      // fallback default. Lets the next session re-find it by name if its id rotates.
+      const liveTrack = stream.getAudioTracks()[0];
+      const liveId = liveTrack?.getSettings().deviceId ?? "";
+      const liveLabel = liveTrack?.label ?? "";
+      if (liveId && liveLabel && liveId === store.getState().micDeviceId) {
+        store.getState().setMicDeviceId(liveId, liveLabel);
+      }
       // Jam sends the raw mic directly, so a device change must re-point the
       // producer/senders at the new raw track (a no-op when jam is off).
       void applyJamSendPath();
@@ -2135,6 +2145,81 @@ export function useMediasoup() {
   }, [shareMonitor]);
 
   // --- P2P: create a peer connection ---
+  // Acquire the mic on the user's SAVED device, robust to a deviceId that ROTATED across
+  // sessions (Firefox regenerates ids every session; Chrome sometimes does too). The old
+  // code passed the raw stored id with `ideal`, so a rotated id silently fell back to the
+  // OS DEFAULT device — "elegí un micro, salí y volví, y me puso el Quadcast" (Pablo). Now:
+  //   1. resolve the saved (id,label) to a CURRENTLY-present id via labels (resolveSavedDevice);
+  //   2. acquire it (ideal — never hang on a truly-missing device);
+  //   3. once permission is granted (labels now available), if we landed on the WRONG device
+  //      (ideal fell back), re-acquire the intended one by exact id;
+  //   4. remember the actual device's id+label — but ONLY when it's the intended device, so a
+  //      fallback to the default never overwrites the user's saved choice.
+  // A plain "Predeterminado" selection (no id, no label) skips all of this. The re-acquire
+  // (step 3) is skipped on iOS, which exposes a single input anyway and dislikes a second
+  // getUserMedia mid-session.
+  const getSelectedMicStream = useCallback(
+    async (lowLatency: boolean): Promise<MediaStream> => {
+      const st = useRoomStore.getState();
+      const processing = st.voiceProcessingEnabled && !st.jamMode;
+      const savedId = st.micDeviceId;
+      const savedLabel = st.micDeviceLabel;
+
+      const enumerateMics = async (): Promise<MediaDeviceInfo[]> => {
+        try {
+          return (await navigator.mediaDevices.enumerateDevices()).filter(
+            (d) => d.kind === "audioinput" && d.deviceId,
+          );
+        } catch {
+          return [];
+        }
+      };
+
+      // 1) Resolve to a present id when we can (labels may already be available if the
+      //    browser persists mic permission — the common Chrome case).
+      let targetId = savedId;
+      if (savedId || savedLabel) {
+        const r = resolveSavedDevice(savedId, savedLabel, await enumerateMics());
+        if (r.value) targetId = r.value;
+      }
+
+      // 2) Acquire (ideal, so a genuinely-missing device just falls back instead of failing).
+      let stream = await getMicrophoneStream(targetId, processing, lowLatency, false);
+
+      // Nothing specific requested → default is correct; don't resolve or remember.
+      if (!savedId && !savedLabel) return stream;
+
+      // 3) Permission is granted now → labels are available. If we didn't land on the
+      //    intended device, re-acquire it by exact id (skip on iOS).
+      const mics = await enumerateMics();
+      const r = resolveSavedDevice(savedId, savedLabel, mics);
+      const got = stream.getAudioTracks()[0]?.getSettings().deviceId ?? "";
+      if (!isIOS && r.value && r.value !== got) {
+        try {
+          const better = await getMicrophoneStream(r.value, processing, lowLatency, true);
+          stream.getTracks().forEach((t) => t.stop());
+          stream = better;
+        } catch {
+          /* the intended device is busy/gone — keep what we have */
+        }
+      }
+
+      // 4) Remember the actual device — but only if it's the intended one, so a fallback
+      //    to the default can never overwrite the saved choice (that was the bug).
+      const finalTrack = stream.getAudioTracks()[0];
+      const finalId = finalTrack?.getSettings().deviceId ?? "";
+      const finalLabel = finalTrack?.label ?? "";
+      const onIntended =
+        (!!r.value && finalId === r.value) ||
+        (!!savedLabel && !!finalLabel && finalLabel === savedLabel);
+      if (onIntended && finalId && finalLabel) {
+        store.getState().setMicDeviceId(finalId, finalLabel);
+      }
+      return stream;
+    },
+    [store],
+  );
+
   const ensureLocalStream = useCallback(async () => {
     // Mic-less session: never acquire (or re-acquire) a microphone. Callers
     // build/produce from outDest's silent track instead, guarding the null.
@@ -2144,16 +2229,12 @@ export function useMediasoup() {
     const track = existing?.getAudioTracks()[0];
     if (track && track.readyState === "live") return existing!;
 
-    // Re-acquire mic (on the user's selected device, if any)
-    const stream = await getMicrophoneStream(
-      useRoomStore.getState().micDeviceId,
-      useRoomStore.getState().voiceProcessingEnabled && !useRoomStore.getState().jamMode,
-      useRoomStore.getState().jamMode,
-    );
+    // Re-acquire mic on the user's selected device (robust to id rotation — see above).
+    const stream = await getSelectedMicStream(useRoomStore.getState().jamMode);
     localStreamRef.current = stream;
     connectMicToGraph(stream);
     return stream;
-  }, [connectMicToGraph]);
+  }, [connectMicToGraph, getSelectedMicStream]);
 
   const createP2pConnection = useCallback(
     async (peerId: string, isOfferer: boolean) => {
@@ -2886,14 +2967,11 @@ export function useMediasoup() {
           // the room never loads at all (a silent "timeout al entrar"). After
           // MIC_ACQUIRE_TIMEOUT_MS we give up and join mic-less; they can still
           // listen/chat, and re-enable the mic later from device settings.
+          // Initial join: acquire the SAVED device robustly (resolve a rotated id by
+          // label, correct a fallback-to-default, remember the real id+label) — see
+          // getSelectedMicStream. Never pins a missing device (won't hang).
           stream = await Promise.race([
-            getMicrophoneStream(
-              store.getState().micDeviceId,
-              store.getState().voiceProcessingEnabled && !store.getState().jamMode,
-              store.getState().jamMode,
-              false, // initial join: prefer the stored mic (ideal), never pin it (exact) —
-              // a stored-but-disconnected device must fall back to default, not fail.
-            ),
+            getSelectedMicStream(store.getState().jamMode),
             new Promise<never>((_, rej) =>
               window.setTimeout(
                 () => rej(new Error("mic-acquire-timeout")),
@@ -3727,6 +3805,7 @@ export function useMediasoup() {
       applyAmbience,
       dropPeerVideo,
       startMediaWatchdog,
+      getSelectedMicStream,
       store,
     ],
   );

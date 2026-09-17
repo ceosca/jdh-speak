@@ -207,8 +207,11 @@ export function DeviceSettings() {
   const labelOf = (list: MediaDeviceInfo[], id: string) =>
     list.find((d) => d.deviceId === id)?.label ?? "";
 
+  // NOTE: no `focus:outline-none` — that overrode the global `*:focus-visible` 2px outline
+  // and left only a 1px border colour change (~3.3:1), failing WCAG 2.2 SC 2.4.11 Focus
+  // Appearance. Keeping the border tint AND the global outline gives a clear focus ring.
   const selectClass =
-    "w-full rounded-lg border border-sonic-600 bg-sonic-700 px-2.5 py-1.5 text-sm text-sonic-100 transition-colors focus:border-sonic-accent focus:outline-none";
+    "w-full rounded-lg border border-sonic-600 bg-sonic-700 px-2.5 py-1.5 text-sm text-sonic-100 transition-colors focus:border-sonic-accent";
 
   return (
     <div className="space-y-3">
@@ -246,6 +249,7 @@ export function DeviceSettings() {
             value={speakerValue}
             onChange={(e) => setSpeakerDeviceId(e.target.value, labelOf(speakers, e.target.value))}
             onFocus={() => void refresh()}
+            aria-describedby={mics.length === 0 ? micHintId : undefined}
             className={selectClass}
           >
             <option value="">{m.settings_default_device()}</option>

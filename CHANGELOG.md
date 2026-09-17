@@ -10,6 +10,43 @@
 
 ## 2026-09-16
 
+### El micrófono guardado se restaura de verdad (aunque el navegador le rote el id) + a11y de los selectores
+
+Pablo: elegía un micro, salía y volvía, y le ponía el Quadcast. **Causa raíz:** el micro se
+adquiría con el `deviceId` guardado **crudo** y constraint `ideal`; si ese id **rotó** entre
+sesiones (Firefox lo regenera siempre; Chrome a veces), `ideal` cae **silenciosamente al
+dispositivo por defecto del SO** (el Quadcast). La etiqueta que guardábamos NO se usaba al
+capturar — solo el panel la usaba para el display, y solo si se abría. El fix anterior (match
+por etiqueta) arreglaba el desplegable, no la captura.
+
+- **Fix de raíz** (`getSelectedMicStream` en `useMediasoup.ts`, usado en el join y en cada
+  re-adquisición): (1) resuelve el device guardado a un id PRESENTE por etiqueta antes de
+  capturar; (2) captura con `ideal` (nunca cuelga si el device no está); (3) ya con permiso
+  (etiquetas disponibles), si cayó en el device equivocado, **re-adquiere el correcto por id
+  exacto** (salvo iOS, que expone un solo input); (4) recuerda el id+etiqueta reales del track
+  — pero SOLO si es el device intencionado, así un fallback al default **nunca** pisa la
+  elección guardada (si el device está ausente, se recuerda para cuando se reconecte). El
+  cambio manual de micro también graba la etiqueta real del track.
+- **Verificado:** 6 escenarios simulados con el `resolveSavedDevice` real (id estable, id
+  rotado en Chrome, Firefox sin etiquetas pre-permiso, device ausente que NO sobrescribe,
+  Predeterminado, iOS) — todos pasan; incluye el caso exacto de Pablo.
+
+**Accesibilidad de los combos de dispositivos (auditoría WCAG 2.2 AA + outcomes de WCAG 3.0,
+2 agentes):**
+- **Foco visible (SC 2.4.11):** los `<select>` tenían `focus:outline-none`, que anulaba el
+  outline global de 2px y dejaba solo un cambio de borde de 1px (~3.3:1). Quitado → vuelve el
+  outline de 2px en foco de teclado. Verificado en vivo (outline 2px, antes ninguno).
+- **Contraste (SC 1.4.3):** el token oscuro `--color-sonic-400` (#6b5fa0) daba ~3.0–3.3:1 en
+  los textos de ayuda de 12px sobre las superficies oscuras. Subido a **#8b7fc0** (4.73–5.18:1,
+  verificado en vivo), sin tocar el tema claro (que ya cumplía).
+- **Diálogo de Ajustes:** al abrir, el foco va al CONTENEDOR del diálogo (no al primer select),
+  con `aria-labelledby` al título → un lector anuncia "Ajustes de audio, diálogo". El engranaje
+  ganó `aria-haspopup="dialog"`. La pista de "los nombres aparecen al dar permiso" ahora se
+  asocia también al select de altavoces. (Se mantuvo NO-modal a propósito: sin trampa de foco,
+  para no romper "seguir operando la app" ni los atajos globales.)
+- Verificado en el DOM en vivo (diálogo enfocado + labelledby, engranaje haspopup, outline 2px,
+  contraste 4.73–5.18:1). **Cambio de cliente = build, sin restart.**
+
 ### Robustez de conexión: recuperar cortes de media sin refrescar (P2P + SFU)
 
 Franco (y a veces Edu) se caían seguido y a veces alguien quedaba mudo para otro (Edu oía a
