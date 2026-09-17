@@ -6,6 +6,7 @@ import {
   VolumeX,
   Video,
   VideoOff,
+  SwitchCamera,
   ScreenShare,
   ScreenShareOff,
   Download,
@@ -46,6 +47,8 @@ interface AudioControlsProps {
   onToggleAudioShare: () => void;
   // Turn your own camera on/off (opt-in video call). Default off.
   onToggleCamera: () => void;
+  // Flip front/rear camera (phones). Only shown on touch devices while the camera is on.
+  onFlipCamera: () => void;
   // Opens (or closes) the virtual player — the home of local files/folders.
   onOpenPlayer: () => void;
   // Whether the player window is currently showing (for the button's pressed state).
@@ -70,6 +73,7 @@ export function AudioControls({
   onToggleSpeakers,
   onToggleAudioShare,
   onToggleCamera,
+  onFlipCamera,
   onOpenPlayer,
   playerOpen,
   onOpenUrl,
@@ -93,6 +97,14 @@ export function AudioControls({
   const settingsPanelRef = useRef<HTMLDivElement>(null);
   const settingsBtnRef = useRef<HTMLButtonElement>(null);
   const settingsHeadingId = useId();
+  // Touch device (phone/tablet) → the only place a front/rear flip makes sense. Computed
+  // once; matchMedia('(pointer: coarse)') covers phones, maxTouchPoints is the fallback.
+  const [isTouchDevice] = useState(
+    () =>
+      typeof navigator !== "undefined" &&
+      (navigator.maxTouchPoints > 0 ||
+        (typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches)),
+  );
 
   // On open, move focus to the dialog CONTAINER (not the first select) so a screen reader
   // announces "Ajustes, diálogo" and the user knows a panel opened, then tabs into the
@@ -241,6 +253,22 @@ export function AudioControls({
             {cameraOn ? m.controls_camera_off_short() : m.controls_camera_short()}
           </span>
         </button>
+
+        {/* Flip front/rear camera — phones only (a touch device), and only while the
+            camera is on. On a laptop with one webcam it's meaningless, so it's hidden. */}
+        {cameraOn && isTouchDevice && (
+          <button
+            onClick={onFlipCamera}
+            className={`${btn} ${idle}`}
+            aria-label={m.controls_flip_camera()}
+            title={m.controls_flip_camera_title()}
+          >
+            <SwitchCamera className="h-5 w-5" />
+            <span aria-hidden="true" className={lbl}>
+              {m.controls_flip_camera_short()}
+            </span>
+          </button>
+        )}
 
         {divider}
 

@@ -81,6 +81,7 @@ export function Room() {
     toggleSpeakers,
     toggleAudioShare,
     toggleCamera,
+    flipCamera,
     startPlaylist,
     startFolderStream,
     startUrlStream,
@@ -226,6 +227,7 @@ export function Room() {
   const displayName = useRoomStore((s) => s.displayName);
   const peers = useRoomStore((s) => s.peers);
   const localVideoStream = useRoomStore((s) => s.localVideoStream);
+  const cameraFacing = useRoomStore((s) => s.cameraFacing);
   const isMuted = useRoomStore((s) => s.isMuted);
   const hasMic = useRoomStore((s) => s.hasMic);
   const localSpeaking = useRoomStore((s) => s.localSpeaking);
@@ -861,10 +863,14 @@ export function Room() {
                     videoStream: localVideoStream,
                   },
                   isLocal: true,
+                  // Mirror the self-view for the FRONT camera (like every video app); the
+                  // rear camera shows the real scene, so it's NOT mirrored.
+                  mirror: cameraFacing === "user",
                 });
               }
               for (const peer of peerList) {
-                if (peer.videoOn || peer.videoStream) videoTiles.push({ peer, isLocal: false });
+                if (peer.videoOn || peer.videoStream)
+                  videoTiles.push({ peer, isLocal: false, mirror: false });
               }
               return <VideoGallery tiles={videoTiles} />;
             })()}
@@ -920,6 +926,7 @@ export function Room() {
             onToggleSpeakers={toggleSpeakers}
             onToggleAudioShare={toggleAudioShare}
             onToggleCamera={toggleCamera}
+            onFlipCamera={flipCamera}
             onOpenPlayer={openPlayer}
             playerOpen={playerOpen || fileStreamName != null}
             onOpenUrl={openUrl}

@@ -3989,6 +3989,28 @@ export function useMediasoup() {
   // produces it (ensureVideoProducer in setupSfu). Turning OFF: close the producer,
   // stop the camera, and tell the server (which closes it for the others too and
   // may drop the room back to P2P). Default off; only this button turns it on.
+  // Acquire the camera on the given facing ("user" = front, "environment" = rear).
+  // facingMode is `ideal` so a device with only one camera never fails — it just keeps
+  // the one it has. Reflects an OS/browser stop as "camera off".
+  const acquireCameraStream = useCallback(
+    async (facing: "user" | "environment"): Promise<MediaStream> => {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          frameRate: { ideal: 24 },
+          facingMode: facing,
+        },
+        audio: false,
+      });
+      stream.getVideoTracks()[0]?.addEventListener("ended", () => {
+        if (store.getState().cameraOn) void toggleCameraRef.current?.();
+      });
+      return stream;
+    },
+    [store],
+  );
+
   const toggleCamera = useCallback(async () => {
     if (store.getState().cameraOn) {
       videoProducerRef.current?.close();
@@ -4003,15 +4025,7 @@ export function useMediasoup() {
     }
     let stream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          frameRate: { ideal: 24 },
-          facingMode: "user",
-        },
-        audio: false,
-      });
+      stream = await acquireCameraStream(store.getState().cameraFacing);
     } catch (err) {
       console.warn("[camera] getUserMedia failed:", err);
       store.getState().announce(m.camera_error());
@@ -4019,17 +4033,45 @@ export function useMediasoup() {
     }
     cameraStreamRef.current = stream;
     store.getState().setLocalVideo(stream); // self-view + cameraOn=true
-    // If the camera track is stopped from the OS/browser UI, reflect it as off.
-    stream.getVideoTracks()[0]?.addEventListener("ended", () => {
-      if (store.getState().cameraOn) void toggleCameraRef.current?.();
-    });
     socketRef.current?.emit("set-camera", { on: true }); // forces the room to SFU
     await ensureVideoProducer(); // produces now if already SFU; else setupSfu will
     store.getState().announceEvent(m.event_camera_on_self());
     playCue(sharedAudioContext, "share-start");
-  }, [store, ensureVideoProducer]);
+  }, [store, ensureVideoProducer, acquireCameraStream]);
   // Stable ref so the track-"ended" listener can call the latest toggleCamera.
   toggleCameraRef.current = toggleCamera;
+
+  // Flip between the front and rear phone cameras WITHOUT dropping the call: re-acquire on
+  // the other facing and swap the track into the live producer (replaceTrack — no
+  // renegotiation, since video is SFU). No-op unless the camera is already on. If the flip
+  // fails (device has only one camera, or it's busy), we keep the current camera.
+  const flipCamera = useCallback(async () => {
+    if (!store.getState().cameraOn) return;
+    const next = store.getState().cameraFacing === "user" ? "environment" : "user";
+    let stream: MediaStream;
+    try {
+      stream = await acquireCameraStream(next);
+    } catch (err) {
+      console.warn("[camera] flip failed:", err);
+      store.getState().announce(m.camera_error());
+      return;
+    }
+    const newTrack = stream.getVideoTracks()[0] ?? null;
+    const prod = videoProducerRef.current;
+    if (prod && !prod.closed && newTrack) {
+      try {
+        await prod.replaceTrack({ track: newTrack });
+      } catch (err) {
+        console.warn("[camera] replaceTrack on flip failed:", err);
+      }
+    }
+    const old = cameraStreamRef.current;
+    cameraStreamRef.current = stream;
+    store.getState().setCameraFacing(next);
+    store.getState().setLocalVideo(stream); // update the self-view to the new camera
+    old?.getTracks().forEach((t) => t.stop());
+    store.getState().announce(next === "user" ? m.camera_front() : m.camera_rear());
+  }, [store, acquireCameraStream]);
 
   // --- File streaming: stream a local audio file into the call as a SEPARATE
   // stereo "file" producer. Independent of the audio share; the file is decoded
@@ -5329,6 +5371,7 @@ export function useMediasoup() {
     toggleSpeakers,
     toggleAudioShare,
     toggleCamera,
+    flipCamera,
     startPlaylist,
     startFolderStream,
     startUrlStream,

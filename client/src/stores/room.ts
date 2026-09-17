@@ -47,6 +47,7 @@ const SECONDARY_ENABLED_KEY = "jdh-speak:secondaryEnabled";
 const SECONDARY_DEVICE_KEY = "jdh-speak:secondaryDeviceId";
 const SECONDARY_MONITOR_KEY = "jdh-speak:secondaryMonitor";
 const MIC_MONITOR_KEY = "jdh-speak:micMonitor";
+const CAMERA_FACING_KEY = "jdh-speak:cameraFacing";
 const SHARE_MONITOR_KEY = "jdh-speak:shareMonitor";
 const FILE_VOLUME_KEY = "jdh-speak:fileVolume";
 const PLAYER_REPEAT_KEY = "jdh-speak:playerRepeat";
@@ -212,6 +213,9 @@ interface RoomState {
   // `localVideoStream` is your own camera feed for the self-view (null when off).
   cameraOn: boolean;
   localVideoStream: MediaStream | null;
+  // Which camera the phone should use: "user" = front (default, self-view mirrored),
+  // "environment" = rear (not mirrored). Persisted so a flip sticks across sessions.
+  cameraFacing: "user" | "environment";
   // Local-file streaming (independent of the audio share): the name of the file
   // currently being streamed into the call (null = not streaming), and whether
   // it's playing or paused. Drives the floating file-player window and the
@@ -371,6 +375,7 @@ interface RoomState {
   setSharingAudio: (sharing: boolean) => void;
   // Camera: your own feed (self-view + toggle state) and per-peer video streams.
   setLocalVideo: (stream: MediaStream | null) => void;
+  setCameraFacing: (facing: "user" | "environment") => void;
   setPeerVideo: (peerId: string, stream: MediaStream | null) => void;
   setFileStream: (name: string | null) => void;
   setFileStreamPlaying: (playing: boolean) => void;
@@ -458,6 +463,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   isSharingAudio: false,
   cameraOn: false,
   localVideoStream: null,
+  cameraFacing: loadString(CAMERA_FACING_KEY) === "environment" ? "environment" : "user",
   fileStreamName: null,
   fileStreamPlaying: false,
   playerIsUrl: false,
@@ -530,6 +536,10 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setSharingAudio: (isSharingAudio) => set({ isSharingAudio }),
 
   setLocalVideo: (stream) => set({ localVideoStream: stream, cameraOn: !!stream }),
+  setCameraFacing: (cameraFacing) => {
+    saveString(CAMERA_FACING_KEY, cameraFacing);
+    set({ cameraFacing });
+  },
 
   setPeerVideo: (peerId, stream) =>
     set((state) => {
@@ -855,6 +865,8 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       isSharingAudio: false,
       cameraOn: false,
       localVideoStream: null,
+      // cameraFacing is a persisted preference — keep it across a reset/leave.
+      cameraFacing: get().cameraFacing,
       fileStreamName: null,
       fileStreamPlaying: false,
       playerIsUrl: false,

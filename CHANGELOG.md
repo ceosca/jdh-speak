@@ -10,6 +10,24 @@
 
 ## 2026-09-17
 
+### Botón "Girar cám." — cambiar entre cámara frontal y trasera (celulares)
+
+En el teléfono, un botón para alternar la cámara frontal ↔ trasera durante la videollamada.
+
+- Antes la cámara estaba fija a la frontal (`facingMode: "user"` hardcodeado). Ahora la
+  elección vive en el store (`cameraFacing`, persistida) y `flipCamera` la alterna: re-adquiere
+  con el otro `facingMode` y hace `replaceTrack` en el producer de video **sin renegociar** (el
+  video ya va por SFU) — cambio en caliente, sin cortar la llamada. Si el flip falla (un solo
+  lente, o cámara ocupada) se queda con la actual y avisa.
+- El botón se muestra **solo en dispositivos táctiles** (celu/tablet) y solo con la cámara
+  encendida — en una laptop con una sola webcam no tiene sentido, así que se oculta.
+- El self-view se **espeja solo con la cámara frontal**; la trasera muestra la escena real sin
+  espejar. Anuncio a lector de pantalla ("Cámara frontal/trasera").
+- **Verificado en el componente real** (viewport móvil + cámara falsa por el store): el botón
+  aparece en móvil y se oculta en desktop, y el espejo se activa/desactiva según frontal/trasera.
+  El switch real de lente (getUserMedia por facingMode) no se puede probar sin cámara en el
+  entorno, pero es el patrón estándar. **Cliente = build, sin restart.**
+
 ### Galería de video de verdad (cámaras grandes, no "hileras" apretadas)
 
 Kati: con las cámaras encendidas, la gente se veía como una hilera de miniaturas apretadas,

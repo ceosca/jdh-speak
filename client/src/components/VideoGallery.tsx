@@ -40,6 +40,8 @@ function useMaxCols(): number {
 interface VideoTile {
   peer: PeerState;
   isLocal: boolean;
+  // Mirror the frame horizontally (front self-view). Rear camera / remote peers: false.
+  mirror?: boolean;
 }
 
 export function VideoGallery({ tiles }: { tiles: VideoTile[] }) {
@@ -56,7 +58,7 @@ export function VideoGallery({ tiles }: { tiles: VideoTile[] }) {
       className="mx-auto mb-6 grid w-full justify-items-center gap-3"
       style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
     >
-      {tiles.map(({ peer, isLocal }) => {
+      {tiles.map(({ peer, isLocal, mirror }) => {
         const speaking = peer.isSpeaking && !peer.isMusic && !peer.isMuted;
         const nameWithYou = isLocal ? `${peer.displayName} (${m.card_you()})` : peer.displayName;
         return (
@@ -76,7 +78,7 @@ export function VideoGallery({ tiles }: { tiles: VideoTile[] }) {
                 }}
                 // object-cover fills the 16:9 tile (no black bars) like every video-call
                 // gallery; a webcam is centred so the slight edge crop doesn't lose the face.
-                className={`h-full w-full bg-black object-cover ${isLocal ? "-scale-x-100" : ""}`}
+                className={`h-full w-full bg-black object-cover ${mirror ? "-scale-x-100" : ""}`}
               />
             ) : (
               <div className="flex h-full w-full items-center justify-center text-sonic-500">
