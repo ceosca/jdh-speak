@@ -273,6 +273,11 @@ const CONNECT_TIMEOUT_MS = 25000;
 const P2P_ICE_GRACE_MS = 4000;
 const SFU_ICE_GRACE_MS = 4000;
 const MEDIA_WATCHDOG_MS = 3000;
+// A P2P leg that hasn't reached "connected"/"completed" within this long since it was
+// created is treated as STUCK and rebuilt (offer/answer or an ICE candidate was lost, or a
+// glare cross-wired it — none of which flip the PC to "failed"). Generous, so a merely-slow
+// TURN/ICE handshake on a weak link isn't rebuilt needlessly.
+const P2P_STUCK_MS = 8000;
 // Jam receive cushion: NOT 0 (0 makes NetEQ choppy on the slightest reordering — see
 // above). It's now the user's "Buffer de jitter" slider (jamBufferMinMs, ms), applied
 // live to every receiver, so they trade latency vs stability themselves; default 30 ms
@@ -619,6 +624,12 @@ export function useMediasoup() {
   // producerIds we currently hold a consumer for — used by the resync to consume only
   // what we're MISSING (a missed new-producer / a raced consume) without double-consuming.
   const consumedProducerIdsRef = useRef<Set<string>>(new Set());
+  // When each P2P PC was (re)created — so the watchdog can rebuild a leg STUCK in
+  // "connecting"/"new" (offer/answer or an ICE candidate lost on a flaky link, or a
+  // glare cross-wire) that never reaches "connected" and never flips to "failed" either.
+  // That stuck state was the invisible, unrecoverable case behind "los demás dejan de
+  // escuchar a X tras reconectar". Cleared when the leg is dropped.
+  const p2pCreatedAtRef = useRef<Map<string, number>>(new Map());
   // The media watchdog interval (a safety net over the event handlers): polls every
   // connection's state and triggers recovery even if a state-change event was missed.
   const watchdogTimerRef = useRef<number | null>(null);
@@ -2251,6 +2262,15 @@ export function useMediasoup() {
         stale.close();
         p2pConnectionsRef.current.delete(peerId);
       }
+      // Clear any pending grace timer for this peer — a leftover one would fire against
+      // the PC we're replacing and block the mesh-completeness/stuck branches meanwhile.
+      // (The attempt counter is NOT cleared here: it caps retries within a session and is
+      // reset on a healthy connection or when the peer leaves.)
+      const staleTimer = p2pGraceTimersRef.current.get(peerId);
+      if (staleTimer != null) {
+        window.clearTimeout(staleTimer);
+        p2pGraceTimersRef.current.delete(peerId);
+      }
 
       const localStream = await ensureLocalStream();
       if (localStream) connectMicToGraph(localStream);
@@ -2292,6 +2312,13 @@ export function useMediasoup() {
         }
         setReceiverJitterTarget(e.receiver, jam ? jamMs : JITTER_BUFFER_HINT * 1000);
         const pipeline = createAudioPipeline(remoteTrack);
+        // Destroy any previous pipeline for this peer BEFORE replacing it (a re-offer /
+        // rebuild fires ontrack again). Without this the old MediaStreamSource→gain→bus
+        // stays wired: if its track is still live it DOUBLES the audio, if it's dead the
+        // new one can end up silent, and either way the old nodes leak. The SFU path
+        // already does this; the P2P path didn't — a source of "connected but muted".
+        const prevPipeline = peerAudiosRef.current.get(peerId);
+        if (prevPipeline) destroyAudioPipeline(prevPipeline);
         // Respect deafen / per-peer volume on a (re)built P2P pipeline too —
         // otherwise an SFU→P2P switch resets everyone to full volume and a
         // deafened listener starts hearing audio again.
@@ -2343,6 +2370,7 @@ export function useMediasoup() {
       pc.addEventListener("iceconnectionstatechange", onP2pState);
 
       p2pConnectionsRef.current.set(peerId, pc);
+      p2pCreatedAtRef.current.set(peerId, Date.now()); // for the stuck-leg watchdog
 
       if (isOfferer) {
         // Create offer with stereo 128k low-latency Opus params.
@@ -2663,11 +2691,19 @@ export function useMediasoup() {
     watchdogTimerRef.current = window.setInterval(() => {
       watchdogTickRef.current += 1;
       if (modeRef.current === "p2p") {
-        // (a) Recover a DEAD leg (stuck "failed").
+        const nowMs = Date.now();
+        // (a) Recover a DEAD leg ("failed") OR a leg STUCK never reaching "connected".
+        // The stuck case (present, not failed, never healthy past P2P_STUCK_MS) was the
+        // invisible one: a lost offer/answer/candidate or a glare cross-wire leaves the PC
+        // in "connecting"/"new" forever — Chrome won't flip it to "failed" if it never saw
+        // a remote candidate — so nothing recovered it and that peer stayed silent until a
+        // refresh. Now we rebuild it. Skip while a grace timer is already pending.
         for (const [peerId, pc] of p2pConnectionsRef.current) {
-          if (pc.connectionState === "failed" && !p2pGraceTimersRef.current.has(peerId)) {
-            recoverP2pPeerRef.current(peerId);
-          }
+          if (p2pGraceTimersRef.current.has(peerId)) continue;
+          const failed = pc.connectionState === "failed";
+          const created = p2pCreatedAtRef.current.get(peerId) ?? nowMs;
+          const stuck = !isHealthyState(pc.connectionState) && nowMs - created > P2P_STUCK_MS;
+          if (failed || stuck) recoverP2pPeerRef.current(peerId);
         }
         // (b) MESH COMPLETENESS — recover a MISSING leg. If a mode-switch race ever left us
         // with no connection at all to a peer we should be meshed with, there's no "failed"
@@ -3156,10 +3192,16 @@ export function useMediasoup() {
         pendingProducersRef.current = [];
 
         if (joinRes.mode === "p2p") {
-          // P2P: we're the newcomer, so we offer to every existing peer (they
-          // wait for the offer in the p2p-signal handler).
+          // P2P mesh: ONE consistent rule everywhere — the LOWER socket id offers. So on
+          // join we offer only to existing peers whose id is greater than ours; the ones
+          // with a lower id offer to US (from their peer-joined handler). This makes each
+          // leg have exactly one deterministic offerer, matching switch-to-p2p and the
+          // recovery/watchdog rule — which removes the structural GLARE (both sides offering
+          // the same leg) that used to cross-wire ICE and leave a leg stuck+silent. The
+          // mesh-completeness watchdog re-drives any leg a lost offer would otherwise miss.
+          const myId = socket.id!;
           for (const peer of joinRes.peers) {
-            await createP2pConnection(peer.peerId, true);
+            if (myId < peer.peerId) await createP2pConnection(peer.peerId, true);
           }
         } else {
           // SFU mode: set up transports, then consume existing producers. Each
@@ -3325,7 +3367,13 @@ export function useMediasoup() {
       socket.on(
         "peer-joined",
         ({ peerId, displayName: name }: { peerId: string; displayName: string }) => {
-          store.getState().addPeer(peerId, name);
+          // Guard against a duplicate peer-joined stomping a listener's chosen per-peer
+          // volume/mute (addPeer resets them). Only add if new; otherwise just refresh name.
+          if (!store.getState().peers.has(peerId)) {
+            store.getState().addPeer(peerId, name);
+          } else {
+            store.getState().setPeerName?.(peerId, name);
+          }
           const joinTs = Date.now();
           store.getState().addMessage({
             id: `sys-join-${peerId}-${joinTs}`,
@@ -3335,7 +3383,22 @@ export function useMediasoup() {
             kind: "join",
           });
           playCue(sharedAudioContext, "join");
-          // In P2P mode, the new peer will send us an offer — we wait for it
+          // If a leg to this peer already connected BEFORE they were in the store,
+          // effectiveGain returned 0 (unknown peer) and the pipeline is silent — re-apply
+          // now that they're known, so a race between ontrack and peer-joined can't mute them.
+          const existingPa = peerAudiosRef.current.get(peerId);
+          if (existingPa) existingPa.gainNode.gain.value = effectiveGain(peerId);
+          // P2P mesh: the LOWER id offers. If WE are the lower id, establish the leg to the
+          // newcomer NOW (don't just wait for their offer) — the newcomer only offers to
+          // peers with a higher id than itself, so for a lower-id existing peer nobody else
+          // will. This makes the mesh form bidirectionally with exactly one offerer per leg.
+          const myId = socketRef.current?.id;
+          if (modeRef.current === "p2p" && myId && myId < peerId) {
+            void runTransition(async () => {
+              if (modeRef.current !== "p2p") return;
+              await createP2pConnection(peerId, true);
+            }).catch((err) => console.error("[p2p] peer-joined offer failed:", err));
+          }
         },
       );
 
@@ -3519,6 +3582,13 @@ export function useMediasoup() {
           p2pConnectionsRef.current.delete(peerId);
         }
         pendingCandidatesRef.current.delete(peerId);
+        // Clear all recovery bookkeeping for this peer (a leftover grace timer would fire
+        // against a gone peer; a stale attempt/createdAt would mis-drive the watchdog).
+        const graceTimer = p2pGraceTimersRef.current.get(peerId);
+        if (graceTimer != null) window.clearTimeout(graceTimer);
+        p2pGraceTimersRef.current.delete(peerId);
+        p2pRecoverAttemptsRef.current.delete(peerId);
+        p2pCreatedAtRef.current.delete(peerId);
         // Clean up audio
         const peerAudio = peerAudiosRef.current.get(peerId);
         if (peerAudio) {
@@ -3612,6 +3682,16 @@ export function useMediasoup() {
             return;
           }
           if (type === "offer") {
+            // Perfect-negotiation guard (impolite side). Under the "lower id offers" rule,
+            // a peer with a HIGHER id than us must never offer us a leg — WE own it. If one
+            // does anyway (a stray/legacy offer, or a race), don't let it blow away our own
+            // in-flight offer: while we already hold a non-failed connection to them, ignore
+            // theirs. We accept only when we have nothing usable, so a leg still bootstraps.
+            const myId = socketRef.current?.id;
+            if (myId && myId < fromPeerId) {
+              const existing = p2pConnectionsRef.current.get(fromPeerId);
+              if (existing && !isFailingState(existing.connectionState)) return;
+            }
             // Candidates already queued for this peer belong to a previous
             // session — a session's candidates always arrive after its offer —
             // so clear them NOW, at offer arrival; everything queued from this
@@ -3824,6 +3904,7 @@ export function useMediasoup() {
       dropPeerVideo,
       startMediaWatchdog,
       getSelectedMicStream,
+      effectiveGain,
       store,
     ],
   );

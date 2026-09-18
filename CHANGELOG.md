@@ -8,7 +8,45 @@
 
 ---
 
-## 2026-09-17
+## 2026-09-18
+
+### Robustez máxima de la malla P2P tras reconexión rápida (los demás dejaban de escuchar a uno)
+
+Cuando un peer se desconectaba y reconectaba MUY rápido, los demás dejaban de escucharlo (a lo
+sumo uno lo escuchaba). Con 2 agentes + una **simulación determinista** encontramos DOS causas
+raíz combinadas:
+
+1. **GLARE por convención inconsistente de quién ofrece.** El que entraba ofrecía a TODOS, pero
+   `switch-to-p2p`/recuperación/watchdog usaban "el id menor ofrece". En los pares donde el que
+   entra tiene id mayor, AMBOS ofrecían la misma pata → las credenciales ICE no matcheaban → la
+   pata quedaba cross-wired y muda. Los únicos que lo escuchaban eran los de id mayor → "a lo
+   sumo uno". `createP2pConnection` no manejaba glare (cerraba a ciegas el PC bueno).
+2. **Las patas ATASCADAS no se recuperaban.** La recuperación solo curaba patas "failed" o
+   AUSENTES. Una pata a medio negociar ("connecting"/"new" para siempre — oferta/answer o un
+   candidato ICE perdido en el enlace flojo del celular, o el cross-wire del glare) quedaba
+   PRESENTE y NO "failed" → nadie la tocaba → mudez permanente hasta refrescar.
+
+Fixes (todo cliente, sin restart):
+- **Una sola regla en TODOS los caminos: el id menor ofrece** (join, peer-joined, switch,
+  recuperación). El que entra ofrece solo a los de id mayor; los de id menor le ofrecen a él
+  (peer-joined ahora arma la pata bidireccional). Un solo ofertante por pata → **glare imposible**.
+- **Recuperación de patas atascadas por timeout** (`P2P_STUCK_MS`=8s): una pata presente que no
+  llega a "connected" se reconstruye. Es el backstop universal: sana cualquier pata rota
+  (oferta perdida, glare, candidato perdido) sin importar la causa.
+- **Guard "impolite"** (perfect-negotiation): el ofertante designado ignora una oferta entrante
+  del lado que no corresponde en vez de romper la suya.
+- **ontrack destruye el pipeline previo** (antes lo pisaba → "conectado pero mudo" o doblado + fuga).
+- **Limpieza de timers/contadores de recuperación** en peer-left y al reconstruir; tope de
+  reintentos subido (reintenta ~minutos, no se rinde a los 80s); re-aplica la ganancia en
+  peer-joined (evita "conectado en volumen 0"); peer-joined no pisa el volumen elegido.
+
+**Verificado con simulación** (300-400 semillas por config; pérdida 0-50%, reordenamiento, 1-3
+reconexiones rápidas seguidas): la lógica VIEJA rompe la malla en la gran mayoría (incluso SIN
+pérdida, por el glare); la NUEVA converge SIEMPRE a malla completa. **Verificado en la app real**:
+malla de 3 completa, y tras una reconexión rápida se rearma en ambos sentidos sin fantasmas ni
+errores de negociación. typecheck+lint+build OK. **Cliente = build, sin restart** (aplica al
+recargar cada uno).
+
 
 ### "Edu no escucha a Franco": el flapping P2P↔SFU en el borde 5↔6 (causa raíz)
 

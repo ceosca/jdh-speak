@@ -44,9 +44,12 @@ export function recoveryBackoffMs(attempt: number, base = 2000, max = 15000): nu
   return Math.min(max, base * 2 ** Math.max(0, attempt - 1));
 }
 
-// Give up after this many attempts (then the user can refresh). Generous — the point is
-// to stop an infinite storm, not to abandon a recoverable link early.
-export const MAX_RECOVERY_ATTEMPTS = 10;
+// Give up after this many attempts (then the user can refresh). High on purpose: the
+// watchdog already rate-limits retries (seconds apart), so this isn't a storm guard so much
+// as a final backstop — we'd rather keep trying to (re)hear someone for minutes than abandon
+// a link that's merely flaky. The counter is per-connection and resets on a healthy link or
+// when the peer leaves/rejoins (a rejoin brings a new socket id → a fresh counter).
+export const MAX_RECOVERY_ATTEMPTS = 40;
 export function shouldKeepRetrying(attempt: number, max = MAX_RECOVERY_ATTEMPTS): boolean {
   return attempt <= max;
 }
