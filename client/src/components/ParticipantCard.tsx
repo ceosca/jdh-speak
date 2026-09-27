@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { Mic, Volume2, Music, UserPen } from "lucide-react";
+import { Mic, Volume2, Music, UserPen, Headphones } from "lucide-react";
 import type { PeerState } from "../stores/room";
 import { m } from "../paraglide/messages.js";
 
@@ -12,6 +12,11 @@ interface ParticipantCardProps {
   // Local card only: your outgoing mic gain (send-side), and its setter.
   micGain?: number;
   onMicGainChange?: (gain: number) => void;
+  // Local card only: call OUTPUT volume (everything you hear, 0..1), and its setter.
+  // Shown even without a mic — listeners need it too. Goes down to real silence,
+  // which the iPhone hardware buttons can't do during a call.
+  outputVolume?: number;
+  onOutputVolumeChange?: (volume: number) => void;
   // Local card only: open the "change name" prompt.
   onChangeName?: () => void;
   // Local card only: monitor your own primary mic locally (hear yourself).
@@ -42,6 +47,8 @@ export function ParticipantCard({
   textOnly,
   micGain,
   onMicGainChange,
+  outputVolume,
+  onOutputVolumeChange,
   onChangeName,
   micMonitor,
   onToggleMicMonitor,
@@ -58,6 +65,13 @@ export function ParticipantCard({
       onMicGainChange?.(parseFloat(e.target.value));
     },
     [onMicGainChange],
+  );
+
+  const handleOutputVolume = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      onOutputVolumeChange?.(parseFloat(e.target.value));
+    },
+    [onOutputVolumeChange],
   );
 
   const micStatus = peer.isMusic
@@ -198,6 +212,29 @@ export function ParticipantCard({
               className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-sonic-600 accent-sonic-accent"
               aria-label={m.card_your_mic_level()}
               aria-valuetext={`${Math.round((micGain ?? 1) * 100)} %`}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Your own card: the call's OUTPUT volume (how loud you hear everything). */}
+      {isLocal && onOutputVolumeChange && (
+        <div className="w-full">
+          <span aria-hidden="true" className="mb-0.5 block text-[11px] text-sonic-400">
+            {m.card_call_volume_label()}
+          </span>
+          <div className="flex w-full items-center gap-2">
+            <Headphones aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-sonic-400" />
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={outputVolume ?? 1}
+              onChange={handleOutputVolume}
+              className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-sonic-600 accent-sonic-accent"
+              aria-label={m.card_call_volume_aria()}
+              aria-valuetext={`${Math.round((outputVolume ?? 1) * 100)} %`}
             />
           </div>
         </div>

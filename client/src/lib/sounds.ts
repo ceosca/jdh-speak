@@ -1,5 +1,6 @@
 // Short WebAudio cues for UI events (mute/unmute, peer join/leave, chat…).
-// These play locally through the given context's destination — they are never
+// These play locally (context destination, or the call-volume node set via
+// setCueOutput) — they are never
 // routed into the outgoing mic graph, so peers don't hear them. Every voice
 // uses a click-free gain envelope (fast fade-in, exponential fade-out).
 //
@@ -73,6 +74,18 @@ async function loadCueSample(ctx: BaseAudioContext, cue: string): Promise<AudioB
   return null;
 }
 
+// Where cues play. Defaults to the context's destination; the call hook points it at
+// its "Volumen de la llamada" node (setCueOutput) so the join/leave/message sounds
+// follow the call volume like everything else. Only used when it belongs to the same
+// context the cue is created in.
+let cueOutput: AudioNode | null = null;
+export function setCueOutput(node: AudioNode | null) {
+  cueOutput = node;
+}
+function cueOut(ctx: BaseAudioContext): AudioNode {
+  return cueOutput && cueOutput.context === ctx ? cueOutput : ctx.destination;
+}
+
 // Probe every cue once so the FIRST join/leave already uses the operator file
 // (not just later ones). Fire-and-forget; fetches are cheap and cached. Safe to
 // call while the context is suspended — fetch + decodeAudioData don't need it
@@ -119,7 +132,7 @@ export function playTypingTick(ctx: AudioContext) {
   // Slight random pitch per tick so a run of keys doesn't sound like a machine
   // repeating one identical click.
   src.playbackRate.value = 0.94 + Math.random() * 0.12;
-  src.connect(ctx.destination);
+  src.connect(cueOut(ctx));
   src.onended = () => {
     const i = typingVoices.indexOf(src);
     if (i >= 0) typingVoices.splice(i, 1);
@@ -133,8 +146,8 @@ function playSample(ctx: AudioContext, buffer: AudioBuffer) {
   const src = ctx.createBufferSource();
   src.buffer = buffer;
   // Play the file as authored (operator normalises their own file). Routed to
-  // the context destination only — identical local-only path as the synth cues.
-  src.connect(ctx.destination);
+  // the local output only (cueOut) — identical local-only path as the synth cues.
+  src.connect(cueOut(ctx));
   src.start();
 }
 
@@ -181,7 +194,7 @@ function tone(ctx: BaseAudioContext, spec: ToneSpec) {
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
 
   osc.connect(g);
-  g.connect(ctx.destination);
+  g.connect(cueOut(ctx));
   osc.start(t0);
   osc.stop(t0 + dur + 0.02);
 }
@@ -226,7 +239,7 @@ function bell(ctx: BaseAudioContext, spec: BellSpec) {
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
 
   carrier.connect(g);
-  g.connect(ctx.destination);
+  g.connect(cueOut(ctx));
   carrier.start(t0);
   mod.start(t0);
   carrier.stop(t0 + dur + 0.02);
@@ -281,7 +294,7 @@ function noise(ctx: BaseAudioContext, spec: NoiseSpec) {
 
   src.connect(filter);
   filter.connect(g);
-  g.connect(ctx.destination);
+  g.connect(cueOut(ctx));
   src.start(t0);
   src.stop(t0 + dur + 0.02);
 }
@@ -349,7 +362,7 @@ function creak(ctx: BaseAudioContext, spec: CreakSpec) {
   osc.connect(filter);
   filter.connect(am);
   am.connect(env);
-  env.connect(ctx.destination);
+  env.connect(cueOut(ctx));
   osc.start(t0);
   lfo.start(t0);
   osc.stop(t0 + dur + 0.02);

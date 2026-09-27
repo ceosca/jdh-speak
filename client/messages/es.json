@@ -222,7 +222,7 @@
   "settings_speaker_fallback": "Altavoces {n}",
   "settings_labels_hint": "Los nombres de los dispositivos aparecen al conceder acceso al micrófono.",
   "settings_voice_processing_label": "Procesamiento de voz",
-  "settings_voice_processing_hint": "Control de eco, limpieza de ruido y nivel automático",
+  "settings_voice_processing_hint": "Control de eco y limpieza de ruido",
 
   "settings_secondary_label": "Activar placa de transmisión secundaria",
   "settings_secondary_device_label": "Dispositivo secundario",
@@ -291,6 +291,8 @@
   "card_volume_for": "Volumen de {name}",
   "card_monitor_mic": "Monitorear micrófono",
   "card_your_mic_level": "Tu nivel de micrófono",
+  "card_call_volume_label": "Volumen de la llamada",
+  "card_call_volume_aria": "Volumen de la llamada (todo lo que escuchas)",
   "card_mic_level_title": "Nivel de micrófono: {gain}×",
 
   "announce_a_participant": "Un participante",
@@ -388,7 +390,7 @@
 
   "controls_noise_suppression_enable": "Habilitar supresión de ruidos",
   "controls_noise_suppression_disable": "Deshabilitar supresión de ruidos",
-  "controls_noise_suppression_on_title": "Supresión de ruidos activada: control de eco, limpieza de ruido y nivel automático",
+  "controls_noise_suppression_on_title": "Supresión de ruidos activada: control de eco y limpieza de ruido",
   "controls_noise_suppression_off_title": "Supresión de ruidos desactivada: el micrófono se envía sin procesar",
 
   "card_mic_on": "micrófono activado",

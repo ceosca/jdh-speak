@@ -8,6 +8,37 @@
 
 ---
 
+## 2026-09-27 (b)
+
+### Mismo volumen con y sin supresión de ruidos + "Volumen de la llamada" (iPhone)
+
+**Qué 1 — el volumen cambiaba con la supresión.** El toggle de supresión encendía también el
+**AGC** (`autoGainControl = voiceProcessingEnabled` en `client/src/lib/microphone.ts`), que sube a
+quien tiene el micrófono bajo. **Cómo:** `autoGainControl: false` siempre; EC/NS siguen el toggle.
+**Medido E2E** (app real, Edge headless con mic falso de voz, P2P y SFU, lo que recibe el otro):
+voz baja **+15,9 dB → 0,3 dB** de diferencia on/off; voz normal ~0,2 dB. El residuo es lo que quita
+el supresor, no ganancia. Textos de la UI ya no prometen "nivel automático".
+**Además:** al cambiar de modo el mic se re-abre y el centrado mono se reseteaba a estéreo → ~1,2 s
+solo por la IZQUIERDA (−6 dB para receptor mono). `detectMonoCentering` ahora arranca centrado y pasa
+a estéreo apenas R tiene señal (~20-50 ms); con el track muteado no decide. Verificado: 0 bloques
+solo-izquierda en todas las transiciones (incluido cambiar el modo con el mic silenciado).
+**Límite Safari/iPhone:** WebKit solo soporta `echoCancellation`; con EC usa el VPIO de Apple, cuyo
+AGC viene "On by default" (header `AudioUnitProperties.h`) y WebKit no lo apaga → en Safari la
+supresión puede seguir cambiando el nivel. No se puede corregir desde la web sin perder el control
+de eco.
+
+**Qué 2 — en iPhone el botón físico no baja la llamada a cero.** Con el mic activo WebKit pone la
+sesión en `PlayAndRecord` + `VideoChat` (MediaSessionManagerCocoa) → volumen de llamada de iOS, que
+tiene un piso audible (con o sin supresión). No se puede cambiar desde la web. **Cómo:** nuevo slider
+**"Volumen de la llamada"** en la tarjeta propia (0-100 %, también sin micrófono), persistido en
+`jdh-speak:outputVolume`. Nodo `masterVolume` (masterMute → masterVolume → destination) + gemelo
+`jamVolume` en modo ensayo; avisos (`setCueOutput` en `sounds.ts`) y metrónomo pasan por él; el
+monitor de red en placa dedicada usa `el.volume`. Arranca con el valor guardado (no suena fuerte al
+entrar). **Medido:** 100 % = 0 dB, 50 % = −6,02 dB, 0 % = silencio digital; avisos, jam, mute de
+altavoces y recarga OK. Los caminos de jam aparcados (WT mesh/monitor, generator) no lo aplican.
+
+Solo cliente: `git pull && pnpm --filter client build` en el Pi, sin restart.
+
 ## 2026-09-27
 
 ### Grabación: capturas vacías fuera de la mezcla y del zip (`f49e692`)

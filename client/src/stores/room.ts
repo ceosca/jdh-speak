@@ -22,6 +22,23 @@ function loadMicGain(): number {
   return 1;
 }
 
+// Call OUTPUT volume (what YOU hear: every peer, shared audio, files, monitors) —
+// 0..1, persisted like micGain. Exists because on iPhone the hardware volume
+// buttons can't take a call to silence: while the mic is live WebKit puts the audio
+// session in iOS "video chat" mode, whose call volume has an audible minimum. This
+// in-app volume goes all the way to 0 on every platform.
+const OUTPUT_VOLUME_KEY = "jdh-speak:outputVolume";
+
+function loadOutputVolume(): number {
+  try {
+    const v = parseFloat(localStorage.getItem(OUTPUT_VOLUME_KEY) ?? "");
+    if (Number.isFinite(v)) return Math.min(1, Math.max(0, v));
+  } catch {
+    // localStorage unavailable (e.g. private mode) — fall back to full volume.
+  }
+  return 1;
+}
+
 // Selected audio devices ("" = browser default). Per-device preferences like
 // micGain: persisted, and carried from the lobby preview into the call.
 const MIC_DEVICE_KEY = "jdh-speak:micDeviceId";
@@ -202,6 +219,8 @@ interface RoomState {
   // back into their open mic (no feedback/acople) and stops their own source
   // duplicating out the speakers. Not persisted (a live control; resets each visit).
   speakersMuted: boolean;
+  // Call output volume (0..1), persisted. See OUTPUT_VOLUME_KEY.
+  outputVolume: number;
   // Are YOU speaking right now (from your mic level, gated by mute)? Drives the
   // "you are talking" indicator on your own card. Visual only — never announced.
   localSpeaking: boolean;
@@ -372,6 +391,7 @@ interface RoomState {
   setMuted: (muted: boolean) => void;
   setDeafened: (deafened: boolean) => void;
   setSpeakersMuted: (muted: boolean) => void;
+  setOutputVolume: (volume: number) => void;
   setSharingAudio: (sharing: boolean) => void;
   // Camera: your own feed (self-view + toggle state) and per-peer video streams.
   setLocalVideo: (stream: MediaStream | null) => void;
@@ -460,6 +480,7 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   jamUiVisible: loadJamUiVisible(),
   isDeafened: false,
   speakersMuted: false,
+  outputVolume: loadOutputVolume(),
   isSharingAudio: false,
   cameraOn: false,
   localVideoStream: null,
@@ -533,6 +554,16 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setMuted: (isMuted) => set({ isMuted }),
   setDeafened: (isDeafened) => set({ isDeafened }),
   setSpeakersMuted: (speakersMuted) => set({ speakersMuted }),
+  setOutputVolume: (volume) => {
+    if (!Number.isFinite(volume)) return;
+    const outputVolume = Math.min(1, Math.max(0, volume));
+    try {
+      localStorage.setItem(OUTPUT_VOLUME_KEY, String(outputVolume));
+    } catch {
+      // Persistence is best-effort; keep the in-memory value regardless.
+    }
+    set({ outputVolume });
+  },
   setSharingAudio: (isSharingAudio) => set({ isSharingAudio }),
 
   setLocalVideo: (stream) => set({ localVideoStream: stream, cameraOn: !!stream }),

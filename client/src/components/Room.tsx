@@ -232,6 +232,8 @@ export function Room() {
   const hasMic = useRoomStore((s) => s.hasMic);
   const localSpeaking = useRoomStore((s) => s.localSpeaking);
   const micGain = useRoomStore((s) => s.micGain);
+  const outputVolume = useRoomStore((s) => s.outputVolume);
+  const setOutputVolume = useRoomStore((s) => s.setOutputVolume);
   const micMonitor = useRoomStore((s) => s.micMonitor);
   const setMicMonitor = useRoomStore((s) => s.setMicMonitor);
   const mode = useRoomStore((s) => s.mode);
@@ -898,6 +900,8 @@ export function Room() {
                   textOnly={!hasMic}
                   micGain={micGain}
                   onMicGainChange={hasMic ? setMicGain : undefined}
+                  outputVolume={outputVolume}
+                  onOutputVolumeChange={setOutputVolume}
                   onChangeName={openChangeName}
                   micMonitor={micMonitor}
                   onToggleMicMonitor={hasMic ? () => setMicMonitor(!micMonitor) : undefined}

@@ -5,7 +5,7 @@ import type { Transport, Producer, Consumer } from "mediasoup-client/types";
 import { forceOpusParams } from "../lib/sdp-munger";
 import { applySpeakerToContext, canSelectElementSink, resolveSavedDevice } from "../lib/audio-devices";
 import { isIOS, getMicrophoneStream } from "../lib/microphone";
-import { playCue, preloadCueSamples, playTypingTick } from "../lib/sounds";
+import { playCue, preloadCueSamples, playTypingTick, setCueOutput } from "../lib/sounds";
 import { getIceServers } from "../lib/ice";
 import {
   isFailingState,
@@ -155,13 +155,40 @@ const masterBus = sharedAudioContext.createGain();
 // kills every sound out the speakers while the mic keeps transmitting. Anti-acople
 // for whoever streams an event: with the speakers silent, the rest of the call
 // can't bleed back into their open mic, and their own source doesn't duplicate out.
-// The metronome (jam) stays direct — it's a jam-only latency path. Module-scoped
+// The metronome (jam) bypasses this mute (it's a jam-only latency path) but still
+// goes through masterVolume (the call volume), which adds no latency. Module-scoped
 // like masterBus so the module-level graph nodes can reach it.
 const masterMute = sharedAudioContext.createGain();
-masterMute.connect(sharedAudioContext.destination);
+// Call OUTPUT volume ("Volumen de la llamada", store.outputVolume): the last node
+// before the output device, right after masterMute, so it scales EVERYTHING the call
+// plays locally. It exists because on iPhone the hardware buttons can't take a call to
+// silence (while the mic is live WebKit sets the iOS "video chat" session mode, whose
+// call volume has an audible floor); this one reaches 0 on every platform. The jam path
+// (masterBus → jamOutDest → jamOutEl) gets the twin `jamVolume` so it's scaled too.
+const masterVolume = sharedAudioContext.createGain();
+// Start at the persisted volume (not 1): the context is often still suspended at
+// mount (iOS / autoplay policy), so a ramp from 1 wouldn't progress until it resumes —
+// the join cue would blast at full volume for someone who left it at 0. The same
+// target seeds jamVolume (reading masterVolume.gain.value would return a stale 1 or a
+// mid-ramp value while the context is suspended/ramping).
+let outputVolumeTarget = clampVolume(useRoomStore.getState().outputVolume);
+masterVolume.gain.value = outputVolumeTarget;
+masterMute.connect(masterVolume);
+masterVolume.connect(sharedAudioContext.destination);
 masterBus.connect(masterMute);
 let jamOutEl: HTMLAudioElement | null = null;
 let jamOutDest: MediaStreamAudioDestinationNode | null = null;
+let jamVolume: GainNode | null = null;
+function clampVolume(volume: number): number {
+  return Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 1;
+}
+function applyOutputVolume(volume: number) {
+  const v = clampVolume(volume);
+  outputVolumeTarget = v;
+  const now = sharedAudioContext.currentTime;
+  masterVolume.gain.setTargetAtTime(v, now, 0.03);
+  jamVolume?.gain.setTargetAtTime(v, now, 0.03);
+}
 function routeMasterOutput(jam: boolean, speakerDeviceId: string) {
   try {
     masterBus.disconnect();
@@ -169,8 +196,13 @@ function routeMasterOutput(jam: boolean, speakerDeviceId: string) {
     /* not connected */
   }
   if (jam && canSelectElementSink()) {
-    if (!jamOutDest) jamOutDest = sharedAudioContext.createMediaStreamDestination();
-    masterBus.connect(jamOutDest);
+    if (!jamOutDest) {
+      jamOutDest = sharedAudioContext.createMediaStreamDestination();
+      jamVolume = sharedAudioContext.createGain();
+      jamVolume.gain.value = outputVolumeTarget;
+      jamVolume.connect(jamOutDest);
+    }
+    masterBus.connect(jamVolume!);
     if (!jamOutEl) {
       jamOutEl = new Audio();
       jamOutEl.autoplay = true;
@@ -197,6 +229,8 @@ function routeMasterOutput(jam: boolean, speakerDeviceId: string) {
 // Probe once for any operator-provided cue samples (/sounds/<cue>.<ext>) so the
 // first join/leave already uses them; cues with no file fall back to the synth.
 preloadCueSamples(sharedAudioContext);
+// Cues follow the call volume ("Volumen de la llamada"), like everything else.
+setCueOutput(masterVolume);
 
 // setTargetAtTime time-constant (seconds) for per-peer gain ramps. Smaller = snappier.
 const GAIN_RAMP = 0.03;
@@ -681,6 +715,10 @@ export function useMediasoup() {
     centerRKeep: GainNode;
     centerLToR: GainNode;
     centerAnalyserR: AnalyserNode;
+    // Raw mic L tap: tells a muted/disabled track (L AND R exactly 0) apart from a
+    // mono-on-the-left capture (L has signal, R is 0), so detection never decides on
+    // a silent track.
+    centerAnalyserL: AnalyserNode;
     // Self-monitor spatialisation (see applyMicMonitor).
     monitorAir: BiquadFilterNode;
     monitorPanner: PannerNode;
@@ -1068,6 +1106,8 @@ export function useMediasoup() {
     centerLToR.gain.value = 0;
     const centerAnalyserR = ctx.createAnalyser();
     centerAnalyserR.fftSize = 2048;
+    const centerAnalyserL = ctx.createAnalyser();
+    centerAnalyserL.fftSize = 2048;
     micGain.connect(limiter);
     limiter.connect(micSplit);
     micSplit.connect(micMerge, 0, 0); // mic L -> output L (always)
@@ -1076,6 +1116,7 @@ export function useMediasoup() {
     micSplit.connect(centerLToR, 0); // mic L -> cross-feed-gain -> output R (when R silent)
     centerLToR.connect(micMerge, 0, 1);
     micSplit.connect(centerAnalyserR, 1); // tap the raw mic R for silence detection
+    micSplit.connect(centerAnalyserL, 0); // tap the raw mic L (is the track live at all?)
     micMerge.connect(outDest);
     // Spatialised self-monitor: when the monitor is on AND spatial audio is on,
     // your own voice is played back through YOUR seat, so you hear yourself
@@ -1117,6 +1158,7 @@ export function useMediasoup() {
       centerRKeep,
       centerLToR,
       centerAnalyserR,
+      centerAnalyserL,
       monitorAir,
       monitorPanner,
       secondarySource: null,
@@ -1129,35 +1171,63 @@ export function useMediasoup() {
     return outGraphRef.current;
   }, [store]);
 
-  // One-shot detection of a SILENT right channel (the iPhone built-in mic arrives as
-  // 2ch with R=zeros; a genuine mono mic is also effectively R-silent). Samples the
-  // mic's R for ~1.2 s and, if it stays essentially zero, cross-fades R := L so the
-  // mono is CENTRED instead of left-only. A real stereo mic (R has a noise floor well
-  // above the threshold) keeps its R untouched. Re-runs on every mic (re)connect.
+  // Detection of a SILENT right channel (the iPhone built-in mic arrives as 2ch with
+  // R=zeros; a genuine mono mic is also effectively R-silent). Starts CENTRED (R := L)
+  // and flips to the mic's own R as soon as R carries signal (a real stereo mic's noise
+  // floor is far above the threshold), so a mono capture is never sent left-only.
+  // Re-runs on every mic (re)connect.
   const detectMonoCentering = useCallback((g: NonNullable<typeof outGraphRef.current>) => {
     if (monoDetectTimerRef.current != null) {
       window.clearInterval(monoDetectTimerRef.current);
       monoDetectTimerRef.current = null;
     }
-    const an = g.centerAnalyserR;
-    const buf = new Float32Array(an.fftSize);
-    let peakR = 0;
-    let n = 0;
-    monoDetectTimerRef.current = window.setInterval(() => {
+    const anR = g.centerAnalyserR;
+    const anL = g.centerAnalyserL;
+    const buf = new Float32Array(anR.fftSize);
+    const peak = (an: AnalyserNode) => {
       an.getFloatTimeDomainData(buf);
+      let p = 0;
       for (let i = 0; i < buf.length; i++) {
         const a = Math.abs(buf[i]);
-        if (a > peakR) peakR = a;
+        if (a > p) p = a;
       }
-      if (++n < 24) return; // ~1.2 s (24 * 50 ms)
-      window.clearInterval(monoDetectTimerRef.current!);
-      monoDetectTimerRef.current = null;
-      // Exactly-zero R = a phantom/mono channel (real mics never hit exactly 0 — they
-      // carry a noise floor orders of magnitude above 1e-6). Centre by R := L.
-      if (peakR < 1e-6) {
-        const now = sharedAudioContext.currentTime;
-        g.centerRKeep.gain.setTargetAtTime(0, now, 0.08);
-        g.centerLToR.gain.setTargetAtTime(1, now, 0.08);
+      return p;
+    };
+    const setCentred = (centre: boolean, tau: number) => {
+      const now = sharedAudioContext.currentTime;
+      g.centerRKeep.gain.setTargetAtTime(centre ? 0 : 1, now, tau);
+      g.centerLToR.gain.setTargetAtTime(centre ? 1 : 0, now, tau);
+    };
+    // Start CENTRED (R := L) on every (re)connect. Sending L on both sides never changes
+    // the level, whereas the old "start stereo, then decide" sent a mono capture — or a
+    // stereo mic that turned mono with voice processing on (WebKit) — LEFT-ONLY for the
+    // whole ~1.2 s detection: a mono receiver heard ≈ −6 dB right after every
+    // suppression toggle. Flip to the mic's own R the MOMENT R shows signal (a real
+    // stereo mic has a noise floor on R orders of magnitude above 1e-6), so a genuine
+    // stereo mic is only centred for a few tens of ms.
+    setCentred(true, 0.02);
+    let silentRTicks = 0;
+    monoDetectTimerRef.current = window.setInterval(() => {
+      const r = peak(anR);
+      const l = peak(anL);
+      if (r >= 1e-6) {
+        // Real stereo: keep its own R.
+        window.clearInterval(monoDetectTimerRef.current!);
+        monoDetectTimerRef.current = null;
+        setCentred(false, 0.08);
+        return;
+      }
+      // Track muted/disabled (L and R exactly zero): no information — stay centred and
+      // keep watching (a real stereo mic re-acquired while muted flips once unmuted).
+      if (l < 1e-6) {
+        silentRTicks = 0;
+        return;
+      }
+      // Live L with an exactly-zero R for ~1.2 s → confirmed mono/phantom-R: stay
+      // centred and stop watching.
+      if (++silentRTicks >= 24) {
+        window.clearInterval(monoDetectTimerRef.current!);
+        monoDetectTimerRef.current = null;
       }
     }, 50);
   }, []);
@@ -1174,11 +1244,9 @@ export function useMediasoup() {
       // The mic monitor edge lives on micGain (a permanent node), not on
       // micSource — so it survives this re-acquisition and needs no re-wiring here.
       g.micStream = stream;
-      // Reset to the STEREO default, then re-detect: a device change (e.g. plugging in
-      // a stereo Maono, or back to the built-in) re-evaluates whether to centre.
-      const now = sharedAudioContext.currentTime;
-      g.centerRKeep.gain.setTargetAtTime(1, now, 0.05);
-      g.centerLToR.gain.setTargetAtTime(0, now, 0.05);
+      // Re-detect on every (re)connect — including toggling noise suppression, which
+      // re-opens the mic. Detection starts centred and flips to stereo as soon as the
+      // mic's R carries signal (see detectMonoCentering), so no case sends left-only.
       detectMonoCentering(g);
     },
     [ensureOutGraph, detectMonoCentering],
@@ -1235,6 +1303,14 @@ export function useMediasoup() {
     );
     if (jamOutEl) jamOutEl.muted = speakersMuted;
   }, [speakersMuted, jamMode]);
+
+  // "Volumen de la llamada": scale everything the call plays locally (see masterVolume).
+  const outputVolume = useRoomStore((s) => s.outputVolume);
+  useEffect(() => {
+    applyOutputVolume(outputVolume);
+    const el = netMonitorRef.current?.monitorEl;
+    if (el) el.volume = outputVolume;
+  }, [outputVolume]);
 
   // Jam PEER mesh over WebTransport: hear the others at 2.5 ms Opus over QUIC instead
   // of mediasoup's 10 ms path. When it's up we mute masterBus so the mediasoup peer
@@ -1934,6 +2010,9 @@ export function useMediasoup() {
       nm.gainNode.connect(dest);
       const el = new Audio();
       el.srcObject = dest.stream;
+      // Its own element (not the context destination), so the call volume is applied
+      // here directly. Chrome/Edge only (setSinkId), where element volume is honoured.
+      el.volume = useRoomStore.getState().outputVolume;
       (el as unknown as { setSinkId: (id: string) => Promise<void> })
         .setSinkId(deviceId)
         .catch(() => {
@@ -3498,10 +3577,12 @@ export function useMediasoup() {
         (window as unknown as { __jamClock?: unknown }).__jamClock = clockSyncRef.current;
       }
       if (!metronomeRef.current) {
-        // Route straight to ctx.destination (NOT masterBus): getOutputTimestamp measures
-        // exactly that path, so the per-machine output-latency compensation is accurate.
-        // masterBus → MediaStreamDestination → <audio> would add latency it can't see.
-        metronomeRef.current = new Metronome(sharedAudioContext, sharedAudioContext.destination);
+        // Route to masterVolume → ctx.destination (NOT masterBus): getOutputTimestamp
+        // measures exactly the context-destination path, so the per-machine output-latency
+        // compensation stays accurate — a GainNode adds no latency, it only applies the
+        // call volume. masterBus → MediaStreamDestination → <audio> would add latency it
+        // can't see.
+        metronomeRef.current = new Metronome(sharedAudioContext, masterVolume);
       }
       // The click itself is driven by a store-watching effect (below), so both this
       // broadcast and the join response converge through the same path.

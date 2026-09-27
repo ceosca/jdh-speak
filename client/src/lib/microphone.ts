@@ -24,7 +24,7 @@ export const isAppleWebKit =
     !/Chrome|Chromium|CriOS|Edg|OPR|FxiOS/.test(navigator.userAgent));
 
 // Mic capture constraints. One per-user choice:
-//   - voiceProcessingEnabled: echo cancel / noise suppress / auto gain.
+//   - voiceProcessingEnabled: echo cancel + noise suppress (auto gain is always off).
 // CHANNELS — `channelCount: { ideal: 2 }` on EVERY platform, iOS included. `ideal`
 // (never `exact`) means the browser gives the device's REAL channel count: a mic
 // with two capsules (a stereo interface like the Maono Wave T5, or an iPhone with
@@ -74,7 +74,16 @@ export function microphoneConstraints(
     ...(isIOS ? {} : { sampleRate: 48000 }),
     echoCancellation: voiceProcessingEnabled,
     noiseSuppression: voiceProcessingEnabled,
-    autoGainControl: voiceProcessingEnabled,
+    // AGC is ALWAYS off — never tied to the suppression toggle. It used to follow it,
+    // which made the SAME person louder with "supresión de ruido" on: MEASURED in
+    // Chromium with a real speech file through a fake mic, a quiet (laptop-level) mic
+    // went from −36.6 dB to −22.6 dB (+14 dB) just by flipping suppression on; with AGC
+    // off the loud-speech percentiles match within 0.2–0.5 dB (what the noise
+    // suppressor removes, not a gain change). The mic level is the user's mic slider,
+    // identical in both modes. (WebKit ignores this constraint: with echoCancellation
+    // on it uses Apple's voice-processing unit, whose AGC is on by default and not
+    // reachable from the web.)
+    autoGainControl: false,
     ...(lowLatency ? { latency: { ideal: 0 } } : {}),
     ...(deviceId ? { deviceId: pinDevice ? { exact: deviceId } : { ideal: deviceId } } : {}),
   };
