@@ -1,0 +1,38 @@
+{
+	email <TU_EMAIL_ACME>
+	http_port 8080
+	auto_https disable_redirects
+	servers {
+		protocols h1 h2
+	}
+}
+
+jdh.privatedns.org {
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 5MiB
+			roll_keep 3
+			roll_keep_for 336h
+		}
+		format json
+	}
+
+	# Feed RSS de JustWatch (proyecto aparte: /home/pi/justwatch-rss, servicio
+	# justwatch-rss en :3200). Ruta propia, no toca la app jdh-speak (:3100).
+	handle_path /justwatch-feed* {
+		reverse_proxy 127.0.0.1:3200
+	}
+
+	# App JDH Speak (todo lo demas).
+	handle {
+		reverse_proxy 127.0.0.1:3100
+	}
+
+	# MANTENIMIENTO: si el Node :3100 esta caido, servir pagina de mantenimiento.
+	handle_errors {
+		rewrite * /index.html
+		root * /var/www/maintenance
+		file_server
+		header Retry-After "30"
+	}
+}

@@ -1,0 +1,26 @@
+[Unit]
+StartLimitIntervalSec=0
+Description=SonicRoom (jdh-speak) audio conferencing server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/jdh-speak
+ExecStart=/usr/bin/pnpm start
+Restart=on-failure
+RestartSec=3
+# Carga TODO el .env en el entorno ANTES de arrancar (clave: ANNOUNCED_IP debe
+# existir antes de que mediasoup-config.ts lea process.env).
+EnvironmentFile=/home/pi/jdh-speak/.env
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/pi/jdh-speak
+
+[Install]
+WantedBy=multi-user.target

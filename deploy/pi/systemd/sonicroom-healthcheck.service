@@ -1,0 +1,7 @@
+[Unit]
+Description=Healthcheck/watchdog de sonicroom (revive si se cuelga o crashea)
+After=sonicroom.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/sonicroom-healthcheck.sh

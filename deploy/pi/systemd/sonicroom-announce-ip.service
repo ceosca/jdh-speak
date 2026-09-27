@@ -1,0 +1,8 @@
+[Unit]
+Description=Actualiza ANNOUNCED_IP de SonicRoom con la IP publica actual
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/sonicroom-announce-ip.sh

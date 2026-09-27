@@ -8,6 +8,34 @@
 
 ---
 
+## 2026-09-27
+
+### Grabación: capturas vacías fuera de la mezcla y del zip (`f49e692`)
+
+**Qué:** la descarga mezclada a veces salía de ~1 KB. Se probó a fondo con el ffmpeg del Pi
+(5.1.9) y la mezcla (`buildMixArgs`) funciona con audio real en todos los casos: una o
+varias pistas, con retardo, leyendo mientras se graba, con cortes de RTP y con una pista vacía
+mezclada con una real. El único caso que da ~200 bytes es cuando **todas** las entradas son
+capturas vacías. **Cómo:** `captureHasAudio` / `MIN_CAPTURE_BYTES=1024` en `recording-util.ts`;
+`mix()` y `getTrackFiles()` lo usan en vez de `fileSize > 0`. **Por qué:** una captura que no
+recibió RTP igual es un Ogg válido de ~150-250 bytes (solo cabeceras), y antes se colaba en la
+mezcla. Ahora se descarta, y si no queda ninguna los endpoints dan 404 claro en vez de un
+archivo de 1 KB. Cristian probó en el Pi (antes de este fix) grabaciones de 2-3 min y andan
+las dos descargas; queda por ver si el 1 KB aparece en grabaciones largas (media hora o más).
+**Requiere `git pull` + `sudo systemctl restart sonicroom` para llegar al Pi.**
+
+Además, los 3 tests de `recording.test.ts` que "siempre fallaban" eran solo en Windows (rutas con
+`/` fijas); ahora usan `path.join`/`path.dirname`. Suite server: 98/98.
+
+### Configuración del Pi versionada en `deploy/pi/` (para rollback)
+
+**Qué:** copia de lo que vive fuera del repo en el Pi: unidades systemd (`sonicroom`, watchdog
+`sonicroom-healthcheck`, `sonicroom-announce-ip`), sus scripts de `/usr/local/bin`, el
+`Caddyfile`, `turnserver.conf` y la página de mantenimiento, con un README de dónde va cada cosa
+y cómo restaurar. **Por qué:** poder hacer rollback también de la config, no solo del código.
+Email ACME, IP pública y credenciales del TURN van **censurados**. `.env`, `tv/db.json` y
+`sounds/` siguen fuera de git (secretos o contenido del operador).
+
 ## 2026-09-18
 
 ### Robustez máxima de la malla P2P tras reconexión rápida (los demás dejaban de escuchar a uno)

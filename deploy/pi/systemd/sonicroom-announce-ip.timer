@@ -1,0 +1,10 @@
+[Unit]
+Description=Comprueba la IP publica de SonicRoom cada 10 minutos
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
