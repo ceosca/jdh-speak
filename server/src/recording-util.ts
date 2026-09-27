@@ -139,6 +139,23 @@ export interface MixInput {
   delayMs: number;
 }
 
+// A capture that received (almost) no RTP is still a valid Ogg/Opus file on
+// disk — just the OpusHead + OpusTags headers, ~150-250 bytes, with no audio
+// pages. `-c:a copy` writes those headers the moment ffmpeg starts, before any
+// media arrives. Such a file passes a naive `size > 0` check, so it used to be
+// fed to the mixer and packed into the per-track zip — which is exactly how a
+// recording where no audio ever reached the server produced a ~1 KB "download"
+// (all inputs header-only → amix emits header-only) while the zip still
+// "worked" (a valid zip of empty tracks). We therefore require a capture to
+// carry real audio (well above any header-only file, yet far below even a
+// fraction of a second of Opus voice) before it counts as a mix input or a
+// downloadable track. When NONE qualify the endpoints return a clear "nothing
+// captured yet" instead of a mystery tiny file.
+export const MIN_CAPTURE_BYTES = 1024;
+export function captureHasAudio(size: number): boolean {
+  return size >= MIN_CAPTURE_BYTES;
+}
+
 // Mix N captured Ogg files into a single Ogg Opus stream written to stdout
 // (pipe:1) so the HTTP download can stream it without a temp output file.
 // The source capture files keep being written — mixing does not stop them.

@@ -7,6 +7,8 @@ import {
   sdpParamsFromRtp,
   buildCaptureArgs,
   buildMixArgs,
+  captureHasAudio,
+  MIN_CAPTURE_BYTES,
   decideMode,
   computeDelayMs,
   trackFileName,
@@ -237,6 +239,24 @@ describe("computeDelayMs", () => {
 
   it("clamps negative offsets to zero", () => {
     assert.equal(computeDelayMs(5000, 4000), 0);
+  });
+});
+
+describe("captureHasAudio", () => {
+  it("rejects a missing/empty file", () => {
+    assert.equal(captureHasAudio(0), false);
+  });
+
+  it("rejects a header-only capture (OpusHead+OpusTags, no audio pages)", () => {
+    // real header-only Ogg/Opus files measure ~150-250 bytes
+    assert.equal(captureHasAudio(168), false);
+    assert.equal(captureHasAudio(250), false);
+    assert.equal(captureHasAudio(MIN_CAPTURE_BYTES - 1), false);
+  });
+
+  it("accepts a capture that carries real audio", () => {
+    assert.equal(captureHasAudio(MIN_CAPTURE_BYTES), true);
+    assert.equal(captureHasAudio(50000), true);
   });
 });
 

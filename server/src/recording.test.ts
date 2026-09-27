@@ -1,6 +1,7 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import path from "node:path";
 import type { RtpParameters, RtpCapabilities } from "mediasoup/types";
 import {
   RecordingManager,
@@ -131,8 +132,9 @@ function makeHarness(): Harness {
     rm: async (dir) => {
       rmCalls.push(dir);
     },
-    // pretend capture files exist (have data) unless explicitly marked missing
-    fileSize: (file) => (missingFiles.has(file) ? 0 : 1),
+    // pretend capture files exist with real audio (well above MIN_CAPTURE_BYTES)
+    // unless explicitly marked missing/empty
+    fileSize: (file) => (missingFiles.has(file) ? 0 : 4096),
     sleep: async () => {},
     setTimer: (fn, ms) => {
       const entry = { fn, ms };
@@ -182,7 +184,7 @@ describe("RecordingManager.start", () => {
 
     assert.equal(h.mkdirCalls.length, 1);
     assert.equal(h.mkdirCalls[0], rec.dir);
-    assert.ok(rec.dir.startsWith("/tmp/test-rec/"));
+    assert.equal(path.dirname(rec.dir), path.normalize("/tmp/test-rec"));
 
     assert.equal(rec.recorders.size, 2);
     assert.equal(h.spawned.length, 2);
@@ -323,7 +325,7 @@ describe("RecordingManager.getTrackFiles / tracksByRecordingId", () => {
 
   it("skips tracks whose capture file is missing/empty", async () => {
     const rec = await h.manager.start("room1", h.router, PRODUCERS);
-    h.missingFiles.add(`${rec.dir}/bob__p2.ogg`);
+    h.missingFiles.add(path.join(rec.dir, "bob__p2.ogg"));
     const tracks = h.manager.getTrackFiles("room1");
     assert.equal(tracks.length, 1);
     assert.ok(tracks[0].path.includes("alice__p1"));
@@ -366,7 +368,7 @@ describe("RecordingManager.mix", () => {
   it("skips inputs whose capture file is missing/empty (one bad recorder doesn't kill the mix)", async () => {
     const rec = await h.manager.start("room1", h.router, PRODUCERS);
     // simulate bob's capture having failed to produce a file
-    const bobFile = `${rec.dir}/bob__p2.ogg`;
+    const bobFile = path.join(rec.dir, "bob__p2.ogg");
     h.missingFiles.add(bobFile);
     const before = h.spawned.length;
     const proc = h.manager.mix("room1") as FakeProcess;

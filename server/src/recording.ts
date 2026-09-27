@@ -11,6 +11,7 @@ import {
   sdpParamsFromRtp,
   buildCaptureArgs,
   buildMixArgs,
+  captureHasAudio,
   computeDelayMs,
   trackFileName,
   type MixInput,
@@ -294,7 +295,7 @@ export class RecordingManager {
     if (!rec) return [];
     return this.allRecorders(rec)
       .map((r, i) => ({ path: r.filePath, name: trackFileName(r, i) }))
-      .filter((t) => this.deps.fileSize(t.path) > 0);
+      .filter((t) => captureHasAudio(this.deps.fileSize(t.path)));
   }
 
   // Same as getTrackFiles(), addressed by the (hard-to-guess) recording id that
@@ -312,7 +313,9 @@ export class RecordingManager {
   // failed to start) are skipped, so one bad stream can't zero out the mix.
   // Returns null if there's nothing with audio to mix.
   mix(roomName: string): SpawnedProcess | null {
-    const inputs = this.getMixInputs(roomName).filter((i) => this.deps.fileSize(i.path) > 0);
+    const inputs = this.getMixInputs(roomName).filter((i) =>
+      captureHasAudio(this.deps.fileSize(i.path)),
+    );
     if (inputs.length === 0) return null;
     const args = buildMixArgs(inputs);
     this.deps.log(`mixing ${inputs.length} stream(s) for room "${roomName}"`);
