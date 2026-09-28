@@ -174,7 +174,113 @@ const masterVolume = sharedAudioContext.createGain();
 let outputVolumeTarget = clampVolume(useRoomStore.getState().outputVolume);
 masterVolume.gain.value = outputVolumeTarget;
 masterMute.connect(masterVolume);
-masterVolume.connect(sharedAudioContext.destination);
+// ANDROID: the call plays through an <audio> element that we RE-OPEN after every mic
+// (re)open, instead of straight to the context destination. Why (Chromium source,
+// media/audio/android/audio_manager_android.cc + AudioManagerAndroid.java): opening a mic
+// WITH echo cancellation (= "supresión de ruidos") switches Android to
+// MODE_IN_COMMUNICATION, and each output stream's usage is fixed WHEN IT IS CREATED —
+// VOICE_COMMUNICATION if that mode is on, MEDIA otherwise. Our AudioContext's output
+// was created before the mic opened → MEDIA, while in communication mode the hardware
+// volume buttons drive the CALL stream (STREAM_VOICE_CALL): with suppression on, the
+// phone's volume buttons changed nothing we played (Edu, Chrome Android). Re-opening
+// the element creates a fresh output stream whose usage matches the current mode, so the
+// buttons control what you hear in both modes.
+// iOS (every iOS browser is WebKit) has the same symptom by a different route: with
+// echo cancellation WebKit runs Apple's voice-processing unit (VPIO) and plays
+// MediaStream <audio> elements through ITS speaker bus (call volume, echo-cancelled),
+// while an AudioContext always renders through a separate RemoteIO that VPIO treats as
+// "other audio" (ducked, not following the buttons). WebKit's own recommended
+// workaround is exactly this: render Web Audio via MediaStreamAudioDestinationNode →
+// <audio> (bugs.webkit.org 218012 #c31, 236219). WebKit re-routes such elements live
+// when capture starts/stops, so no re-open is needed there.
+// Desktop keeps the original destination path untouched. A watchdog below falls back to
+// the destination if the element ever fails to play, so this can't leave anyone silent.
+const isAndroid = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
+const useCallOutputElement = isAndroid || isIOS;
+let callOutDest: MediaStreamAudioDestinationNode | null = null;
+let callOutEl: HTMLAudioElement | null = null;
+if (useCallOutputElement) {
+  callOutDest = sharedAudioContext.createMediaStreamDestination();
+  masterVolume.connect(callOutDest);
+  callOutEl = new Audio();
+  callOutEl.autoplay = true;
+  (callOutEl as unknown as Record<string, boolean>).playsInline = true;
+  callOutEl.srcObject = callOutDest.stream;
+} else {
+  masterVolume.connect(sharedAudioContext.destination);
+}
+// Re-open every element that carries call audio so its Android output stream is
+// re-created with the usage of the CURRENT audio mode (see above). No-op off Android.
+function reopenCallOutput() {
+  if (!isAndroid) return;
+  const reopen = (el: HTMLAudioElement | null, stream: MediaStream | undefined) => {
+    if (!el || !stream || !el.srcObject) return;
+    el.srcObject = null;
+    el.srcObject = stream;
+    el.play().catch(() => {});
+  };
+  // A re-open restarts currentTime at 0 — don't let the watchdog read that as "stuck".
+  callOutLastTime = -1;
+  callOutStuckChecks = 0;
+  reopen(callOutEl, callOutDest?.stream);
+  reopen(jamOutEl, jamOutDest?.stream);
+}
+// Safety net: if the call-output element isn't actually playing while the context runs
+// (autoplay rejection, a WebKit MediaStream-playback bug…), retry play() and, if it
+// still doesn't advance, fall back to the plain context destination for the rest of
+// the session. Silence is never an acceptable outcome of this workaround.
+let callOutLastTime = -1;
+let callOutStuckChecks = 0;
+function fallBackToDestination() {
+  if (!callOutEl || !callOutDest) return;
+  try {
+    masterVolume.disconnect(callOutDest);
+  } catch {
+    /* not connected */
+  }
+  masterVolume.connect(sharedAudioContext.destination);
+  try {
+    callOutEl.pause();
+    callOutEl.srcObject = null;
+  } catch {
+    /* gone */
+  }
+  callOutEl = null;
+  callOutDest = null;
+  console.warn("[audio] call-output element not playing — fell back to AudioContext.destination");
+}
+if (useCallOutputElement) {
+  window.setInterval(() => {
+    const el = callOutEl;
+    if (!el || sharedAudioContext.state !== "running") {
+      callOutStuckChecks = 0;
+      return;
+    }
+    const t = el.currentTime;
+    if (!el.paused && t > callOutLastTime) {
+      callOutLastTime = t;
+      callOutStuckChecks = 0;
+      return;
+    }
+    callOutLastTime = t;
+    if (++callOutStuckChecks === 1) {
+      el.play().catch(() => {});
+    } else if (callOutStuckChecks >= 3) {
+      fallBackToDestination();
+    }
+  }, 2000);
+}
+// Debounced: run AFTER the new mic's input stream exists in the browser's audio service
+// (that's when the mode switches), and coalesce bursts of re-acquisitions.
+let reopenCallOutputTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleReopenCallOutput() {
+  if (!isAndroid) return;
+  if (reopenCallOutputTimer) clearTimeout(reopenCallOutputTimer);
+  reopenCallOutputTimer = setTimeout(() => {
+    reopenCallOutputTimer = null;
+    reopenCallOutput();
+  }, 600);
+}
 masterBus.connect(masterMute);
 let jamOutEl: HTMLAudioElement | null = null;
 let jamOutDest: MediaStreamAudioDestinationNode | null = null;
@@ -259,6 +365,8 @@ const XFADE_TAU = 1.0;
 // until a reload (this is what "keeps fucking up" mid-call). So we resume on the
 // first AND every gesture, on each statechange, and when the tab refocuses.
 function resumeSharedContext() {
+  // Android plays the call through callOutEl (see masterVolume): keep it playing too.
+  if (callOutEl?.paused && callOutEl.srcObject) callOutEl.play().catch(() => {});
   const state = sharedAudioContext.state as string;
   if (state === "suspended" || state === "interrupted") {
     // iOS rejects resume() while still interrupted (e.g. mid phone call); the
@@ -1248,6 +1356,9 @@ export function useMediasoup() {
       // re-opens the mic. Detection starts centred and flips to stereo as soon as the
       // mic's R carries signal (see detectMonoCentering), so no case sends left-only.
       detectMonoCentering(g);
+      // Android: a new mic can switch the phone into/out of call mode — re-open the call
+      // output so the hardware volume buttons keep controlling what you hear.
+      scheduleReopenCallOutput();
     },
     [ensureOutGraph, detectMonoCentering],
   );
@@ -1280,6 +1391,10 @@ export function useMediasoup() {
   // is one setSinkId there — it covers every peer, current and future.
   useEffect(() => {
     applySpeakerToContext(sharedAudioContext, speakerDeviceId);
+    // Android/iOS: the call plays through callOutEl, not the context destination.
+    (callOutEl as unknown as { setSinkId?: (id: string) => Promise<void> } | null)
+      ?.setSinkId?.(speakerDeviceId || "")
+      .catch(() => {});
   }, [speakerDeviceId]);
 
   // Route the whole mix through the low-latency media output when jam is on (the

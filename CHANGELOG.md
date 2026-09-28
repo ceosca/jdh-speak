@@ -8,6 +8,37 @@
 
 ---
 
+## 2026-09-27 (c)
+
+### Botones físicos de volumen que no bajaban nada con la supresión activada (Android + iPhone)
+
+**Qué:** Edu (Chrome Android): con "supresión de ruidos" activada los botones de volumen del
+teléfono no bajaban NADA; sin supresión andaban. La entrada (b) lo había atribuido a un "piso" de iOS
+sin comprobarlo — **era incorrecto**; esta es la causa real.
+**Por qué (código fuente):**
+- **Chrome Android** (`media/audio/android/audio_manager_android.cc`, `AudioManagerAndroid.java`):
+  abrir el micrófono CON cancelación de eco pone Android en `MODE_IN_COMMUNICATION`, y cada salida de
+  audio fija su uso al CREARSE (`VOICE_COMMUNICATION` si ese modo está activo, `MEDIA` si no). El
+  `AudioContext` de la app se crea antes del micrófono → sale como `MEDIA`, mientras que en modo llamada
+  los botones manejan el volumen de LLAMADA → no tocaban lo que se escucha.
+- **iPhone** (WebKit): con cancelación de eco corre la unidad VPIO de Apple; los `<audio>` con
+  MediaStream salen por su bus (volumen de llamada) y el `AudioContext` por un RemoteIO aparte que iOS
+  atenúa y que no sigue los botones. El workaround que recomienda WebKit es sacar Web Audio por
+  `MediaStreamAudioDestinationNode → <audio>` (bugs.webkit.org 218012 #c31, 236219).
+**Cómo (`useMediasoup.ts`, solo Android e iOS; escritorio sin cambios):** la mezcla final sale por
+`masterVolume → MediaStreamAudioDestinationNode → <audio>` (`callOutEl`). En Android se re-abre ese
+elemento ~600 ms después de cada apertura del micrófono (`scheduleReopenCallOutput`), así la salida se
+recrea con el uso del modo actual. Red de seguridad: si el elemento no reproduce estando el contexto en
+marcha, a los ~6 s vuelve solo a `ctx.destination` (nunca silencio). El altavoz elegido se aplica al
+elemento.
+**Verificado** (Edge headless con UA de Android y de iPhone, app real): nivel idéntico al de escritorio
+(0,00 dB), volumen de llamada 100/50/0 %, mute de altavoces, avisos y jam OK; una re-apertura por cambio
+de supresión, sin errores; fallback probado saboteando el elemento (dispara a los 6 s, una vez, audio
+correcto después); 79 s de sesión sana sin falsos fallbacks; escritorio igual que antes. **Falta la
+prueba con botones físicos en un teléfono real** (no hay emulador acá): la hace Edu.
+
+Solo cliente: `git pull && pnpm --filter client build` en el Pi, sin restart.
+
 ## 2026-09-27 (b)
 
 ### Mismo volumen con y sin supresión de ruidos + "Volumen de la llamada" (iPhone)
@@ -27,9 +58,9 @@ AGC viene "On by default" (header `AudioUnitProperties.h`) y WebKit no lo apaga 
 supresión puede seguir cambiando el nivel. No se puede corregir desde la web sin perder el control
 de eco.
 
-**Qué 2 — en iPhone el botón físico no baja la llamada a cero.** Con el mic activo WebKit pone la
-sesión en `PlayAndRecord` + `VideoChat` (MediaSessionManagerCocoa) → volumen de llamada de iOS, que
-tiene un piso audible (con o sin supresión). No se puede cambiar desde la web. **Cómo:** nuevo slider
+**Qué 2 — en iPhone el botón físico no baja la llamada a cero.** ⚠️ Diagnóstico INCORRECTO (ver
+entrada (c)): se atribuyó a un piso del volumen de llamada de iOS sin comprobarlo; la causa real era la
+salida del `AudioContext` fuera del canal de llamada con la supresión activada. **Cómo:** nuevo slider
 **"Volumen de la llamada"** en la tarjeta propia (0-100 %, también sin micrófono), persistido en
 `jdh-speak:outputVolume`. Nodo `masterVolume` (masterMute → masterVolume → destination) + gemelo
 `jamVolume` en modo ensayo; avisos (`setCueOutput` en `sounds.ts`) y metrónomo pasan por él; el
