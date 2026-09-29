@@ -209,23 +209,53 @@ if (useCallOutputElement) {
 } else {
   masterVolume.connect(sharedAudioContext.destination);
 }
-// Re-open every element that carries call audio so its Android output stream is
-// re-created with the usage of the CURRENT audio mode (see above). No-op off Android.
+// Force a NEW Android output stream for the call audio, created while the CURRENT audio
+// mode is in force (see above). Why not just re-assign srcObject: Chromium's audio
+// service keeps a stopped physical output stream idle for 5 s (kStreamCloseDelaySeconds,
+// audio_manager_base.cc) and a new sink with the SAME parameters simply re-uses it
+// (AudioOutputDispatcherImpl::OpenStream takes idle_streams_) — so the old MEDIA-usage
+// stream came straight back and the volume buttons still did nothing. Nothing in Chrome
+// re-creates outputs when communication mode turns on. What a page CAN do: change the
+// sink's parameters. The dispatcher key includes the channel layout, and changing the
+// MediaStreamAudioDestinationNode's channelCount makes the <audio> element's
+// TrackAudioRenderer rebuild its sink with that layout (OnSetFormat → ReconfigureSink) →
+// no idle stream matches → a fresh physical stream is opened with the current usage.
+// So we rotate the channel count among keys not used in the last 6 s (stereo content is
+// up-mixed as L,R + silent extra channels and Chrome's channel mixer folds it back to
+// stereo at the same level).
+const CALL_OUT_KEYS = [2, 4, 6, 8];
+const callOutKeyReleasedAt = new Map<number, number>();
+let callOutKey = 2;
+let reopenRetryTimer: ReturnType<typeof setTimeout> | null = null;
 function reopenCallOutput() {
-  if (!isAndroid) return;
-  const reopen = (el: HTMLAudioElement | null, stream: MediaStream | undefined) => {
-    if (!el || !stream || !el.srcObject) return;
-    el.srcObject = null;
-    el.srcObject = stream;
-    el.play().catch(() => {});
-  };
+  if (!isAndroid || !callOutDest || !callOutEl) return;
+  const now = performance.now();
+  const next = CALL_OUT_KEYS.find(
+    (k) => k !== callOutKey && now - (callOutKeyReleasedAt.get(k) ?? -Infinity) >= 6000,
+  );
+  if (next === undefined) {
+    // Every other key was used < 6 s ago (rapid toggling): try again shortly rather than
+    // land on a key whose idle MEDIA stream would be re-used.
+    if (!reopenRetryTimer) {
+      reopenRetryTimer = setTimeout(() => {
+        reopenRetryTimer = null;
+        reopenCallOutput();
+      }, 1500);
+    }
+    return;
+  }
+  try {
+    callOutDest.channelCount = next;
+  } catch (err) {
+    diagEvent(`key-fail:${next}`);
+    console.warn("[audio] could not change call-output channel count", err);
+    return;
+  }
+  callOutKeyReleasedAt.set(callOutKey, now);
+  callOutKey = next;
   diagReopens++;
-  diagEvent("reopen");
-  // A re-open restarts currentTime at 0 — don't let the watchdog read that as "stuck".
-  callOutLastTime = -1;
-  callOutStuckChecks = 0;
-  reopen(callOutEl, callOutDest?.stream);
-  reopen(jamOutEl, jamOutDest?.stream);
+  diagEvent(`reopen:ch${next}`);
+  if (callOutEl.paused) callOutEl.play().catch(() => {});
 }
 // Safety net: if the call-output element isn't actually playing while the context runs
 // (autoplay rejection, a WebKit MediaStream-playback bug…), retry play() and, if it
