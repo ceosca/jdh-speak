@@ -131,9 +131,15 @@ interface FileSlot {
 // one per peer). On iOS we let it adopt the device-native rate instead of pinning
 // 48 kHz, so WebKit doesn't resample/fight the hardware on every route change;
 // other browsers honour the pin cleanly.
+// Android: start with NO physical output (sinkId "none") so the context never opens a
+// MEDIA-usage stream before the mic; its real output is created after the mic opens
+// (see androidCtxVoice). Browsers without the option ignore it (setSinkId handles it).
 const sharedAudioContext = new AudioContext({
   ...(isIOS ? {} : { sampleRate: 48000 }),
   latencyHint: "interactive",
+  ...(typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent)
+    ? ({ sinkId: { type: "none" } } as unknown as AudioContextOptions)
+    : {}),
 });
 
 // Master output bus. Every peer pipeline connects here instead of straight to the
@@ -196,16 +202,116 @@ masterMute.connect(masterVolume);
 // Desktop keeps the original destination path untouched. A watchdog below falls back to
 // the destination if the element ever fails to play, so this can't leave anyone silent.
 const isAndroid = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
-const useCallOutputElement = isAndroid || isIOS;
+const isPhone = isAndroid || isIOS;
+type SinkableCtx = AudioContext & { setSinkId?: (s: string | { type: "none" }) => Promise<void> };
+// ANDROID, PREFERRED PATH ("ctx voice"): no <audio> element at all. The element route
+// works for the buttons, but a local MediaStream in an <audio> element goes through
+// Chromium's TrackAudioRenderer, whose media::AudioShifter (variable-ratio resampler,
+// ±10 %) overshoots after any render hiccup → the call plays FAST (raised pitch) for
+// seconds at a time (crbug 410721827; measured +165 cents). The context's OWN
+// destination has no shifter. So instead we make the context's own output stream be the
+// call-usage one: start it on the silent {type:"none"} sink (no MEDIA stream is opened),
+// and once the mic is open (communication mode on) and ≥6 s after the "none" switch
+// (so any idle MEDIA stream with the same parameters has been closed — Chromium keeps an
+// idle stream 5 s and re-uses it), setSinkId("") → a brand-new physical stream created
+// in the current mode (VOICE_COMMUNICATION with suppression on) → volume buttons work,
+// no shifter → no pitch drift. If setSinkId isn't available/fails, fall back to the
+// element route below.
+let androidCtxVoice = isAndroid && typeof (sharedAudioContext as SinkableCtx).setSinkId === "function";
+let ctxNoneAt = 0; // performance.now() when the context's sink became "none" (0 = not yet)
+let ctxVoiceDone = false; // the context's real output has been (re)created for this call
+let ctxVoicePending = false;
 let callOutDest: MediaStreamAudioDestinationNode | null = null;
 let callOutEl: HTMLAudioElement | null = null;
-if (useCallOutputElement) {
+// Element route (iOS always; Android only as the fallback). See the notes on
+// reopenCallOutput / scheduleCallOutSettle for Android's extra steps.
+function enableCallOutputElement() {
+  if (callOutEl) return;
+  try {
+    masterVolume.disconnect(sharedAudioContext.destination);
+  } catch {
+    /* not connected */
+  }
   callOutDest = sharedAudioContext.createMediaStreamDestination();
   masterVolume.connect(callOutDest);
   callOutEl = new Audio();
   callOutEl.autoplay = true;
   (callOutEl as unknown as Record<string, boolean>).playsInline = true;
   callOutEl.srcObject = callOutDest.stream;
+  callOutEl.play().catch(() => {});
+  for (const ev of ["playing", "pause", "emptied", "stalled", "waiting", "error", "ended"]) {
+    callOutEl.addEventListener(ev, () => diagEvent(`el:${ev}`));
+  }
+}
+function setCtxSinkNone() {
+  const ctx = sharedAudioContext as SinkableCtx;
+  ctxVoiceDone = false;
+  // Created with sinkId "none" (constructor option honoured): no output stream was ever
+  // opened, so there's no idle MEDIA stream to wait out — the switch can happen as soon
+  // as the mic is steady.
+  if (ctxNoneAt === 0 && typeof (ctx as unknown as { sinkId?: unknown }).sinkId === "object") {
+    ctxNoneAt = performance.now() - 6000;
+    // Deferred: this runs during module init, before the diagnostics state exists.
+    setTimeout(() => diagEvent("ctx-none(ctor)"), 0);
+    return;
+  }
+  ctxNoneAt = 0;
+  ctx
+    .setSinkId?.({ type: "none" })
+    .then(() => {
+      ctxNoneAt = performance.now();
+      diagEvent("ctx-none");
+    })
+    .catch(() => {
+      // Can't control the context's sink here → element route.
+      androidCtxVoice = false;
+      enableCallOutputElement();
+      diagEvent("ctx-none-fail");
+    });
+}
+// Re-create the context's real output now that the mic is open (see above). Waits until
+// the "none" switch is ≥6 s old so no idle MEDIA stream can be re-used.
+function switchCtxToVoice() {
+  if (!androidCtxVoice || ctxVoiceDone || ctxVoicePending) return;
+  if (!ctxNoneAt) {
+    setTimeout(switchCtxToVoice, 500);
+    return;
+  }
+  const wait = ctxNoneAt + 6000 - performance.now();
+  if (wait > 0) {
+    setTimeout(switchCtxToVoice, wait + 50);
+    return;
+  }
+  ctxVoicePending = true;
+  (sharedAudioContext as SinkableCtx)
+    .setSinkId?.("")
+    .then(() => {
+      ctxVoiceDone = true;
+      diagEvent("ctx-voice");
+    })
+    .catch(() => {
+      androidCtxVoice = false;
+      enableCallOutputElement();
+      reopenCallOutput();
+      diagEvent("ctx-voice-fail");
+    })
+    .finally(() => {
+      ctxVoicePending = false;
+    });
+}
+// Call ended (all mics closed → Android leaves communication mode): park the context
+// on "none" again so the NEXT call re-creates its output in whatever mode it starts in.
+function resetCallOutputForNextCall() {
+  if (!androidCtxVoice) return;
+  setCtxSinkNone();
+}
+if (isIOS) {
+  enableCallOutputElement();
+} else if (androidCtxVoice) {
+  masterVolume.connect(sharedAudioContext.destination);
+  setCtxSinkNone();
+} else if (isAndroid) {
+  enableCallOutputElement();
 } else {
   masterVolume.connect(sharedAudioContext.destination);
 }
@@ -228,7 +334,12 @@ const callOutKeyReleasedAt = new Map<number, number>();
 let callOutKey = 2;
 let reopenRetryTimer: ReturnType<typeof setTimeout> | null = null;
 function reopenCallOutput() {
-  if (!isAndroid || !callOutDest || !callOutEl) return;
+  if (!isAndroid) return;
+  if (androidCtxVoice) {
+    switchCtxToVoice();
+    return;
+  }
+  if (!callOutDest || !callOutEl) return;
   const now = performance.now();
   const next = CALL_OUT_KEYS.find(
     (k) => k !== callOutKey && now - (callOutKeyReleasedAt.get(k) ?? -Infinity) >= 6000,
@@ -247,11 +358,14 @@ function reopenCallOutput() {
   try {
     callOutDest.channelCount = next;
   } catch (err) {
+    diagEvent(`key-fail:${next}`);
     console.warn("[audio] could not change call-output channel count", err);
     return;
   }
   callOutKeyReleasedAt.set(callOutKey, now);
   callOutKey = next;
+  diagReopens++;
+  diagEvent(`reopen:ch${next}`);
   if (callOutEl.paused) callOutEl.play().catch(() => {});
   scheduleCallOutSettle();
 }
@@ -281,11 +395,17 @@ function scheduleCallOutSettle() {
       scheduleCallOutSettle();
       return;
     }
+    try {
+      if (localStorage.getItem("jdh-speak:diagNoSettle") === "1") return; // TEMP A/B switch
+    } catch {
+      /* no storage */
+    }
     el.srcObject = null;
     el.srcObject = dest.stream;
     el.play().catch(() => {});
     callOutLastTime = -1;
     callOutStuckChecks = 0;
+    diagEvent("settle");
   }, 3000);
 }
 // Safety net: if the call-output element isn't actually playing while the context runs
@@ -302,6 +422,10 @@ function fallBackToDestination() {
     /* not connected */
   }
   masterVolume.connect(sharedAudioContext.destination);
+  // The context must have a real output again, or the fallback would be silent.
+  if (ctxNoneAt && !ctxVoiceDone) {
+    (sharedAudioContext as SinkableCtx).setSinkId?.("").catch(() => {});
+  }
   try {
     callOutEl.pause();
     callOutEl.srcObject = null;
@@ -311,8 +435,11 @@ function fallBackToDestination() {
   callOutEl = null;
   callOutDest = null;
   console.warn("[audio] call-output element not playing — fell back to AudioContext.destination");
+  diagFallbackAt = Math.round(performance.now() / 1000);
+  diagEvent("FALLBACK");
+  diagSend("fallback");
 }
-if (useCallOutputElement) {
+if (isPhone) {
   window.setInterval(() => {
     const el = callOutEl;
     if (!el || sharedAudioContext.state !== "running") {
@@ -333,6 +460,133 @@ if (useCallOutputElement) {
     }
   }, 2000);
 }
+// --- TEMPORARY field diagnostics (phone volume buttons with suppression on) ---------
+// Phones only. Reports the real audio state to the server's access log (a GET to a
+// static path that just 404s), every 10 s and on key events, so we can see what the
+// phones actually do instead of guessing. Remove once the bug is closed.
+const diagSid = Math.random().toString(36).slice(2, 7);
+const diagEvents: string[] = [];
+let diagMicTrack: MediaStreamTrack | null = null;
+let diagReopens = 0;
+let diagFallbackAt = 0;
+// Per-remote-peer receive stats (set by the hook; see the diag stats effect).
+let diagStatsProvider: (() => Promise<string[]>) | null = null;
+let diagPeers: string[] = [];
+// Clock health of the Web Audio render (the AudioShifter's INPUT clock): sampled every
+// 50 ms. Per 10 s window: rate = Δctx.currentTime / Δwall (1.000 = steady), the longest
+// stall (ms without currentTime advancing), stalls >100 ms, and the call element's
+// currentTime rate. Irregular render cadence is what drives the shifter's pitch overshoot.
+const diagClk = { w0: 0, c0: 0, e0: 0, lastCt: -1, lastMove: 0, maxStall: 0, stalls: 0 };
+function diagClockSample() {
+  const now = performance.now();
+  const ct = sharedAudioContext.currentTime;
+  if (ct !== diagClk.lastCt) {
+    const stall = diagClk.lastMove ? now - diagClk.lastMove : 0;
+    if (stall > diagClk.maxStall) diagClk.maxStall = stall;
+    if (stall > 100) diagClk.stalls++;
+    diagClk.lastCt = ct;
+    diagClk.lastMove = now;
+  }
+}
+function diagClockTake() {
+  const now = performance.now();
+  const ct = sharedAudioContext.currentTime;
+  const et = callOutEl?.currentTime ?? 0;
+  const dw = (now - diagClk.w0) / 1000;
+  const out =
+    diagClk.w0 && dw > 0
+      ? {
+          ctx: +((ct - diagClk.c0) / dw).toFixed(4),
+          el: +((et - diagClk.e0) / dw).toFixed(4),
+          maxStall: Math.round(diagClk.maxStall),
+          stalls: diagClk.stalls,
+        }
+      : null;
+  diagClk.w0 = now;
+  diagClk.c0 = ct;
+  diagClk.e0 = et;
+  diagClk.maxStall = 0;
+  diagClk.stalls = 0;
+  return out;
+}
+function diagEvent(e: string) {
+  diagEvents.push(`${Math.round(performance.now() / 1000)}:${e}`);
+  if (diagEvents.length > 14) diagEvents.shift();
+}
+function diagSend(reason: string) {
+  if (!isPhone) return;
+  try {
+    const st = useRoomStore.getState();
+    const ms = (diagMicTrack?.getSettings?.() ?? {}) as MediaTrackSettings;
+    const ctx = sharedAudioContext as AudioContext & { outputLatency?: number; sinkId?: unknown };
+    const el = callOutEl;
+    const d = {
+      r: reason,
+      sid: diagSid,
+      n: st.displayName,
+      ua: navigator.userAgent.slice(0, 150),
+      vp: st.voiceProcessingEnabled,
+      jam: st.jamMode,
+      ov: st.outputVolume,
+      smut: st.speakersMuted,
+      mode: st.mode,
+      ctx: ctx.state,
+      sr: ctx.sampleRate,
+      bl: ctx.baseLatency,
+      ol: ctx.outputLatency,
+      el: el
+        ? { p: el.paused, t: +el.currentTime.toFixed(1), rs: el.readyState, m: el.muted, v: el.volume }
+        : null,
+      fb: diagFallbackAt,
+      ro: diagReopens,
+      mic: diagMicTrack
+        ? {
+            ec: ms.echoCancellation,
+            ns: ms.noiseSuppression,
+            agc: ms.autoGainControl,
+            ch: ms.channelCount,
+            sr: ms.sampleRate,
+            st: diagMicTrack.readyState,
+            en: diagMicTrack.enabled,
+            lbl: diagMicTrack.label.slice(0, 40),
+          }
+        : null,
+      as: (navigator as unknown as { audioSession?: { type?: string } }).audioSession?.type,
+      vis: document.visibilityState,
+      pp: diagPeers,
+      clk: diagClockTake(),
+      sink: String((sharedAudioContext as unknown as { sinkId?: unknown }).sinkId === undefined
+        ? "n/a"
+        : typeof (sharedAudioContext as unknown as { sinkId?: unknown }).sinkId === "object"
+          ? "none"
+          : "dev"),
+      ev: diagEvents,
+    };
+    fetch(`/sounds/__diag.mp3?d=${encodeURIComponent(JSON.stringify(d))}`, {
+      cache: "no-store",
+      keepalive: true,
+    }).catch(() => {});
+  } catch {
+    /* diagnostics must never break audio */
+  }
+}
+if (isPhone) {
+  window.setInterval(diagClockSample, 50);
+  window.setInterval(() => {
+    void (async () => {
+      try {
+        diagPeers = diagStatsProvider ? await diagStatsProvider() : [];
+      } catch {
+        diagPeers = [];
+      }
+      diagSend("tick");
+    })();
+  }, 10000);
+  sharedAudioContext.addEventListener("statechange", () =>
+    diagEvent(`ctx:${sharedAudioContext.state}`),
+  );
+}
+
 // Debounced: run AFTER the new mic's input stream exists in the browser's audio service
 // (that's when the mode switches), and coalesce bursts of re-acquisitions.
 let reopenCallOutputTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1431,6 +1685,16 @@ export function useMediasoup() {
     (stream: MediaStream) => {
       const g = ensureOutGraph();
       if (g.micStream === stream && g.micSource) return;
+      // Android: Chromium sets communication mode only when the FIRST mic stream opens
+      // with no other mic open (audio_manager_android.cc: has_input_streams). A normal
+      // re-acquisition (suppression toggle, device switch) opens the new mic BEFORE the
+      // old one is stopped → the mode can't change → the output made for this call stays
+      // right. But if the previous mic had already DIED, the new one starts a fresh mode
+      // decision → re-create the context's output for it.
+      const prevTrack = g.micStream?.getAudioTracks()[0];
+      if (prevTrack && prevTrack.readyState === "ended" && androidCtxVoice && ctxVoiceDone) {
+        setCtxSinkNone();
+      }
       g.micSource?.disconnect();
       g.micSource = sharedAudioContext.createMediaStreamSource(stream);
       g.micSource.connect(g.micGain);
@@ -1444,6 +1708,10 @@ export function useMediasoup() {
       // Android: a new mic can switch the phone into/out of call mode — re-open the call
       // output so the hardware volume buttons keep controlling what you hear.
       scheduleReopenCallOutput();
+      diagMicTrack = stream.getAudioTracks()[0] ?? null;
+      const ms = diagMicTrack?.getSettings();
+      diagEvent(`mic ec=${ms?.echoCancellation} ch=${ms?.channelCount}`);
+      diagSend("mic");
     },
     [ensureOutGraph, detectMonoCentering],
   );
@@ -1475,7 +1743,9 @@ export function useMediasoup() {
   // All incoming audio plays through the shared context, so the speaker pick
   // is one setSinkId there — it covers every peer, current and future.
   useEffect(() => {
-    applySpeakerToContext(sharedAudioContext, speakerDeviceId);
+    // Android manages the context's sink itself ("none" → real output after the mic;
+    // see androidCtxVoice) and phones don't offer output-device choice anyway.
+    if (!isAndroid) applySpeakerToContext(sharedAudioContext, speakerDeviceId);
     // Android/iOS: the call plays through callOutEl, not the context destination.
     (callOutEl as unknown as { setSinkId?: (id: string) => Promise<void> } | null)
       ?.setSinkId?.(speakerDeviceId || "")
@@ -1506,6 +1776,73 @@ export function useMediasoup() {
 
   // "Volumen de la llamada": scale everything the call plays locally (see masterVolume).
   const outputVolume = useRoomStore((s) => s.outputVolume);
+  // TEMP diagnostics: per remote peer, how fast Chrome is PULLING its audio
+  // (totalSamplesReceived/s — 48000 is normal; a rate far off = played too fast/slow =
+  // pitch shift), plus NetEQ concealment/acceleration and buffer. Phones only.
+  useEffect(() => {
+    if (!isPhone) return;
+    const prev = new Map<string, { t: number; tsr: number; cs: number; ins: number; rem: number; jbd: number; jbe: number; lost: number }>();
+    diagStatsProvider = async () => {
+      const reports: RTCStatsReport[] = [];
+      for (const pc of p2pConnectionsRef.current.values()) {
+        try {
+          reports.push(await pc.getStats());
+        } catch {
+          /* closed */
+        }
+      }
+      const rt = recvTransportRef.current;
+      if (rt) {
+        try {
+          reports.push(await rt.getStats());
+        } catch {
+          /* closed */
+        }
+      }
+      const names = useRoomStore.getState().peers;
+      const byTrack = new Map<string, string>();
+      for (const [key, pa] of peerAudiosRef.current) {
+        const tr = (pa.audioEl.srcObject as MediaStream | null)?.getAudioTracks()[0];
+        if (tr) byTrack.set(tr.id, (names.get(key)?.displayName ?? key).slice(0, 14));
+      }
+      const now = performance.now();
+      const out: string[] = [];
+      for (const rep of reports) {
+        rep.forEach((st: Record<string, unknown>) => {
+          if (st.type !== "inbound-rtp" || st.kind !== "audio") return;
+          const n = (k: string) => Number(st[k] ?? 0);
+          const cur = {
+            t: now,
+            tsr: n("totalSamplesReceived"),
+            cs: n("concealedSamples"),
+            ins: n("insertedSamplesForDeceleration"),
+            rem: n("removedSamplesForAcceleration"),
+            jbd: n("jitterBufferDelay"),
+            jbe: n("jitterBufferEmittedCount"),
+            lost: n("packetsLost"),
+          };
+          const id = String(st.id);
+          const p = prev.get(id);
+          prev.set(id, cur);
+          if (!p) return;
+          const dt = (cur.t - p.t) / 1000;
+          const dS = cur.tsr - p.tsr;
+          if (dt <= 0) return;
+          const who = byTrack.get(String(st.trackIdentifier)) ?? String(st.trackIdentifier).slice(0, 6);
+          const jb = cur.jbe > p.jbe ? ((cur.jbd - p.jbd) / (cur.jbe - p.jbe)) * 1000 : 0;
+          out.push(
+            `${who}:sps${Math.round(dS / dt)} c${dS > 0 ? (((cur.cs - p.cs) / dS) * 100).toFixed(1) : "-"}% ` +
+              `+${cur.ins - p.ins}/-${cur.rem - p.rem} jb${Math.round(jb)} l${cur.lost - p.lost}`,
+          );
+        });
+      }
+      return out;
+    };
+    return () => {
+      diagStatsProvider = null;
+    };
+  }, []);
+
   useEffect(() => {
     applyOutputVolume(outputVolume);
     const el = netMonitorRef.current?.monitorEl;
@@ -5636,6 +5973,8 @@ export function useMediasoup() {
   );
 
   const leave = useCallback(() => {
+    // Android: park the context's output for the next call (re-created in its mode).
+    resetCallOutputForNextCall();
     stopMediaWatchdog();
     detachSharedAudio();
     teardownP2p();

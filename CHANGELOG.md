@@ -8,6 +8,26 @@
 
 ---
 
+## 2026-09-29
+
+### Android: sin "pitch subido" — la llamada sale por la salida propia del AudioContext
+
+**Qué:** Edu (Android) seguía oyendo agudo con la salvaguarda de "settle". **Causa:** en Android la
+mezcla salía por un `<audio>` (para los botones de volumen), y ese camino pasa por el `AudioShifter`
+de Chromium (remuestreo variable ±10 %) que se pasa de rosca ante cualquier tirón del render. Se
+probó dejar el contexto con sink `none` y **empeoraba** (medido) → descartado. **Cómo (`useMediasoup.ts`,
+solo Android con `setSinkId`):** sin elemento; el `AudioContext` se construye con `sinkId:{type:"none"}`
+(no abre ninguna salida MEDIA) y, con el micro abierto y estable, `setSinkId("")` crea su salida
+real EN ese momento → nace con el uso del modo de llamada (botones OK) y **sin shifter** (sin pitch).
+El modo de llamada lo fija solo el primer micro de la llamada (Chromium `has_input_streams`), así
+que los cambios de supresión no requieren nada; si el micro MURIÓ antes de re-abrirse, se re-crea
+la salida. Si el teléfono no soporta `setSinkId`, vuelve al camino del elemento (rotación + settle).
+**Medido** (Edge con UA Android, captura real de la pestaña): 0 cents estable; tras una perturbación
+vuelve a 0 al segundo siguiente (el elemento: +342…+3500 c y cortes); nivel −0,01 dB; salida física
+nueva creada tras el micro (media-internals); cambios de supresión sin cortes; fallback, escritorio e
+iPhone sin cambios. **Falta confirmarlo en el teléfono de Edu** (botones + pitch). Diagnóstico de
+teléfonos vuelto a activar (con ritmo del AudioContext) para esa prueba.
+
 ## 2026-09-28
 
 ### Android: botones de volumen confirmados + salvaguarda del "pitch subido"
