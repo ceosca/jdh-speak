@@ -8,6 +8,31 @@
 
 ---
 
+## 2026-09-28
+
+### Android: botones de volumen confirmados + salvaguarda del "pitch subido"
+
+**Botones (confirmado en teléfono real).** La re-apertura de la entrada (c) NO servía: Chromium
+guarda 5 s la salida física detenida y la reusa para un sink con los mismos parámetros
+(`AudioOutputDispatcherImpl`), así que volvía la salida MEDIA. Diagnóstico de campo lo confirmó
+(la salida arrancaba antes que el micro). Fix (`9798b01`): rotar el `channelCount` del
+MediaStreamAudioDestinationNode (2/4/6/8, clave no usada en 6 s) → salida física nueva creada con
+el modo de llamada activo. **Confirmado por el usuario en Android: los botones suben y bajan.**
+iPhone ya andaba con la ruta `<audio>` de (c).
+
+**Pitch subido al entrar (Android).** El `<audio>` que reproduce un MediaStream local pasa por el
+`AudioShifter` de Chromium (remuestreo variable ±10 %); si se crea durante una perturbación (cambio
+a modo llamada, suspend/resume del contexto) se pasa de rosca y todo suena agudo ~15 s (crbug
+410721827, misma topología). **Reproducido**: +165 cents (el tope del ±10 %) capturando el audio
+real de la pestaña. Fix: rotar solo con el contexto estable ≥1,5 s (tope 6 s) y, 3 s después de
+cada rotación y tras cada resume del contexto, re-enganchar el elemento una vez (shifter nuevo con
+relojes limpios) reusando la misma salida física (verificado en media-internals → los botones
+siguen andando). Medido: con la salvaguarda vuelve a 0 cents en <0,4 s; corte ~120 ms por rotación
+o re-enganche.
+
+**Diagnóstico temporal** (`b312ecb`, `7ec78fc`): estado de audio y stats por participante de los
+teléfonos al access log de Caddy (`/sounds/__diag.mp3?d=…`). Quitar al cerrar el tema.
+
 ## 2026-09-27 (c)
 
 ### Botones físicos de volumen que no bajaban nada con la supresión activada (Android + iPhone)

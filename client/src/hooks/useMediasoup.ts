@@ -256,6 +256,46 @@ function reopenCallOutput() {
   diagReopens++;
   diagEvent(`reopen:ch${next}`);
   if (callOutEl.paused) callOutEl.play().catch(() => {});
+  scheduleCallOutSettle();
+}
+
+// PITCH SAFEGUARD. The <audio> element that plays a local MediaStream goes through
+// Chromium's TrackAudioRenderer, which inserts a media::AudioShifter — a variable-ratio
+// resampler (clamped ±10 %) that tracks the AudioContext's render cadence against the
+// output device clock. When it's (re)created during a disturbance (the phone switching to
+// communication mode, the context suspending/resuming, our sink re-creation pushing
+// pending data with stale timestamps) its ratio can overshoot and the call plays FAST —
+// raised pitch — for ~15-20 s until it re-converges (crbug 410721827: same topology on
+// Android, "normal after 15s"). Once the output has been re-created and the context has
+// run steadily for a bit, re-attach the element ONCE: that builds a fresh renderer +
+// shifter from clean timestamps. It re-uses the idle physical stream we just created
+// (same parameters, < 5 s), so the VOICE usage — and the volume buttons — are kept.
+let callOutSettleTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleCallOutSettle() {
+  if (!isAndroid) return;
+  if (callOutSettleTimer) clearTimeout(callOutSettleTimer);
+  callOutSettleTimer = setTimeout(() => {
+    callOutSettleTimer = null;
+    const el = callOutEl;
+    const dest = callOutDest;
+    if (!el || !dest) return;
+    // Only in a steady state; otherwise try again shortly (the new shifter must start clean).
+    if (sharedAudioContext.state !== "running" || performance.now() - ctxRunningSince < 1500) {
+      scheduleCallOutSettle();
+      return;
+    }
+    try {
+      if (localStorage.getItem("jdh-speak:diagNoSettle") === "1") return; // TEMP A/B switch
+    } catch {
+      /* no storage */
+    }
+    el.srcObject = null;
+    el.srcObject = dest.stream;
+    el.play().catch(() => {});
+    callOutLastTime = -1;
+    callOutStuckChecks = 0;
+    diagEvent("settle");
+  }, 3000);
 }
 // Safety net: if the call-output element isn't actually playing while the context runs
 // (autoplay rejection, a WebKit MediaStream-playback bug…), retry play() and, if it
@@ -394,13 +434,35 @@ if (useCallOutputElement) {
 // Debounced: run AFTER the new mic's input stream exists in the browser's audio service
 // (that's when the mode switches), and coalesce bursts of re-acquisitions.
 let reopenCallOutputTimer: ReturnType<typeof setTimeout> | null = null;
+// Time the shared context last (re)entered "running" — the output is re-created only
+// once the context has run steadily, never in the middle of the start-up churn (the
+// mode switch briefly suspends/resumes it on Android), which is what disturbs the
+// AudioShifter (see scheduleCallOutSettle).
+let ctxRunningSince = sharedAudioContext.state === "running" ? performance.now() : Infinity;
+sharedAudioContext.addEventListener("statechange", () => {
+  const running = sharedAudioContext.state === "running";
+  ctxRunningSince = running ? performance.now() : Infinity;
+  // A suspend/resume mid-call (audio focus, a phone call, backgrounding) disturbs the
+  // AudioShifter's input clock the same way → re-settle once it's steady again.
+  if (running && isAndroid && callOutEl && callOutEl.srcObject) scheduleCallOutSettle();
+});
 function scheduleReopenCallOutput() {
   if (!isAndroid) return;
   if (reopenCallOutputTimer) clearTimeout(reopenCallOutputTimer);
-  reopenCallOutputTimer = setTimeout(() => {
+  const firstAt = performance.now();
+  const attempt = () => {
+    // Wait for ≥1.5 s of uninterrupted "running" (give up waiting after 6 s and rotate
+    // anyway — the buttons matter more than a possible short pitch wobble).
+    const steady =
+      sharedAudioContext.state === "running" && performance.now() - ctxRunningSince >= 1500;
+    if (!steady && performance.now() - firstAt < 6000) {
+      reopenCallOutputTimer = setTimeout(attempt, 250);
+      return;
+    }
     reopenCallOutputTimer = null;
     reopenCallOutput();
-  }, 600);
+  };
+  reopenCallOutputTimer = setTimeout(attempt, 600);
 }
 masterBus.connect(masterMute);
 let jamOutEl: HTMLAudioElement | null = null;
