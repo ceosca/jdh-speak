@@ -30,8 +30,12 @@ relojes limpios) reusando la misma salida física (verificado en media-internals
 siguen andando). Medido: con la salvaguarda vuelve a 0 cents en <0,4 s; corte ~120 ms por rotación
 o re-enganche.
 
+**Confirmado por Cristian (2026-09-29):** los botones de volumen con supresión activada funcionan
+en el Android de Edu y en su iPhone.
+
 **Diagnóstico temporal** (`b312ecb`, `7ec78fc`): estado de audio y stats por participante de los
-teléfonos al access log de Caddy (`/sounds/__diag.mp3?d=…`). Quitar al cerrar el tema.
+teléfonos al access log de Caddy. **Quitado** al cerrar el tema (el lector `/tmp/diagread.py` del
+Pi sirve si se vuelve a poner: está en el historial de git de esos commits).
 
 ## 2026-09-27 (c)
 

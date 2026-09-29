@@ -247,14 +247,11 @@ function reopenCallOutput() {
   try {
     callOutDest.channelCount = next;
   } catch (err) {
-    diagEvent(`key-fail:${next}`);
     console.warn("[audio] could not change call-output channel count", err);
     return;
   }
   callOutKeyReleasedAt.set(callOutKey, now);
   callOutKey = next;
-  diagReopens++;
-  diagEvent(`reopen:ch${next}`);
   if (callOutEl.paused) callOutEl.play().catch(() => {});
   scheduleCallOutSettle();
 }
@@ -284,17 +281,11 @@ function scheduleCallOutSettle() {
       scheduleCallOutSettle();
       return;
     }
-    try {
-      if (localStorage.getItem("jdh-speak:diagNoSettle") === "1") return; // TEMP A/B switch
-    } catch {
-      /* no storage */
-    }
     el.srcObject = null;
     el.srcObject = dest.stream;
     el.play().catch(() => {});
     callOutLastTime = -1;
     callOutStuckChecks = 0;
-    diagEvent("settle");
   }, 3000);
 }
 // Safety net: if the call-output element isn't actually playing while the context runs
@@ -320,9 +311,6 @@ function fallBackToDestination() {
   callOutEl = null;
   callOutDest = null;
   console.warn("[audio] call-output element not playing — fell back to AudioContext.destination");
-  diagFallbackAt = Math.round(performance.now() / 1000);
-  diagEvent("FALLBACK");
-  diagSend("fallback");
 }
 if (useCallOutputElement) {
   window.setInterval(() => {
@@ -345,92 +333,6 @@ if (useCallOutputElement) {
     }
   }, 2000);
 }
-// --- TEMPORARY field diagnostics (phone volume buttons with suppression on) ---------
-// Phones only. Reports the real audio state to the server's access log (a GET to a
-// static path that just 404s), every 10 s and on key events, so we can see what the
-// phones actually do instead of guessing. Remove once the bug is closed.
-const diagSid = Math.random().toString(36).slice(2, 7);
-const diagEvents: string[] = [];
-let diagMicTrack: MediaStreamTrack | null = null;
-let diagReopens = 0;
-let diagFallbackAt = 0;
-// Per-remote-peer receive stats (set by the hook; see the diag stats effect).
-let diagStatsProvider: (() => Promise<string[]>) | null = null;
-let diagPeers: string[] = [];
-function diagEvent(e: string) {
-  diagEvents.push(`${Math.round(performance.now() / 1000)}:${e}`);
-  if (diagEvents.length > 14) diagEvents.shift();
-}
-function diagSend(reason: string) {
-  if (!useCallOutputElement) return;
-  try {
-    const st = useRoomStore.getState();
-    const ms = (diagMicTrack?.getSettings?.() ?? {}) as MediaTrackSettings;
-    const ctx = sharedAudioContext as AudioContext & { outputLatency?: number; sinkId?: unknown };
-    const el = callOutEl;
-    const d = {
-      r: reason,
-      sid: diagSid,
-      n: st.displayName,
-      ua: navigator.userAgent.slice(0, 150),
-      vp: st.voiceProcessingEnabled,
-      jam: st.jamMode,
-      ov: st.outputVolume,
-      smut: st.speakersMuted,
-      mode: st.mode,
-      ctx: ctx.state,
-      sr: ctx.sampleRate,
-      bl: ctx.baseLatency,
-      ol: ctx.outputLatency,
-      el: el
-        ? { p: el.paused, t: +el.currentTime.toFixed(1), rs: el.readyState, m: el.muted, v: el.volume }
-        : null,
-      fb: diagFallbackAt,
-      ro: diagReopens,
-      mic: diagMicTrack
-        ? {
-            ec: ms.echoCancellation,
-            ns: ms.noiseSuppression,
-            agc: ms.autoGainControl,
-            ch: ms.channelCount,
-            sr: ms.sampleRate,
-            st: diagMicTrack.readyState,
-            en: diagMicTrack.enabled,
-            lbl: diagMicTrack.label.slice(0, 40),
-          }
-        : null,
-      as: (navigator as unknown as { audioSession?: { type?: string } }).audioSession?.type,
-      vis: document.visibilityState,
-      pp: diagPeers,
-      ev: diagEvents,
-    };
-    fetch(`/sounds/__diag.mp3?d=${encodeURIComponent(JSON.stringify(d))}`, {
-      cache: "no-store",
-      keepalive: true,
-    }).catch(() => {});
-  } catch {
-    /* diagnostics must never break audio */
-  }
-}
-if (useCallOutputElement) {
-  window.setInterval(() => {
-    void (async () => {
-      try {
-        diagPeers = diagStatsProvider ? await diagStatsProvider() : [];
-      } catch {
-        diagPeers = [];
-      }
-      diagSend("tick");
-    })();
-  }, 10000);
-  sharedAudioContext.addEventListener("statechange", () =>
-    diagEvent(`ctx:${sharedAudioContext.state}`),
-  );
-  for (const ev of ["playing", "pause", "emptied", "stalled", "waiting", "error", "ended"]) {
-    callOutEl?.addEventListener(ev, () => diagEvent(`el:${ev}`));
-  }
-}
-
 // Debounced: run AFTER the new mic's input stream exists in the browser's audio service
 // (that's when the mode switches), and coalesce bursts of re-acquisitions.
 let reopenCallOutputTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1542,10 +1444,6 @@ export function useMediasoup() {
       // Android: a new mic can switch the phone into/out of call mode — re-open the call
       // output so the hardware volume buttons keep controlling what you hear.
       scheduleReopenCallOutput();
-      diagMicTrack = stream.getAudioTracks()[0] ?? null;
-      const ms = diagMicTrack?.getSettings();
-      diagEvent(`mic ec=${ms?.echoCancellation} ch=${ms?.channelCount}`);
-      diagSend("mic");
     },
     [ensureOutGraph, detectMonoCentering],
   );
@@ -1608,73 +1506,6 @@ export function useMediasoup() {
 
   // "Volumen de la llamada": scale everything the call plays locally (see masterVolume).
   const outputVolume = useRoomStore((s) => s.outputVolume);
-  // TEMP diagnostics: per remote peer, how fast Chrome is PULLING its audio
-  // (totalSamplesReceived/s — 48000 is normal; a rate far off = played too fast/slow =
-  // pitch shift), plus NetEQ concealment/acceleration and buffer. Phones only.
-  useEffect(() => {
-    if (!useCallOutputElement) return;
-    const prev = new Map<string, { t: number; tsr: number; cs: number; ins: number; rem: number; jbd: number; jbe: number; lost: number }>();
-    diagStatsProvider = async () => {
-      const reports: RTCStatsReport[] = [];
-      for (const pc of p2pConnectionsRef.current.values()) {
-        try {
-          reports.push(await pc.getStats());
-        } catch {
-          /* closed */
-        }
-      }
-      const rt = recvTransportRef.current;
-      if (rt) {
-        try {
-          reports.push(await rt.getStats());
-        } catch {
-          /* closed */
-        }
-      }
-      const names = useRoomStore.getState().peers;
-      const byTrack = new Map<string, string>();
-      for (const [key, pa] of peerAudiosRef.current) {
-        const tr = (pa.audioEl.srcObject as MediaStream | null)?.getAudioTracks()[0];
-        if (tr) byTrack.set(tr.id, (names.get(key)?.displayName ?? key).slice(0, 14));
-      }
-      const now = performance.now();
-      const out: string[] = [];
-      for (const rep of reports) {
-        rep.forEach((st: Record<string, unknown>) => {
-          if (st.type !== "inbound-rtp" || st.kind !== "audio") return;
-          const n = (k: string) => Number(st[k] ?? 0);
-          const cur = {
-            t: now,
-            tsr: n("totalSamplesReceived"),
-            cs: n("concealedSamples"),
-            ins: n("insertedSamplesForDeceleration"),
-            rem: n("removedSamplesForAcceleration"),
-            jbd: n("jitterBufferDelay"),
-            jbe: n("jitterBufferEmittedCount"),
-            lost: n("packetsLost"),
-          };
-          const id = String(st.id);
-          const p = prev.get(id);
-          prev.set(id, cur);
-          if (!p) return;
-          const dt = (cur.t - p.t) / 1000;
-          const dS = cur.tsr - p.tsr;
-          if (dt <= 0) return;
-          const who = byTrack.get(String(st.trackIdentifier)) ?? String(st.trackIdentifier).slice(0, 6);
-          const jb = cur.jbe > p.jbe ? ((cur.jbd - p.jbd) / (cur.jbe - p.jbe)) * 1000 : 0;
-          out.push(
-            `${who}:sps${Math.round(dS / dt)} c${dS > 0 ? (((cur.cs - p.cs) / dS) * 100).toFixed(1) : "-"}% ` +
-              `+${cur.ins - p.ins}/-${cur.rem - p.rem} jb${Math.round(jb)} l${cur.lost - p.lost}`,
-          );
-        });
-      }
-      return out;
-    };
-    return () => {
-      diagStatsProvider = null;
-    };
-  }, []);
-
   useEffect(() => {
     applyOutputVolume(outputVolume);
     const el = netMonitorRef.current?.monitorEl;
