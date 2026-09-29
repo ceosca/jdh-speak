@@ -219,6 +219,8 @@ function reopenCallOutput() {
     el.srcObject = stream;
     el.play().catch(() => {});
   };
+  diagReopens++;
+  diagEvent("reopen");
   // A re-open restarts currentTime at 0 — don't let the watchdog read that as "stuck".
   callOutLastTime = -1;
   callOutStuckChecks = 0;
@@ -248,6 +250,9 @@ function fallBackToDestination() {
   callOutEl = null;
   callOutDest = null;
   console.warn("[audio] call-output element not playing — fell back to AudioContext.destination");
+  diagFallbackAt = Math.round(performance.now() / 1000);
+  diagEvent("FALLBACK");
+  diagSend("fallback");
 }
 if (useCallOutputElement) {
   window.setInterval(() => {
@@ -270,6 +275,79 @@ if (useCallOutputElement) {
     }
   }, 2000);
 }
+// --- TEMPORARY field diagnostics (phone volume buttons with suppression on) ---------
+// Phones only. Reports the real audio state to the server's access log (a GET to a
+// static path that just 404s), every 10 s and on key events, so we can see what the
+// phones actually do instead of guessing. Remove once the bug is closed.
+const diagSid = Math.random().toString(36).slice(2, 7);
+const diagEvents: string[] = [];
+let diagMicTrack: MediaStreamTrack | null = null;
+let diagReopens = 0;
+let diagFallbackAt = 0;
+function diagEvent(e: string) {
+  diagEvents.push(`${Math.round(performance.now() / 1000)}:${e}`);
+  if (diagEvents.length > 14) diagEvents.shift();
+}
+function diagSend(reason: string) {
+  if (!useCallOutputElement) return;
+  try {
+    const st = useRoomStore.getState();
+    const ms = (diagMicTrack?.getSettings?.() ?? {}) as MediaTrackSettings;
+    const ctx = sharedAudioContext as AudioContext & { outputLatency?: number; sinkId?: unknown };
+    const el = callOutEl;
+    const d = {
+      r: reason,
+      sid: diagSid,
+      n: st.displayName,
+      ua: navigator.userAgent.slice(0, 150),
+      vp: st.voiceProcessingEnabled,
+      jam: st.jamMode,
+      ov: st.outputVolume,
+      smut: st.speakersMuted,
+      mode: st.mode,
+      ctx: ctx.state,
+      sr: ctx.sampleRate,
+      bl: ctx.baseLatency,
+      ol: ctx.outputLatency,
+      el: el
+        ? { p: el.paused, t: +el.currentTime.toFixed(1), rs: el.readyState, m: el.muted, v: el.volume }
+        : null,
+      fb: diagFallbackAt,
+      ro: diagReopens,
+      mic: diagMicTrack
+        ? {
+            ec: ms.echoCancellation,
+            ns: ms.noiseSuppression,
+            agc: ms.autoGainControl,
+            ch: ms.channelCount,
+            sr: ms.sampleRate,
+            st: diagMicTrack.readyState,
+            en: diagMicTrack.enabled,
+            lbl: diagMicTrack.label.slice(0, 40),
+          }
+        : null,
+      as: (navigator as unknown as { audioSession?: { type?: string } }).audioSession?.type,
+      vis: document.visibilityState,
+      ev: diagEvents,
+    };
+    fetch(`/sounds/__diag.mp3?d=${encodeURIComponent(JSON.stringify(d))}`, {
+      cache: "no-store",
+      keepalive: true,
+    }).catch(() => {});
+  } catch {
+    /* diagnostics must never break audio */
+  }
+}
+if (useCallOutputElement) {
+  window.setInterval(() => diagSend("tick"), 10000);
+  sharedAudioContext.addEventListener("statechange", () =>
+    diagEvent(`ctx:${sharedAudioContext.state}`),
+  );
+  for (const ev of ["playing", "pause", "emptied", "stalled", "waiting", "error", "ended"]) {
+    callOutEl?.addEventListener(ev, () => diagEvent(`el:${ev}`));
+  }
+}
+
 // Debounced: run AFTER the new mic's input stream exists in the browser's audio service
 // (that's when the mode switches), and coalesce bursts of re-acquisitions.
 let reopenCallOutputTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1359,6 +1437,10 @@ export function useMediasoup() {
       // Android: a new mic can switch the phone into/out of call mode — re-open the call
       // output so the hardware volume buttons keep controlling what you hear.
       scheduleReopenCallOutput();
+      diagMicTrack = stream.getAudioTracks()[0] ?? null;
+      const ms = diagMicTrack?.getSettings();
+      diagEvent(`mic ec=${ms?.echoCancellation} ch=${ms?.channelCount}`);
+      diagSend("mic");
     },
     [ensureOutGraph, detectMonoCentering],
   );
