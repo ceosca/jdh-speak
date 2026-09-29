@@ -314,6 +314,9 @@ const diagEvents: string[] = [];
 let diagMicTrack: MediaStreamTrack | null = null;
 let diagReopens = 0;
 let diagFallbackAt = 0;
+// Per-remote-peer receive stats (set by the hook; see the diag stats effect).
+let diagStatsProvider: (() => Promise<string[]>) | null = null;
+let diagPeers: string[] = [];
 function diagEvent(e: string) {
   diagEvents.push(`${Math.round(performance.now() / 1000)}:${e}`);
   if (diagEvents.length > 14) diagEvents.shift();
@@ -358,6 +361,7 @@ function diagSend(reason: string) {
         : null,
       as: (navigator as unknown as { audioSession?: { type?: string } }).audioSession?.type,
       vis: document.visibilityState,
+      pp: diagPeers,
       ev: diagEvents,
     };
     fetch(`/sounds/__diag.mp3?d=${encodeURIComponent(JSON.stringify(d))}`, {
@@ -369,7 +373,16 @@ function diagSend(reason: string) {
   }
 }
 if (useCallOutputElement) {
-  window.setInterval(() => diagSend("tick"), 10000);
+  window.setInterval(() => {
+    void (async () => {
+      try {
+        diagPeers = diagStatsProvider ? await diagStatsProvider() : [];
+      } catch {
+        diagPeers = [];
+      }
+      diagSend("tick");
+    })();
+  }, 10000);
   sharedAudioContext.addEventListener("statechange", () =>
     diagEvent(`ctx:${sharedAudioContext.state}`),
   );
@@ -1533,6 +1546,73 @@ export function useMediasoup() {
 
   // "Volumen de la llamada": scale everything the call plays locally (see masterVolume).
   const outputVolume = useRoomStore((s) => s.outputVolume);
+  // TEMP diagnostics: per remote peer, how fast Chrome is PULLING its audio
+  // (totalSamplesReceived/s — 48000 is normal; a rate far off = played too fast/slow =
+  // pitch shift), plus NetEQ concealment/acceleration and buffer. Phones only.
+  useEffect(() => {
+    if (!useCallOutputElement) return;
+    const prev = new Map<string, { t: number; tsr: number; cs: number; ins: number; rem: number; jbd: number; jbe: number; lost: number }>();
+    diagStatsProvider = async () => {
+      const reports: RTCStatsReport[] = [];
+      for (const pc of p2pConnectionsRef.current.values()) {
+        try {
+          reports.push(await pc.getStats());
+        } catch {
+          /* closed */
+        }
+      }
+      const rt = recvTransportRef.current;
+      if (rt) {
+        try {
+          reports.push(await rt.getStats());
+        } catch {
+          /* closed */
+        }
+      }
+      const names = useRoomStore.getState().peers;
+      const byTrack = new Map<string, string>();
+      for (const [key, pa] of peerAudiosRef.current) {
+        const tr = (pa.audioEl.srcObject as MediaStream | null)?.getAudioTracks()[0];
+        if (tr) byTrack.set(tr.id, (names.get(key)?.displayName ?? key).slice(0, 14));
+      }
+      const now = performance.now();
+      const out: string[] = [];
+      for (const rep of reports) {
+        rep.forEach((st: Record<string, unknown>) => {
+          if (st.type !== "inbound-rtp" || st.kind !== "audio") return;
+          const n = (k: string) => Number(st[k] ?? 0);
+          const cur = {
+            t: now,
+            tsr: n("totalSamplesReceived"),
+            cs: n("concealedSamples"),
+            ins: n("insertedSamplesForDeceleration"),
+            rem: n("removedSamplesForAcceleration"),
+            jbd: n("jitterBufferDelay"),
+            jbe: n("jitterBufferEmittedCount"),
+            lost: n("packetsLost"),
+          };
+          const id = String(st.id);
+          const p = prev.get(id);
+          prev.set(id, cur);
+          if (!p) return;
+          const dt = (cur.t - p.t) / 1000;
+          const dS = cur.tsr - p.tsr;
+          if (dt <= 0) return;
+          const who = byTrack.get(String(st.trackIdentifier)) ?? String(st.trackIdentifier).slice(0, 6);
+          const jb = cur.jbe > p.jbe ? ((cur.jbd - p.jbd) / (cur.jbe - p.jbe)) * 1000 : 0;
+          out.push(
+            `${who}:sps${Math.round(dS / dt)} c${dS > 0 ? (((cur.cs - p.cs) / dS) * 100).toFixed(1) : "-"}% ` +
+              `+${cur.ins - p.ins}/-${cur.rem - p.rem} jb${Math.round(jb)} l${cur.lost - p.lost}`,
+          );
+        });
+      }
+      return out;
+    };
+    return () => {
+      diagStatsProvider = null;
+    };
+  }, []);
+
   useEffect(() => {
     applyOutputVolume(outputVolume);
     const el = netMonitorRef.current?.monitorEl;
