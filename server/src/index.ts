@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createWorker } from "mediasoup";
 import type { Worker } from "mediasoup/types";
-import { workerSettings, numWorkers } from "./mediasoup-config.js";
+import { workerSettings, numWorkers, webRtcServerListenInfos } from "./mediasoup-config.js";
 import { setWorkers } from "./room-manager.js";
 import { createSignalingServer } from "./signaling.js";
 import { RecordingManager } from "./recording.js";
@@ -180,6 +180,30 @@ async function main() {
       console.error(`Worker ${worker.pid} died, exiting...`);
       process.exit(1);
     });
+    // One WebRtcServer per worker: every WebRtcTransport of this worker shares its fixed
+    // ports (see mediasoup-config.ts). If it can't bind (port taken), transports fall back
+    // to per-transport ports — still working, just hungrier.
+    // Its ports are the ONLY forwarded ones the SFU has, so it must exist: retry for a
+    // while (a previous process may still be releasing the port during a restart) and
+    // otherwise exit so systemd restarts us — running without it would leave that
+    // worker's rooms unable to connect media (the fallback has no forwarded ports).
+    const listenInfos = webRtcServerListenInfos(i);
+    for (let attempt = 1; ; attempt++) {
+      try {
+        worker.appData.webRtcServer = await worker.createWebRtcServer({ listenInfos });
+        console.log(
+          `[sfu] worker ${i} WebRtcServer on udp ${listenInfos.map((l) => `${l.announcedAddress}:${l.port}`).join(", ")}`,
+        );
+        break;
+      } catch (err) {
+        if (attempt >= 15) {
+          console.error(`[sfu] worker ${i} WebRtcServer failed — exiting:`, err);
+          process.exit(1);
+        }
+        console.warn(`[sfu] worker ${i} WebRtcServer attempt ${attempt} failed, retrying:`, err);
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
     workers.push(worker);
   }
   setWorkers(workers);
@@ -454,7 +478,22 @@ async function main() {
   // falling through to the SPA catch-all (which would answer 200 + index.html,
   // making the client fetch and try to decode HTML as audio on every probe).
   const soundsDir = path.resolve(__dirname, "../../sounds");
-  app.use("/sounds", express.static(soundsDir, { fallthrough: false }));
+  app.use(
+    "/sounds",
+    express.static(soundsDir, { fallthrough: false }),
+    // A missing optional cue is the NORMAL case (clients probe 3 formats per cue) — answer
+    // 404 quietly instead of letting Express print an ENOENT stack for each (~9.6k lines
+    // of journal noise in 14 days).
+    (
+      err: { status?: number },
+      _req: express.Request,
+      res: express.Response,
+      next: express.NextFunction,
+    ) => {
+      if (res.headersSent) return next(err);
+      res.status(err?.status ?? 404).end();
+    },
+  );
 
   // Inject the operator-configurable instance name into the served index.html so
   // the pre-built static client can be rebranded via INSTANCE_NAME in .env with
@@ -480,7 +519,7 @@ async function main() {
       instanceName: INSTANCE_NAME,
       iceServers: ICE_SERVERS,
     }).replace(/</g, "\\u003c");
-    let html = raw.replace(
+    const html = raw.replace(
       "<head>",
       `<head><script>window.__JDH_SPEAK_CONFIG__=${configJson};</script>`,
     );

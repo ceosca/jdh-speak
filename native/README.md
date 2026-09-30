@@ -48,7 +48,7 @@ y el **round-trip real por el relay** desde el cliente nativo = **~1–2.5 ms** 
 
 - Python 3.10+ (probado en 3.12).
 - `pip install -r requirements.txt` (sounddevice/PortAudio, numpy, PyAV, aioquic).
-- El relay `WT_PROBE` arriba en la Pi (lo está: udp/40059).
+- El relay `WT_PROBE` arriba en la Pi (lo está: udp/40008; antes 40059).
 
 ## Uso
 

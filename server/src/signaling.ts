@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { DtlsParameters, MediaKind, RtpCapabilities, RtpParameters } from "mediasoup/types";
 import {
   getOrCreateRoom,
+  closeRoomIfEmpty,
   getRooms,
   createPeer,
   createWebRtcTransport,
@@ -89,10 +90,10 @@ function closeSfuResources(peer: Peer) {
   peer.consumers.clear();
 }
 
-export function createSignalingServer(
-  httpServer: HttpServer,
-  recordingManager: RecordingManager,
-) {
+// Transports whose connect() already succeeded (see "connect-transport").
+const connectedTransports = new WeakMap<object, Promise<void>>();
+
+export function createSignalingServer(httpServer: HttpServer, recordingManager: RecordingManager) {
   const io = new Server(httpServer, {
     cors: { origin: "*" },
     // Accept BOTH transports. The client tries WebSocket first (lowest latency) and
@@ -274,6 +275,7 @@ export function createSignalingServer(
     console.log(`[ws] connected: ${socket.id} [${clientIp(socket)}]`);
     let currentRoom: Room | null = null;
     let currentPeer: Peer | null = null;
+    let lastMetroLogAt = 0; // [metro-sync] log throttle (per socket)
     // Server-side floor between typing ticks from this socket (see the handler).
     let lastTypingTick = 0;
     // Last nudge sent by this socket, for the nudge throttle.
@@ -281,9 +283,15 @@ export function createSignalingServer(
 
     socket.on("join", async (data: unknown, cb: (res: unknown) => void) => {
       try {
-        const { roomName, displayName, role, disableP2p, token } =
-          joinSchema.parse(data);
+        const { roomName, displayName, role, disableP2p, token } = joinSchema.parse(data);
         const realRoom = await getOrCreateRoom(roomName);
+        // The socket may have disconnected while we awaited the router: its disconnect
+        // handler already ran with no peer, so creating one now would leave a permanent
+        // ghost in the room. (Close the room if it was created just for this join.)
+        if (socket.disconnected) {
+          closeRoomIfEmpty(realRoom);
+          return cb({ ok: false, error: "Disconnected" });
+        }
 
         // Closed-room routing: a newcomer (no known member token) joining a closed
         // room is sent to a separate "ghost" room — they see an empty room / only
@@ -293,6 +301,10 @@ export function createSignalingServer(
         const isMember = !!token && realRoom.memberTokens.has(token);
         const ghosted = realRoom.closed && role !== "caster" && !isMember;
         const room = ghosted ? await getOrCreateRoom(ghostRoomKey(roomName)) : realRoom;
+        if (socket.disconnected) {
+          closeRoomIfEmpty(room);
+          return cb({ ok: false, error: "Disconnected" });
+        }
 
         // Issue/keep this client's membership token. Only real-room joins are
         // recorded as members; a ghost gets a token too but it never grants entry.
@@ -314,9 +326,24 @@ export function createSignalingServer(
         // unable to hear them. Same membership token = same session reconnecting (a second
         // DEVICE loads fresh and gets a different token, so it's never falsely dropped), so we
         // tear the old one down now and force-close its socket instead of waiting it out.
+        // Register a caster / P2P-disable BEFORE deciding the mode — and before the
+        // duplicate teardown below, which re-decides the mode itself (registering after it
+        // flapped a ?p2p=off / caster room SFU→P2P→SFU on every reconnect), so the join
+        // response (and the new peer's own setup) already reflects the forced-SFU
+        // room. disableP2p is DERIVED from the p2p-off peers present NOW (mirrors
+        // casters), so it releases when the last such peer leaves — see teardownPeer.
+        if (role === "caster") room.casters.add(socket.id);
+        if (disableP2p) room.p2pOffPeers.add(socket.id);
+        room.disableP2p = room.p2pOffPeers.size > 0;
+
         if (isMember) {
           for (const [id, p] of room.peers) {
             if (id !== socket.id && p.token === myToken) {
+              // Same person: keep their camera / mute / streaming state (it drives the
+              // room's forced-SFU decision and what everyone else sees).
+              peer.camera = p.camera;
+              peer.muted = p.muted;
+              peer.streaming = p.streaming;
               console.log(`[ws] dropping stale duplicate of "${displayName}" (${id}) on reconnect`);
               teardownPeer(room, id, { announceLeft: true });
               try {
@@ -328,13 +355,6 @@ export function createSignalingServer(
           }
         }
 
-        // Register a caster / P2P-disable BEFORE deciding the mode, so the join
-        // response (and the new peer's own setup) already reflects the forced-SFU
-        // room. disableP2p is DERIVED from the p2p-off peers present NOW (mirrors
-        // casters), so it releases when the last such peer leaves — see teardownPeer.
-        if (role === "caster") room.casters.add(socket.id);
-        if (disableP2p) room.p2pOffPeers.add(socket.id);
-        room.disableP2p = room.p2pOffPeers.size > 0;
         currentRoom = room;
         currentPeer = peer;
 
@@ -343,9 +363,13 @@ export function createSignalingServer(
         await socket.join(room.name);
 
         // Notify existing peers
+        // (With the state a reconnecting duplicate carried over, so the others don't show
+        // a muted user as live after a reconnect.)
         socket.to(room.name).emit("peer-joined", {
           peerId: socket.id,
           displayName,
+          muted: peer.muted,
+          streaming: peer.streaming,
         });
 
         // Send existing peers to the new joiner. Each producer carries its
@@ -402,8 +426,8 @@ export function createSignalingServer(
           messages: room.messages,
         });
 
-        if (decision.action === "switch-to-sfu") {
-          // A new peer pushed the room into SFU — switch everyone ELSE over.
+        if (decision.action !== "none") {
+          // A new peer changed the room's mode — switch everyone ELSE over.
           // Exclude this socket: it already got mode:"sfu" in its join response
           // and sets up the SFU from that, so re-notifying it would double-setup.
           applyModeDecision(room, socket.id);
@@ -430,6 +454,15 @@ export function createSignalingServer(
       if (!parsed.success) return;
 
       const { targetPeerId, type, payload } = parsed.data;
+      // Only between two members of the SAME room. Before, any socket that knew another's
+      // id could make it answer an offer (and send it its microphone) from another room.
+      if (
+        !currentPeer ||
+        !currentRoom.peers.has(socket.id) ||
+        !currentRoom.peers.has(targetPeerId)
+      ) {
+        return;
+      }
       io.to(targetPeerId).emit("p2p-signal", {
         fromPeerId: socket.id,
         type,
@@ -474,9 +507,10 @@ export function createSignalingServer(
         // Close any PREVIOUS transport in this slot before overwriting it. A client
         // that retries create-transport (reconnect, ICE restart, switch-to-sfu race)
         // would otherwise orphan the old mediasoup transport — it keeps its ports and
-        // consumers open with no reference, a slow leak that eventually exhausts the
-        // 40000-40058 port range and makes NEW joins fail. Closing is idempotent.
-        const previous = direction === "send" ? currentPeer.sendTransport : currentPeer.recvTransport;
+        // consumers open with no reference, a slow leak (and, on the fallback
+        // per-transport ports, exhausts the port range so NEW joins fail). Idempotent.
+        const previous =
+          direction === "send" ? currentPeer.sendTransport : currentPeer.recvTransport;
         if (previous && previous !== transport) {
           try {
             previous.close();
@@ -519,7 +553,19 @@ export function createSignalingServer(
           return;
         }
 
-        await transport.connect({ dtlsParameters });
+        // Idempotent: on a slow link the client's ack can time out AFTER the server
+        // already connected; its retry then hit mediasoup's "connect() already called"
+        // on every later consume/produce and the transport stayed unusable (silent) until
+        // a refresh. A repeat for an already-connected transport is simply acknowledged.
+        // (A promise per transport, so a retry arriving while the first connect() is
+        // still pending waits for it instead of failing.)
+        let connecting = connectedTransports.get(transport);
+        if (!connecting) {
+          connecting = transport.connect({ dtlsParameters });
+          connectedTransports.set(transport, connecting);
+          connecting.catch(() => connectedTransports.delete(transport));
+        }
+        await connecting;
         cb({ ok: true });
       } catch (err) {
         cb({ ok: false, error: err instanceof Error ? err.message : "Connect failed" });
@@ -608,6 +654,10 @@ export function createSignalingServer(
         });
 
         currentPeer.producers.set(producer.id, producer);
+        // A replaced/closed send transport closes its producers; forget them so they're
+        // never advertised again (get-producers, join snapshot, recording start).
+        const producerOwner = currentPeer;
+        producer.on("transportclose", () => producerOwner.producers.delete(producer.id));
 
         // If the room is being recorded, tap this producer too. Not awaited —
         // the produce callback should return promptly, and the recorder spins up
@@ -670,7 +720,12 @@ export function createSignalingServer(
           paused: false,
         });
 
-        currentPeer.consumers.set(consumer.id, consumer);
+        const owner = currentPeer;
+        owner.consumers.set(consumer.id, consumer);
+        // Forget it when it goes away on its own (producer closed / transport closed),
+        // so peer.consumers doesn't grow for the whole session.
+        consumer.on("producerclose", () => owner.consumers.delete(consumer.id));
+        consumer.on("transportclose", () => owner.consumers.delete(consumer.id));
 
         cb({
           ok: true,
@@ -684,10 +739,30 @@ export function createSignalingServer(
       }
     });
 
+    // The client dropped a consumer (replaced by a re-consume, pipeline torn down).
+    // Before this existed a client-side close was LOCAL only: the server kept the
+    // consumer and kept forwarding its RTP to that client — every duplicate consume
+    // leaked a full audio stream of bandwidth until the page was refreshed.
+    socket.on("close-consumer", (data: unknown) => {
+      const parsed = z.object({ consumerId: z.string() }).safeParse(data);
+      if (!parsed.success || !currentPeer) return;
+      const consumer = currentPeer.consumers.get(parsed.data.consumerId);
+      if (!consumer) return;
+      currentPeer.consumers.delete(parsed.data.consumerId);
+      try {
+        consumer.close();
+      } catch {
+        /* already closed */
+      }
+    });
+
     // Mute/unmute pauses only the VOICE producer — a peer's shared-audio
     // ("share") producer keeps streaming so the music isn't cut when they mute.
     socket.on("producer-pause", async (_data: unknown, cb: (res: unknown) => void) => {
       if (!currentPeer) return cb({ ok: false });
+      // Broadcast only a real change: the client re-asserts its mute on every rebuilt
+      // send path (mode switch / reconnect), which must not re-announce it to everyone.
+      const wasMuted = currentPeer.muted;
       currentPeer.muted = true;
       for (const producer of currentPeer.producers.values()) {
         if (((producer.appData?.source as string) ?? "voice") !== "voice") continue;
@@ -702,7 +777,7 @@ export function createSignalingServer(
           /* producer closed mid-pause — ignore */
         }
       }
-      if (currentRoom) {
+      if (currentRoom && !wasMuted) {
         socket.to(currentRoom.name).emit("peer-muted", { peerId: socket.id });
       }
       cb({ ok: true });
@@ -734,10 +809,13 @@ export function createSignalingServer(
       if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
       const parsed = z.object({ muted: z.boolean() }).safeParse(data);
       if (!parsed.success) return cb?.({ ok: false, error: "Invalid value" });
+      const changed = currentPeer.muted !== parsed.data.muted;
       currentPeer.muted = parsed.data.muted;
-      socket.to(currentRoom.name).emit(parsed.data.muted ? "peer-muted" : "peer-unmuted", {
-        peerId: socket.id,
-      });
+      if (changed) {
+        socket.to(currentRoom.name).emit(parsed.data.muted ? "peer-muted" : "peer-unmuted", {
+          peerId: socket.id,
+        });
+      }
       cb?.({ ok: true });
     });
 
@@ -748,11 +826,14 @@ export function createSignalingServer(
       if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
       const parsed = z.object({ streaming: z.boolean() }).safeParse(data);
       if (!parsed.success) return cb?.({ ok: false, error: "Invalid value" });
+      const streamingChanged = currentPeer.streaming !== parsed.data.streaming;
       currentPeer.streaming = parsed.data.streaming;
-      socket.to(currentRoom.name).emit("peer-streaming", {
-        peerId: socket.id,
-        streaming: parsed.data.streaming,
-      });
+      if (streamingChanged) {
+        socket.to(currentRoom.name).emit("peer-streaming", {
+          peerId: socket.id,
+          streaming: parsed.data.streaming,
+        });
+      }
       cb?.({ ok: true });
     });
 
@@ -767,6 +848,9 @@ export function createSignalingServer(
       if (!currentRoom || !currentPeer) return cb?.({ ok: false, error: "Not in a room" });
       const parsed = z.object({ on: z.boolean() }).safeParse(data);
       if (!parsed.success) return cb?.({ ok: false, error: "Invalid value" });
+      // The client re-sends its camera state after every reconnect: only a real change
+      // is announced to the room.
+      const cameraChanged = currentPeer.camera !== parsed.data.on;
       currentPeer.camera = parsed.data.on;
       if (!parsed.data.on) {
         for (const [id, producer] of currentPeer.producers) {
@@ -780,11 +864,13 @@ export function createSignalingServer(
           }
         }
       }
-      socket.to(currentRoom.name).emit("peer-camera", {
-        peerId: socket.id,
-        on: parsed.data.on,
-        by: currentPeer.displayName,
-      });
+      if (cameraChanged) {
+        socket.to(currentRoom.name).emit("peer-camera", {
+          peerId: socket.id,
+          on: parsed.data.on,
+          by: currentPeer.displayName,
+        });
+      }
       applyModeDecision(currentRoom);
       cb?.({ ok: true });
     });
@@ -1001,7 +1087,11 @@ export function createSignalingServer(
       // Jamulus-model health: the self-return buffer must match the peer buffer, else
       // aligning your return to the peers is not the same as aligning at the server.
       const jamOk =
-        selfMs != null && rxLatMs != null ? (Math.abs(selfMs - rxLatMs) <= 12 ? "OK" : "MISMATCH") : "n/a";
+        selfMs != null && rxLatMs != null
+          ? Math.abs(selfMs - rxLatMs) <= 12
+            ? "OK"
+            : "MISMATCH"
+          : "n/a";
       // Estimated mouth-to-ear THIS peer experiences hearing others: remote capture (~10)
       // + network one-way (txRtt/2) + our jitter buffer (rxLat) + our output (outLat|~42).
       const earMs =
@@ -1019,13 +1109,21 @@ export function createSignalingServer(
       // Spread = max−min clock error = predicted metronome flam between these peers.
       const errs = reports.map((r) => r.errMs as number);
       const spread = errs.length > 1 ? Math.max(...errs) - Math.min(...errs) : 0;
-      console.log(
-        `[metro-sync] ${currentRoom.name}: spread=${spread}ms | ` +
-          `${currentPeer.displayName}: err=${err} rtt=${Math.round(parsed.data.rtt)} ` +
-          `otsOk=${otsOk} outLat=${outLatMs} | ear≈${earMs}ms ` +
-          `(txRtt=${txRttMs} rx=${rxLatMs}) | tx=${txKbps}kbps ch=${parsed.data.micCh} | self=${selfMs} jamRef=${jamOk} || all: ` +
-          reports.map((r) => `${r.name}(err=${r.errMs} rtt=${r.rttMs})`).join(" "),
-      );
+      // Throttled: this fires on every clock-sync report of every peer and was ~98 % of
+      // the service journal (≈750k lines in 14 days) — constant SD-card writes on the Pi
+      // that also buried the real errors. Once a minute per peer, or all with
+      // METRO_SYNC_LOG=1 when debugging the metronome.
+      const now = Date.now();
+      if (process.env.METRO_SYNC_LOG === "1" || now - lastMetroLogAt >= 60_000) {
+        lastMetroLogAt = now;
+        console.log(
+          `[metro-sync] ${currentRoom.name}: spread=${spread}ms | ` +
+            `${currentPeer.displayName}: err=${err} rtt=${Math.round(parsed.data.rtt)} ` +
+            `otsOk=${otsOk} outLat=${outLatMs} | ear≈${earMs}ms ` +
+            `(txRtt=${txRttMs} rx=${rxLatMs}) | tx=${txKbps}kbps ch=${parsed.data.micCh} | self=${selfMs} jamRef=${jamOk} || all: ` +
+            reports.map((r) => `${r.name}(err=${r.errMs} rtt=${r.rttMs})`).join(" "),
+        );
+      }
       io.to(currentRoom.name).emit("sync-reports", { reports, spread });
     });
 

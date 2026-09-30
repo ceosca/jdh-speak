@@ -44,9 +44,12 @@ server restart, with **no client rebuild and no credentials in the repo**.
 - Env vars: `TURN_URLS` (comma-separated), `TURN_USERNAME`, `TURN_CREDENTIAL`,
   optional `STUN_URLS`. See `server/src/index.ts` (`buildIceServers`).
 - **Port ranges are shared and must stay disjoint:** the router forwards
-  `40000-40100`; mediasoup is capped to `40000-40059`
-  (`server/src/mediasoup-config.ts`) and coturn's relay uses `40060-40100`.
-  Widening `rtcMaxPort` again would collide with the TURN.
+  `40000-40100`. The SFU uses one mediasoup **WebRtcServer per worker** on FIXED
+  ports `40000-40007` (4 workers × 2 announced IPs; `WEBRTC_SERVER_BASE_PORT`), the
+  WebTransport relay `40008` (`WT_PROBE_PORT`), coturn's relay `40009-40100`
+  (`server/src/mediasoup-config.ts`, `/etc/turnserver.conf`). The workers' own
+  `rtcMinPort/rtcMaxPort` (44000-44999) now serve only loopback PlainTransports
+  (recording/Icecast) — never put them back inside the forwarded range.
 - coturn config lives on the Pi at `/etc/turnserver.conf` (not in this repo):
   auth required, quotas, and all private ranges denied.
 
@@ -99,7 +102,9 @@ Only the server has tests (the client has none). They cover the pure helpers (`r
 A room dynamically switches transport based on size and needs. **`decideMode(peerCount, currentMode, forceSfu)` in `server/src/recording-util.ts` is the single, pure source of truth** — both the join and leave handlers in `signaling.ts` re-evaluate through it:
 
 - ≤5 peers → **P2P mesh**: clients connect WebRTC directly; the server only relays signaling (`p2p-signal`). Media never touches the server.
-- 6+ peers → **mediasoup SFU**.
+- 6+ peers → **mediasoup SFU**. **Hysteresis:** once on the SFU the room stays there
+  until it drops to **4 or fewer** (5 is sticky either way), so a peer flapping at the
+  5↔6 edge can't thrash the whole room between modes.
 - `forceSfu` pins the SFU even with ≤5 peers when the server _must_ see/route the media: while **recording** (P2P media is invisible to the server), when a **music caster** is present, when **`?p2p=off`** was set, or when someone toggled **force-SFU** (`Ctrl+Alt+S`) — a live, room-wide toggle useful on a bad connection (on the SFU each client uploads once instead of a full mesh). All via `shouldForceSfu` in `signaling.ts`.
 
 On transitions the server emits `switch-to-sfu` / `switch-to-p2p`; the client (`useMediasoup.ts`) tears down one transport stack and builds the other. The outgoing audio graph (below) survives the switch — only senders/producers are rebuilt.
@@ -312,7 +317,7 @@ feasibility probe of **WebTransport + WebCodecs** (own buffer over QUIC, bypassi
 NetEQ via a different transport). It measured ~15 ms vs NetEQ's ~30 ms. **The
 receive-side bypass above supersedes it** (same win, on the existing stack), so the
 WebTransport rewrite is parked. The probe embedded a QUIC echo relay in the main
-server on udp/40059 behind `WT_PROBE`; if `server/src/webtransport-probe.ts` still
+server on udp/40008 (was 40059) behind `WT_PROBE`; if `server/src/webtransport-probe.ts` still
 exists it's inert unless `WT_PROBE` is set and needs `@fails-components/webtransport`
 pinned to **1.4.0** (newer arm64 prebuilds need glibc 2.38; the Pi has 2.36).
 
@@ -444,7 +449,7 @@ Studied their internals and tested the enabling primitives live:
   browser" audio path. **BUILT for the network monitor** (`client/src/lib/jam-wt-monitor.ts`,
   wired in `applyNetworkMonitor` via `netMonitorWtRef`): mic → `MediaStreamTrackProcessor`
   → WebCodecs Opus `frameDuration:2500` → QUIC datagrams to the `WT_PROBE` echo relay
-  (udp/40059) → decode → `MediaStreamTrackGenerator` → `<audio>`. Verified engaging in
+  (udp/40008, was 40059) → decode → `MediaStreamTrackGenerator` → `<audio>`. Verified engaging in
   production (WebTransport `created`+`ready`, no errors, needs a live mic). Fail-safe:
   null → the mediasoup self-consume monitor. Extending 2.5 ms to hearing PEERS (not just
   the self-return) is BUILT: the relay grew a `/jam` path (`handleJamSession`) that

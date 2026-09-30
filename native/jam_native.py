@@ -34,7 +34,7 @@ from aioquic.quic.events import QuicEvent
 
 SR = 48000
 FRAME = 120                # 2.5 ms @ 48 kHz
-HOST, PORT, PATH = "jdh.privatedns.org", 40059, "/jam"
+HOST, PORT, PATH = "jdh.privatedns.org", 40008, "/jam"  # WT relay (was 40059)
 
 # ─────────────────────────── device listing ───────────────────────────
 def list_devices():

@@ -8,6 +8,55 @@
 
 ---
 
+## 2026-09-30
+
+### Estabilidad de llamadas: "deja de escuchar a algunos hasta que actualiza"
+
+**Qué:** auditoría completa de P2P, SFU y reconexión (con subagentes) y corrección de todo lo que podía
+dejar a alguien sordo o mudo para otro hasta refrescar, o hacer caer la llamada con datos móviles.
+**Por qué (evidencia, no suposición):** logs de 14 días en la Pi: el relay de coturn tenía solo 41 puertos
+y se agotó 164 veces ("no available ports") → teléfonos que dependen del TURN no podían conectar con
+algunos; y el código tenía carreras reales (abajo).
+**Cómo:**
+- **Puertos (servidor):** el SFU usa ahora un **WebRtcServer por worker** con puertos FIJOS
+  (`40000-40007` en la Pi, 4 workers × 2 IPs) que comparten todos los transportes; antes cada transporte
+  abría su propio puerto (≈4 por persona en SFU). El relay WebTransport pasa a `40008` y **coturn a
+  `40009-40100` (92 puertos, antes 41)**. El rango propio de los workers (44000-44999) queda solo para
+  los PlainTransport de grabación (loopback). Si el WebRtcServer no puede abrir su puerto, reintenta y
+  si no, sale para que systemd reinicie (no queda un modo roto).
+- **P2P:** negociación con **generación** (`gen`) en offer/answer/candidatos: ya no se aplica una
+  respuesta vieja a una conexión nueva ni se pierden candidatos entre reconstrucciones (dejaba la
+  conexión trabada). La respuesta a un offer ya superado no se manda. "Renegotiate" se ignora si la
+  conexión es recién creada. La recuperación **nunca se rinde** (antes abandonaba tras 40 intentos):
+  espera creciente 3→30 s. Una persona que se fue no deja trabajos encolados que creen conexiones
+  fantasma. Construir la conexión ya no espera al micrófono (podía tardar 12 s y trabar todo).
+- **SFU:** no se consume dos veces el mismo productor (antes cada resync de 15 s podía re-consumir,
+  cortar el audio y dejar consumidores huérfanos en el servidor gastando ancho de banda);
+  `close-consumer` en el servidor; `connect-transport` idempotente (en enlaces lentos el reintento
+  dejaba el transporte inutilizable); silenciar en SFU ya no deshabilita la pista compartida (al pasar a
+  P2P y desilenciar se mandaba silencio); un fallo al pasar a SFU fuerza un reingreso en vez de quedar
+  sordo.
+- **Servidor:** dos personas entrando a la vez a una sala nueva ya no la parten en dos salas;
+  una sala no borra a otra más nueva del mismo nombre; sin "fantasmas" si el socket se cae durante el
+  ingreso; `p2p-signal` solo entre miembros de la misma sala; la reconexión duplicada (mismo token)
+  conserva silencio/cámara/transmisión y registra caster/p2p-off antes del reemplazo (antes hacía
+  SFU→P2P→SFU en cada reconexión); silencio/cámara/transmisión solo se anuncian si cambian.
+- **Reconexión / datos móviles:** **detección de socket muerto**: al cambiar la red (online,
+  `navigator.connection`, volver a la pestaña, o una conexión de medios que falla) se hace ping al
+  servidor; si no responde 2 veces (≈16 s) se reconecta ya, en vez de esperar el heartbeat (≈55 s
+  sordo). Funciona también en polling. Los reingresos forzados tienen espera creciente (sin bucles).
+  Al reconectar se reenvía el estado real (silencio, cámara, transmisión, nombre cambiado). Si el
+  primer ingreso falla, se cierra el socket (antes podía entrar en segundo plano como fantasma). Si el
+  micrófono se muere en plena llamada (auricular BT, USB) se vuelve a pedir. El watchdog no "repara"
+  mientras hay una transición en curso ni con el socket caído. Una tecla también reactiva el audio.
+**Verificado** (Edge headless, tonos distintos por persona, RMS medido de cada pista recibida):
+P2P 8/8 escenarios (4 entradas simultáneas ×7, entradas/salidas rápidas, cortes de 8 y 40 s, conexión
+cerrada a la fuerza, silencio a través de una reconexión, 5 min continuos, cortes intermitentes: malla
+completa en ~7 s); SFU 7/7 (6 personas, puertos fijos, P2P↔SFU ×3, consumidores constantes 3 min,
+`?p2p=off` con cortes, silencio entre modos, carreras de señalización 20/20 y 30/30, grabación).
+Revisión adversarial del diff: sus 3 bugs confirmados corregidos. Tests servidor 118/118.
+**Requiere:** reiniciar `sonicroom` y cambiar `/etc/turnserver.conf` a `min-port=40009` (juntos).
+
 ## 2026-09-29 (b)
 
 ### Grabación: la descarga en un solo archivo ya no es lenta

@@ -38,18 +38,25 @@ credenciales, eso se rompía sin avisar.
 
 ## La decisión clave: reutilizar el rango de puertos ya abierto
 
-El router ya reenviaba **`40000–40100`** a `192.168.4.2` para mediasoup, pero
-mediasoup usa **1 puerto por transporte** y ese rango estaba sobredimensionado.
-En vez de abrir un rango nuevo (el enfoque naíf pedía `49152–65535` = 16.384
-puertos), **se repartió el rango existente**:
+El router reenvía **`40000–40100`** a `192.168.4.2`. En vez de abrir un rango
+nuevo (el enfoque naíf pedía `49152–65535` = 16.384 puertos), **se reparte el
+rango existente**:
 
 | Servicio | Rango | Dónde se configura |
 |---|---|---|
-| **mediasoup** (SFU) | `40000–40059` | `server/src/mediasoup-config.ts` (`rtcMaxPort`) |
-| **coturn** (relay) | `40060–40100` | `/etc/turnserver.conf` (`min-port`/`max-port`) |
+| **mediasoup** (SFU) | `40000–40007` | `server/src/mediasoup-config.ts` (`WEBRTC_SERVER_BASE_PORT`; 1 WebRtcServer por worker × 2 IPs anunciadas) |
+| **relay WebTransport** | `40008` | `server/src/webtransport-probe.ts` (`WT_PROBE_PORT`) |
+| **coturn** (relay) | `40009–40100` | `/etc/turnserver.conf` (`min-port`/`max-port`) |
+
+Historia (2026-09-30): antes mediasoup abría **1 puerto por transporte y por IP**
+(`40000–40059`) y a coturn le quedaban 41 puertos (`40060–40100`), que se
+agotaban (164 "no available ports" en 14 días → teléfonos que dependen del TURN
+dejaban de oír a algunos). Con el WebRtcServer todos los transportes comparten
+puertos fijos y coturn pasó a 92.
 
 ⚠️ **Deben seguir siendo disjuntos**: dos procesos no pueden bindear el mismo
-puerto. Si algún día se sube `rtcMaxPort`, **chocará con el TURN**.
+puerto. Si cambia la cantidad de workers o de IPs anunciadas, cambia cuántos
+puertos usa el SFU (`workers × IPs`) — revisar el `min-port` de coturn.
 
 Así, montar el TURN solo necesitó **1 puerto nuevo en el router**: el `3478`
 (TCP+UDP), que es el puerto de control. Se usa el **estándar** a propósito: un
@@ -69,7 +76,7 @@ root:turnserver`). Puntos importantes:
 listening-port=3478
 no-tls
 no-dtls
-min-port=40060
+min-port=40009
 max-port=40100
 external-ip=<IP_PUBLICA>/192.168.4.2
 # IMPRESCINDIBLE fijar la IP de escucha/relay explícitamente. Sin esto, coturn
@@ -86,7 +93,7 @@ lt-cred-mech
 realm=jdh.privatedns.org
 user=jdhturn:<credencial larga: openssl rand -hex 24>
 
-# Cuotas: 0 = sin límite. El rango de relay (40060-40100 = 41 puertos) ya es el
+# Cuotas: 0 = sin límite. El rango de relay (40009-40100 = 92 puertos) ya es el
 # tope natural de allocations concurrentes; una cuota MENOR que eso corta pares en
 # una malla P2P de 4-5 personas (cada peer-connection reserva un candidato relay
 # al gatherear, aunque acabe conectando directo). max-bps limita el abuso de banda.

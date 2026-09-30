@@ -1,7 +1,7 @@
 // THROWAWAY probe (branch feat/webtransport-jam only) — WebTransport echo relay
 // embedded in the MAIN server so `pnpm start` runs it, no separate process and no
-// new ports (reuses udp/40059, already inside the forwarded 40000-40100 range —
-// mediasoup's rtcMaxPort was lowered to 40058 to free it).
+// new ports (a udp port right after the SFU's WebRtcServer ports — 40008 on the Pi —
+// inside the forwarded 40000-40100 range; see mediasoup-config.ts).
 //
 // It reproduces the network-monitor over a completely different transport: your
 // own audio, sent as WebCodecs Opus over WebTransport (QUIC) datagrams, echoed
@@ -22,6 +22,7 @@
 // a warning and leaves the probe disabled; the conferencing server boots
 // regardless. Turn it off entirely with WT_PROBE=0.
 
+import { WEBRTC_SERVER_BASE_PORT, webRtcServerPortCount } from "./mediasoup-config.js";
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -72,10 +73,21 @@ function ensureSelfSignedCert(dir: string): { cert: string; key: string } | null
   if (!stillValid()) {
     mkdirSync(dir, { recursive: true });
     const r = spawnSync("openssl", [
-      "req", "-x509", "-newkey", "ec",
-      "-pkeyopt", "ec_paramgen_curve:prime256v1",
-      "-keyout", keyFile, "-out", certFile,
-      "-days", "13", "-nodes", "-subj", "/CN=jam-probe",
+      "req",
+      "-x509",
+      "-newkey",
+      "ec",
+      "-pkeyopt",
+      "ec_paramgen_curve:prime256v1",
+      "-keyout",
+      keyFile,
+      "-out",
+      certFile,
+      "-days",
+      "13",
+      "-nodes",
+      "-subj",
+      "/CN=jam-probe",
     ]);
     if (r.status !== 0) {
       const msg = (r.stderr || Buffer.from("")).toString().split("\n")[0] || "openssl failed";
@@ -90,7 +102,12 @@ export async function startWebTransportProbe(): Promise<void> {
     console.log("[wt-probe] disabled (WT_PROBE=0)");
     return;
   }
-  const port = Number(process.env.WT_PROBE_PORT || 40059);
+  // Right after the SFU's WebRtcServer ports (40008 on the Pi: 4 workers × 2 addresses),
+  // before coturn's relay range (see mediasoup-config.ts). Was 40059 when the SFU used
+  // 40000-40058 per-transport ports.
+  const port = Number(
+    process.env.WT_PROBE_PORT || WEBRTC_SERVER_BASE_PORT + webRtcServerPortCount(),
+  );
   const host = process.env.WT_PROBE_HOST || "0.0.0.0";
   const publicHost = process.env.WT_PROBE_PUBLIC_HOST || "jdh.privatedns.org";
   const certPath = process.env.CERT_PATH;
@@ -230,7 +247,7 @@ async function handleJamSession(session: any): Promise<void> {
         // hello — register into the room and hand back a 2-byte id.
         const room = new TextDecoder().decode(buf.subarray(1)).slice(0, 64);
         if (!room) continue;
-        const id = (jamIdSeq++ & 0xffff) || 1;
+        const id = jamIdSeq++ & 0xffff || 1;
         me = { id, room, writer };
         let group = jamRooms.get(room);
         if (!group) {

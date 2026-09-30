@@ -1,5 +1,13 @@
-import type { Router, WebRtcTransport, Producer, Consumer, Worker } from "mediasoup/types";
-import { routerOptions, transportOptions } from "./mediasoup-config.js";
+import type {
+  Router,
+  WebRtcTransport,
+  WebRtcServer,
+  WebRtcTransportOptions,
+  Producer,
+  Consumer,
+  Worker,
+} from "mediasoup/types";
+import { routerOptions, transportOptions, serverTransportOptions } from "./mediasoup-config.js";
 import type { ChatMessage } from "./chat-util.js";
 
 export interface Peer {
@@ -48,6 +56,8 @@ export interface SpatialSeat {
 export interface Room {
   name: string;
   router: Router;
+  // The WebRtcServer of the router's worker (shared SFU ports), if one was created.
+  webRtcServer: WebRtcServer | null;
   peers: Map<string, Peer>;
   mode: RoomMode;
   // P2P explicitly disabled for this room (via the `?p2p=off` room URL param).
@@ -202,16 +212,32 @@ function getNextWorker(): Worker {
   return worker;
 }
 
-export async function getOrCreateRoom(roomName: string): Promise<Room> {
-  const existing = rooms.get(roomName);
-  if (existing) return existing;
+// Rooms whose router is being created right now. Without this, two joins to a room that
+// doesn't exist yet (e.g. everyone reconnecting after a server restart) BOTH awaited
+// createRouter and got two different Room objects for the same name — the room split in
+// two (people in each half couldn't hear the other), and when one half emptied,
+// rooms.delete(name) removed the OTHER, still-live half from the map. (P2P audit.)
+const creatingRooms = new Map<string, Promise<Room>>();
 
+export function getOrCreateRoom(roomName: string): Promise<Room> {
+  const existing = rooms.get(roomName);
+  if (existing) return Promise.resolve(existing);
+  const inflight = creatingRooms.get(roomName);
+  if (inflight) return inflight;
+  const creating = createRoom(roomName).finally(() => creatingRooms.delete(roomName));
+  creatingRooms.set(roomName, creating);
+  return creating;
+}
+
+async function createRoom(roomName: string): Promise<Room> {
   const worker = getNextWorker();
   const router = await worker.createRouter(routerOptions);
+  const webRtcServer = (worker.appData.webRtcServer as WebRtcServer | undefined) ?? null;
 
   const room: Room = {
     name: roomName,
     router,
+    webRtcServer,
     peers: new Map(),
     mode: "p2p",
     disableP2p: false,
@@ -250,7 +276,11 @@ export function createPeer(room: Room, peerId: string, displayName: string): Pee
 }
 
 export async function createWebRtcTransport(room: Room) {
-  const transport = await room.router.createWebRtcTransport(transportOptions);
+  const transport = await room.router.createWebRtcTransport(
+    room.webRtcServer && !room.webRtcServer.closed
+      ? ({ ...serverTransportOptions, webRtcServer: room.webRtcServer } as WebRtcTransportOptions)
+      : transportOptions,
+  );
 
   // Reduce latency: set max incoming bitrate
   await transport.setMaxIncomingBitrate(1500000);
@@ -291,11 +321,16 @@ export function removePeer(room: Room, peerId: string) {
   peer.recvTransport?.close();
 
   room.peers.delete(peerId);
+  closeRoomIfEmpty(room);
+}
 
-  // If room is empty, destroy it
-  if (room.peers.size === 0) {
+// Destroy a room that has nobody in it (also used when a join is abandoned after the
+// room was created for it — otherwise that empty room and its Router leaked).
+export function closeRoomIfEmpty(room: Room) {
+  if (room.peers.size === 0 && !room.router.closed) {
     room.router.close();
-    rooms.delete(room.name);
+    // Only if the map still points at THIS room (never delete a newer room of the same name).
+    if (rooms.get(room.name) === room) rooms.delete(room.name);
     // Reset the persisted voice bitrate so the NEXT session starts fresh at full
     // quality (128). Otherwise a bitrate someone lowered once (e.g. a bad-network
     // moment) stuck for every future joiner — they entered at low quality until

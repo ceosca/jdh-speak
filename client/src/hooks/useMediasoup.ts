@@ -3,7 +3,11 @@ import { io, type Socket } from "socket.io-client";
 import { Device } from "mediasoup-client";
 import type { Transport, Producer, Consumer } from "mediasoup-client/types";
 import { forceOpusParams } from "../lib/sdp-munger";
-import { applySpeakerToContext, canSelectElementSink, resolveSavedDevice } from "../lib/audio-devices";
+import {
+  applySpeakerToContext,
+  canSelectElementSink,
+  resolveSavedDevice,
+} from "../lib/audio-devices";
 import { isIOS, getMicrophoneStream } from "../lib/microphone";
 import { playCue, preloadCueSamples, playTypingTick, setCueOutput } from "../lib/sounds";
 import { getIceServers } from "../lib/ice";
@@ -12,7 +16,7 @@ import {
   isTerminalState,
   isHealthyState,
   p2pRecoveryAction,
-  shouldKeepRetrying,
+  recoveryBackoffMs,
   missingProducerIds,
 } from "../lib/connection-recovery";
 import { autoSeat, seatToPoint, type SpatialSeat } from "../lib/spatial";
@@ -217,7 +221,8 @@ type SinkableCtx = AudioContext & { setSinkId?: (s: string | { type: "none" }) =
 // in the current mode (VOICE_COMMUNICATION with suppression on) → volume buttons work,
 // no shifter → no pitch drift. If setSinkId isn't available/fails, fall back to the
 // element route below.
-let androidCtxVoice = isAndroid && typeof (sharedAudioContext as SinkableCtx).setSinkId === "function";
+let androidCtxVoice =
+  isAndroid && typeof (sharedAudioContext as SinkableCtx).setSinkId === "function";
 let ctxNoneAt = 0; // performance.now() when the context's sink became "none" (0 = not yet)
 let ctxVoiceDone = false; // the context's real output has been (re)created for this call
 let ctxVoicePending = false;
@@ -538,7 +543,13 @@ function diagSend(reason: string) {
       bl: ctx.baseLatency,
       ol: ctx.outputLatency,
       el: el
-        ? { p: el.paused, t: +el.currentTime.toFixed(1), rs: el.readyState, m: el.muted, v: el.volume }
+        ? {
+            p: el.paused,
+            t: +el.currentTime.toFixed(1),
+            rs: el.readyState,
+            m: el.muted,
+            v: el.volume,
+          }
         : null,
       fb: diagFallbackAt,
       ro: diagReopens,
@@ -558,11 +569,13 @@ function diagSend(reason: string) {
       vis: document.visibilityState,
       pp: diagPeers,
       clk: diagClockTake(),
-      sink: String((sharedAudioContext as unknown as { sinkId?: unknown }).sinkId === undefined
-        ? "n/a"
-        : typeof (sharedAudioContext as unknown as { sinkId?: unknown }).sinkId === "object"
-          ? "none"
-          : "dev"),
+      sink: String(
+        (sharedAudioContext as unknown as { sinkId?: unknown }).sinkId === undefined
+          ? "n/a"
+          : typeof (sharedAudioContext as unknown as { sinkId?: unknown }).sinkId === "object"
+            ? "none"
+            : "dev",
+      ),
       ev: diagEvents,
     };
     fetch(`/sounds/__diag.mp3?d=${encodeURIComponent(JSON.stringify(d))}`, {
@@ -718,6 +731,8 @@ function resumeSharedContext() {
 }
 document.addEventListener("touchstart", resumeSharedContext);
 document.addEventListener("click", resumeSharedContext);
+// Keyboard/screen-reader users may never touch or click: a key press is a gesture too.
+document.addEventListener("keydown", resumeSharedContext);
 sharedAudioContext.addEventListener("statechange", resumeSharedContext);
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") resumeSharedContext();
@@ -1094,6 +1109,37 @@ export function useMediasoup() {
   // chain — answering the superseded one would consume the newer session's
   // queued candidates and build a dead connection.
   const offerSeqRef = useRef<Map<string, number>>(new Map());
+  // P2P NEGOTIATION GENERATIONS. Every offer carries a `gen` (a counter on the offering
+  // side — the lower id, which always owns the leg), echoed in the answer and in both
+  // sides' ICE candidates. Without it, a leg rebuilt twice in quick succession (both sides
+  // detecting the same outage) accepted a STALE answer on the new connection (the old
+  // connection's ICE/DTLS credentials → stuck "connecting"), and candidates of a newer
+  // offer landed on the previous connection and were lost — "can't hear someone" until the
+  // stuck-leg watchdog rebuilt it, and the race could repeat. Messages without `gen` (a
+  // peer still on an older bundle) are handled exactly as before. (P2P audit.)
+  const pcGenRef = useRef<WeakMap<RTCPeerConnection, number>>(new WeakMap());
+  const genCounterRef = useRef(0);
+  // Peer ids that LEFT (socket ids never come back). Queued jobs (offer / recover /
+  // renegotiate) that run after a peer-left must not build a ghost connection to them.
+  const leftPeersRef = useRef<Set<string>>(new Set());
+  // Last recovery attempt per peer, for the back-off that replaced the old give-up cap.
+  const p2pLastRecoverAtRef = useRef<Map<string, number>>(new Map());
+  // One mic (re)acquisition at a time, shared by every caller.
+  const micAcquireRef = useRef<Promise<MediaStream | null> | null>(null);
+  // Re-acquire the mic when its track ends mid-call (set once the helpers exist).
+  const onMicEndedRef = useRef<() => void>(() => {});
+  // Mode transitions / rejoins queued or running (the watchdog stays out of their way).
+  const transitionsBusyRef = useRef(0);
+  // Check the signalling socket is really alive (see probeSocket in join()).
+  const probeSocketRef = useRef<(why: string) => void>(() => {});
+  // Removes the network/visibility listeners join() installs.
+  const netListenersCleanupRef = useRef<(() => void) | null>(null);
+  // Forced rejoins (failed SFU switch, SFU without transports, failed rejoin, dead
+  // socket) with a growing back-off, so a persistent server-side failure can't make
+  // every client reconnect every ~20 s forever (each cycle = leave/join cues for all).
+  const forcedRejoinsRef = useRef(0);
+  const forceRejoinTimerRef = useRef<number | null>(null);
+  const forceRejoinRef = useRef<(why: string, minDelayMs?: number) => void>(() => {});
   const modeRef = useRef<RoomMode>("p2p");
   // --- Media-path recovery (independent of the signaling socket) ---
   // A P2P peer's grace timer: "disconnected" may self-heal, so we wait briefly before
@@ -1108,6 +1154,17 @@ export function useMediasoup() {
   // producerIds we currently hold a consumer for — used by the resync to consume only
   // what we're MISSING (a missed new-producer / a raced consume) without double-consuming.
   const consumedProducerIdsRef = useRef<Set<string>>(new Set());
+  const sfuMissingTicksRef = useRef(0);
+  // Producers with a consume IN FLIGHT, and the consumer that currently OWNS each
+  // producer. Three paths consume concurrently (the new-producer event, the resync after
+  // join/ICE restart/watchdog, and the pending-queue drain), and consumedProducerIdsRef
+  // was only filled AFTER the async consume finished — so the same producer got consumed
+  // twice; the second replaced the first, whose close handler then removed the producer
+  // from the "consumed" set although the new consumer was alive → every 15 s resync
+  // re-consumed it (an audio cut each time) and each round leaked a server consumer
+  // still forwarding RTP (bandwidth growing all call long). Found by the SFU audit.
+  const consumingProducerIdsRef = useRef<Set<string>>(new Set());
+  const consumerOwnerRef = useRef<Map<string, Consumer>>(new Map());
   // When each P2P PC was (re)created — so the watchdog can rebuild a leg STUCK in
   // "connecting"/"new" (offer/answer or an ICE candidate lost on a flaky link, or a
   // glare cross-wire) that never reaches "connected" and never flips to "failed" either.
@@ -1253,10 +1310,15 @@ export function useMediasoup() {
   // breaks (failures are surfaced to the caller's promise, then swallowed for
   // the next link), so one failed transition can't wedge all later ones.
   const runTransition = useCallback(<T>(fn: () => Promise<T>): Promise<T> => {
+    transitionsBusyRef.current += 1;
     const run = transitionChainRef.current.then(fn);
     transitionChainRef.current = run.then(
-      () => undefined,
-      () => undefined,
+      () => {
+        transitionsBusyRef.current -= 1;
+      },
+      () => {
+        transitionsBusyRef.current -= 1;
+      },
     );
     return run;
   }, []);
@@ -1271,7 +1333,7 @@ export function useMediasoup() {
         // un-timed-out emit inside a queued transition would leave the
         // transition chain pending forever and block the reconnect rejoin.
         socket
-          .timeout(10_000)
+          .timeout(20_000)
           .emit(event, data, (err: Error | null, res: T & { ok: boolean; error?: string }) => {
             if (err) return reject(err);
             if (res.ok) resolve(res);
@@ -1494,21 +1556,18 @@ export function useMediasoup() {
 
   // Drop one peer's incoming video (camera off, peer left, or SFU teardown): close
   // the consumer and clear the store so their <video> disappears.
-  const dropPeerVideo = useCallback(
-    (peerId: string) => {
-      const v = peerVideosRef.current.get(peerId);
-      if (v) {
-        try {
-          v.consumer.close();
-        } catch {
-          /* already closed */
-        }
-        peerVideosRef.current.delete(peerId);
+  const dropPeerVideo = useCallback((peerId: string) => {
+    const v = peerVideosRef.current.get(peerId);
+    if (v) {
+      try {
+        v.consumer.close();
+      } catch {
+        /* already closed */
       }
-      useRoomStore.getState().setPeerVideo(peerId, null);
-    },
-    [],
-  );
+      peerVideosRef.current.delete(peerId);
+    }
+    useRoomStore.getState().setPeerVideo(peerId, null);
+  }, []);
 
   const cleanupAllPeerVideo = useCallback(() => {
     for (const peerId of Array.from(peerVideosRef.current.keys())) {
@@ -1709,6 +1768,16 @@ export function useMediasoup() {
       // The mic monitor edge lives on micGain (a permanent node), not on
       // micSource — so it survives this re-acquisition and needs no re-wiring here.
       g.micStream = stream;
+      // A mic that dies mid-call (Bluetooth headset gone, USB unplugged, iOS interruption)
+      // used to send silence until a mode switch / reconnect / refresh — nothing listened
+      // for it. Re-acquire right away.
+      stream.getAudioTracks()[0]?.addEventListener(
+        "ended",
+        () => {
+          if (outGraphRef.current?.micStream === stream) onMicEndedRef.current();
+        },
+        { once: true },
+      );
       // Re-detect on every (re)connect — including toggling noise suppression, which
       // re-opens the mic. Detection starts centred and flips to stereo as soon as the
       // mic's R carries signal (see detectMonoCentering), so no case sends left-only.
@@ -1789,7 +1858,19 @@ export function useMediasoup() {
   // pitch shift), plus NetEQ concealment/acceleration and buffer. Phones only.
   useEffect(() => {
     if (!isPhone) return;
-    const prev = new Map<string, { t: number; tsr: number; cs: number; ins: number; rem: number; jbd: number; jbe: number; lost: number }>();
+    const prev = new Map<
+      string,
+      {
+        t: number;
+        tsr: number;
+        cs: number;
+        ins: number;
+        rem: number;
+        jbd: number;
+        jbe: number;
+        lost: number;
+      }
+    >();
     diagStatsProvider = async () => {
       const reports: RTCStatsReport[] = [];
       for (const pc of p2pConnectionsRef.current.values()) {
@@ -1836,7 +1917,8 @@ export function useMediasoup() {
           const dt = (cur.t - p.t) / 1000;
           const dS = cur.tsr - p.tsr;
           if (dt <= 0) return;
-          const who = byTrack.get(String(st.trackIdentifier)) ?? String(st.trackIdentifier).slice(0, 6);
+          const who =
+            byTrack.get(String(st.trackIdentifier)) ?? String(st.trackIdentifier).slice(0, 6);
           const jb = cur.jbe > p.jbe ? ((cur.jbd - p.jbd) / (cur.jbe - p.jbe)) * 1000 : 0;
           out.push(
             `${who}:sps${Math.round(dS / dt)} c${dS > 0 ? (((cur.cs - p.cs) / dS) * 100).toFixed(1) : "-"}% ` +
@@ -2141,7 +2223,11 @@ export function useMediasoup() {
               rttN++;
             }
             // Outgoing bitrate: bytesSent delta over the timestamp delta.
-            if (s.type === "outbound-rtp" && s.kind === "audio" && typeof s.bytesSent === "number") {
+            if (
+              s.type === "outbound-rtp" &&
+              s.kind === "audio" &&
+              typeof s.bytesSent === "number"
+            ) {
               const bytes = s.bytesSent as number;
               const ts = s.timestamp as number;
               const prev = txPrevRef.current.get(snd);
@@ -2865,14 +2951,75 @@ export function useMediasoup() {
     if (track && track.readyState === "live") return existing!;
 
     // Re-acquire mic on the user's selected device (robust to id rotation — see above).
-    const stream = await getSelectedMicStream(useRoomStore.getState().jamMode);
-    localStreamRef.current = stream;
-    connectMicToGraph(stream);
-    return stream;
-  }, [connectMicToGraph, getSelectedMicStream]);
+    // Shared: concurrent callers (several legs rebuilding at once) wait on ONE
+    // getUserMedia instead of piling up parallel captures.
+    if (micAcquireRef.current) return micAcquireRef.current;
+    const acquiring = (async () => {
+      const before = localStreamRef.current;
+      // Bounded: a getUserMedia that never settles must not block every later retry.
+      const gum = getSelectedMicStream(useRoomStore.getState().jamMode);
+      let timer = 0;
+      const stream = await Promise.race([
+        gum,
+        new Promise<never>((_, rej) => {
+          timer = window.setTimeout(
+            () => rej(new Error("mic-acquire-timeout")),
+            MIC_ACQUIRE_TIMEOUT_MS,
+          );
+        }),
+      ]).catch((err) => {
+        // If it resolves after we gave up, release it.
+        gum.then((late) => late.getTracks().forEach((t) => t.stop())).catch(() => {});
+        throw err;
+      });
+      window.clearTimeout(timer);
+      // The user switched device / processing meanwhile (that effect installs its own
+      // stream): keep theirs, drop ours.
+      const current = localStreamRef.current;
+      if (current !== before && current?.getAudioTracks()[0]?.readyState === "live") {
+        stream.getTracks().forEach((t) => t.stop());
+        return current;
+      }
+      if (store.getState().isMuted) stream.getAudioTracks().forEach((t) => (t.enabled = false));
+      localStreamRef.current = stream;
+      connectMicToGraph(stream);
+      if (before && before !== stream) before.getTracks().forEach((t) => t.stop());
+      return stream;
+    })().finally(() => {
+      micAcquireRef.current = null;
+    });
+    micAcquireRef.current = acquiring;
+    return acquiring;
+  }, [connectMicToGraph, getSelectedMicStream, store]);
+
+  // Same, but it can NEVER block or abort building the media paths: a mic that can't be
+  // re-acquired (taken by a phone call / another app, permission revoked, getUserMedia
+  // hanging) used to throw — or hang — before the RTCPeerConnection / SFU transports were
+  // created, so the RECEIVE side was never built and those peers stayed silent for us until
+  // a refresh (a hang even wedged every later mode transition). Now we just send outDest's
+  // (silent) track; if the mic acquisition completes later, ensureLocalStream still wires it.
+  const ensureLocalStreamSafe = useCallback(async (): Promise<MediaStream | null> => {
+    try {
+      return await Promise.race([
+        ensureLocalStream(),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), MIC_ACQUIRE_TIMEOUT_MS)),
+      ]);
+    } catch (err) {
+      console.warn("[mic] re-acquire failed — building media without the mic:", err);
+      return null;
+    }
+  }, [ensureLocalStream]);
+  useEffect(() => {
+    // (track.stop() — hang-up, device switch — never fires "ended"; only a real loss does.)
+    onMicEndedRef.current = () => {
+      if (!socketRef.current) return;
+      console.warn("[mic] track ended mid-call — re-acquiring");
+      void ensureLocalStreamSafe();
+    };
+  }, [ensureLocalStreamSafe]);
 
   const createP2pConnection = useCallback(
-    async (peerId: string, isOfferer: boolean) => {
+    async (peerId: string, isOfferer: boolean, answerGen?: number) => {
       const socket = socketRef.current;
       if (!socket) return;
 
@@ -2896,8 +3043,12 @@ export function useMediasoup() {
         p2pGraceTimersRef.current.delete(peerId);
       }
 
-      const localStream = await ensureLocalStream();
-      if (localStream) connectMicToGraph(localStream);
+      // Never wait for the mic here: the sender always sends outDest's track, so building
+      // the connection (and above all RECEIVING) must not depend on getUserMedia — it used
+      // to wait up to 12 s per leg inside the serialized chain (longer than the 8 s
+      // stuck-leg watchdog). A (re)acquired mic is wired into outDest when it arrives.
+      void ensureLocalStreamSafe();
+      if (leftPeersRef.current.has(peerId)) return null;
 
       const pc = new RTCPeerConnection({
         iceServers: getIceServers(),
@@ -2919,13 +3070,15 @@ export function useMediasoup() {
           socket.emit("p2p-signal", {
             targetPeerId: peerId,
             type: "ice-candidate",
-            payload: e.candidate.toJSON(),
+            payload: { ...e.candidate.toJSON(), gen: pcGenRef.current.get(pc) },
           });
         }
       };
 
       // Remote track → audio pipeline
       pc.ontrack = (e) => {
+        // A replaced connection must never swap out the live one's pipeline.
+        if (p2pConnectionsRef.current.get(peerId) !== pc) return;
         const remoteTrack = e.track;
         const jam = useRoomStore.getState().jamMode;
         const jamMs = jamBoundsRef.current.minMs; // live from the "Buffer de jitter" slider
@@ -2970,7 +3123,12 @@ export function useMediasoup() {
           if (st === "connected") {
             const s = pc.getSenders().find((x) => x.track?.kind === "audio");
             void setSenderMaxBitrate(s, roomBitrateRef.current);
-            window.setTimeout(() => void setSenderMaxBitrate(s, roomBitrateRef.current), 1200);
+            window.setTimeout(() => {
+              // Closed/replaced meanwhile (e.g. a switch to SFU) → setParameters would throw.
+              if (pc.connectionState === "closed" || p2pConnectionsRef.current.get(peerId) !== pc)
+                return;
+              void setSenderMaxBitrate(s, roomBitrateRef.current);
+            }, 1200);
           }
           return;
         }
@@ -2995,25 +3153,30 @@ export function useMediasoup() {
 
       p2pConnectionsRef.current.set(peerId, pc);
       p2pCreatedAtRef.current.set(peerId, Date.now()); // for the stuck-leg watchdog
+      const gen = isOfferer ? ++genCounterRef.current : answerGen;
+      if (gen !== undefined) pcGenRef.current.set(pc, gen);
 
       if (isOfferer) {
         // Create offer with stereo 128k low-latency Opus params.
-        pc.createOffer().then(async (offer) => {
-          offer.sdp = forceOpusParams(offer.sdp!, 128, useRoomStore.getState().jamMode);
-          await pc.setLocalDescription(offer);
-          socket.emit("p2p-signal", {
-            targetPeerId: peerId,
-            type: "offer",
-            payload: offer,
-          });
-        });
+        pc.createOffer()
+          .then(async (offer) => {
+            offer.sdp = forceOpusParams(offer.sdp!, 128, useRoomStore.getState().jamMode);
+            await pc.setLocalDescription(offer);
+            // Superseded while we were creating it → don't send a stale offer.
+            if (p2pConnectionsRef.current.get(peerId) !== pc) return;
+            socket.emit("p2p-signal", {
+              targetPeerId: peerId,
+              type: "offer",
+              payload: { type: offer.type, sdp: offer.sdp, gen: pcGenRef.current.get(pc) },
+            });
+          })
+          .catch((err) => console.error("[p2p] create offer failed:", err));
       }
 
       return pc;
     },
     [
-      ensureLocalStream,
-      connectMicToGraph,
+      ensureLocalStreamSafe,
       ensureOutGraph,
       effectiveGain,
       refreshSpatial,
@@ -3028,7 +3191,20 @@ export function useMediasoup() {
     const pending = pendingCandidatesRef.current.get(peerId);
     pendingCandidatesRef.current.delete(peerId);
     if (!pending) return;
-    for (const candidate of pending) {
+    // Apply only this connection's generation; keep candidates of a NEWER offer queued
+    // for the connection it will create; drop older ones.
+    const pcGen = pcGenRef.current.get(pc);
+    const keep: RTCIceCandidateInit[] = [];
+    const apply: RTCIceCandidateInit[] = [];
+    for (const c of pending) {
+      const g = (c as { gen?: number }).gen;
+      if (g === undefined || pcGen === undefined || g === pcGen) apply.push(c);
+      else if (g > pcGen) keep.push(c);
+    }
+    if (keep.length) pendingCandidatesRef.current.set(peerId, keep);
+    for (const queued of apply) {
+      const { gen: _g, ...candidate } = queued as RTCIceCandidateInit & { gen?: number };
+      void _g;
       await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch((err) => {
         console.error("[p2p] queued addIceCandidate failed:", err);
       });
@@ -3067,7 +3243,8 @@ export function useMediasoup() {
     // Candidates queued here can only be trailing ones from a dead P2P epoch
     // (a new P2P session's candidates can't arrive before its offer) — drop
     // them so they never flush into a future session's connection.
-    pendingCandidatesRef.current.clear();
+    // (P2P candidates queued for an offer still waiting in the chain are NOT cleared
+    // here — they belong to the P2P leg that offer is about to build.)
     // The network-monitor self-consumer belongs to the (now-closed) producer.
     if (netMonitorRef.current) {
       destroyAudioPipeline(netMonitorRef.current);
@@ -3089,6 +3266,8 @@ export function useMediasoup() {
     // Reset SFU recovery state: the consumed-producer set and any pending transport
     // recovery timers belong to the transports we just closed.
     consumedProducerIdsRef.current.clear();
+    consumingProducerIdsRef.current.clear();
+    consumerOwnerRef.current.clear();
     for (const t of sfuGraceTimersRef.current.values()) window.clearTimeout(t);
     sfuGraceTimersRef.current.clear();
     sfuRecoverAttemptsRef.current.clear();
@@ -3106,26 +3285,46 @@ export function useMediasoup() {
         pendingProducersRef.current.push({ peerId, producerId, source });
         return;
       }
-
-      const res = await emit<ConsumeResult>("consume", {
-        producerId,
-        rtpCapabilities: device.recvRtpCapabilities,
-      });
-
-      const consumer = await recvTransport.consume({
-        id: res.consumerId,
-        producerId: res.producerId,
-        kind: res.kind as "audio" | "video",
-        rtpParameters: res.rtpParameters as Parameters<
-          typeof recvTransport.consume
-        >[0]["rtpParameters"],
-      });
+      // Already held, or a consume for it is already in flight → never double-consume.
+      if (
+        consumedProducerIdsRef.current.has(producerId) ||
+        consumingProducerIdsRef.current.has(producerId)
+      ) {
+        return;
+      }
+      consumingProducerIdsRef.current.add(producerId);
+      let res: ConsumeResult;
+      let consumer: Consumer;
+      try {
+        res = await emit<ConsumeResult>("consume", {
+          producerId,
+          rtpCapabilities: device.recvRtpCapabilities,
+        });
+        consumer = await recvTransport.consume({
+          id: res.consumerId,
+          producerId: res.producerId,
+          kind: res.kind as "audio" | "video",
+          rtpParameters: res.rtpParameters as Parameters<
+            typeof recvTransport.consume
+          >[0]["rtpParameters"],
+        });
+      } finally {
+        consumingProducerIdsRef.current.delete(producerId);
+      }
 
       // Track that we now hold this producer, so the resync (get-producers) only
-      // consumes what we're MISSING and never double-consumes. Dropped when the
-      // producer closes (peer left / muted-off) so a later re-advertise re-consumes it.
+      // consumes what we're MISSING. The close handler only releases the producer if THIS
+      // consumer is still its owner (a replacement must not un-mark it), and tells the
+      // server to close its side (otherwise it keeps forwarding RTP to us).
       consumedProducerIdsRef.current.add(res.producerId);
-      consumer.observer.on("close", () => consumedProducerIdsRef.current.delete(res.producerId));
+      consumerOwnerRef.current.set(res.producerId, consumer);
+      const closedConsumer = consumer;
+      consumer.observer.on("close", () => {
+        socketRef.current?.emit("close-consumer", { consumerId: closedConsumer.id });
+        if (consumerOwnerRef.current.get(res.producerId) !== closedConsumer) return;
+        consumerOwnerRef.current.delete(res.producerId);
+        consumedProducerIdsRef.current.delete(res.producerId);
+      });
 
       // VIDEO (opt-in camera): no audio graph — wrap the track in a MediaStream and
       // hand it to the store so the peer's <video> renders it. One video consumer
@@ -3200,14 +3399,17 @@ export function useMediasoup() {
       const socket = socketRef.current;
       const myId = socket?.id;
       if (!socket || !myId) return;
+      if (leftPeersRef.current.has(peerId)) return;
+      // Spaced out with a growing back-off, but NEVER abandoned: giving up after 40 tries
+      // (≈2 min for the nudging side) left that leg silent until someone refreshed.
       const attempt = (p2pRecoverAttemptsRef.current.get(peerId) ?? 0) + 1;
+      const lastAt = p2pLastRecoverAtRef.current.get(peerId) ?? 0;
+      if (attempt > 1 && Date.now() - lastAt < recoveryBackoffMs(attempt - 1, 3000, 30000)) return;
       p2pRecoverAttemptsRef.current.set(peerId, attempt);
-      if (!shouldKeepRetrying(attempt)) {
-        console.warn(`[p2p] giving up recovery for ${peerId} after ${attempt - 1} tries`);
-        return;
-      }
+      p2pLastRecoverAtRef.current.set(peerId, Date.now());
       const action = p2pRecoveryAction(myId, peerId);
       console.warn(`[p2p] recovering leg to ${peerId} (attempt ${attempt}, ${action})`);
+      probeSocketRef.current("p2p-failed");
       if (action === "nudge") {
         // Ask the offer owner (lower id) to re-offer. If the nudge is lost, the watchdog
         // re-triggers on the next tick.
@@ -3234,10 +3436,12 @@ export function useMediasoup() {
   const recoverSfuTransport = useCallback(
     (direction: "send" | "recv") => {
       if (modeRef.current !== "sfu") return;
-      const transport =
-        direction === "send" ? sendTransportRef.current : recvTransportRef.current;
+      const transport = direction === "send" ? sendTransportRef.current : recvTransportRef.current;
       const socket = socketRef.current;
       if (!transport || transport.closed || !socket) return;
+      // Socket down: restart-ice can't reach the server; the reconnect rebuilds everything.
+      if (!socket.connected) return;
+      probeSocketRef.current("sfu-failed");
       const attempt = (sfuRecoverAttemptsRef.current.get(direction) ?? 0) + 1;
       sfuRecoverAttemptsRef.current.set(direction, attempt);
       if (attempt > 2) {
@@ -3295,6 +3499,8 @@ export function useMediasoup() {
           );
         }
       } catch (err) {
+        // Socket dropped mid-resync: the reconnect resyncs again — not an error.
+        if (!socketRef.current?.connected) return;
         console.error("[sfu] get-producers failed:", err);
       }
     })();
@@ -3310,11 +3516,36 @@ export function useMediasoup() {
   // joined; the event handlers remain the primary, prompter mechanism (incl. the grace
   // for "disconnected").
   const watchdogTickRef = useRef(0);
+  useEffect(() => {
+    forceRejoinRef.current = (why: string, minDelayMs = 1500) => {
+      const sock = socketRef.current;
+      if (!sock || forceRejoinTimerRef.current != null) return;
+      const n = ++forcedRejoinsRef.current;
+      const delay = Math.max(minDelayMs, n > 1 ? recoveryBackoffMs(n - 1, 3000, 60000) : 0);
+      console.warn(`[ws] forcing a rejoin (${why}) in ${delay} ms (#${n})`);
+      forceRejoinTimerRef.current = window.setTimeout(() => {
+        forceRejoinTimerRef.current = null;
+        if (socketRef.current !== sock) return; // left / replaced meanwhile
+        try {
+          sock.disconnect().connect();
+        } catch {
+          /* torn down */
+        }
+      }, delay);
+    };
+  }, []);
+
   const startMediaWatchdog = useCallback(() => {
     if (watchdogTimerRef.current != null) return;
     watchdogTimerRef.current = window.setInterval(() => {
       watchdogTickRef.current += 1;
-      if (modeRef.current === "p2p") {
+      // Socket down: nothing can be signalled (socket.io would BUFFER these emits and
+      // flush stale renegotiates on reconnect) and the reconnect rebuilds everything.
+      if (!socketRef.current?.connected) return;
+      // A rejoin / mode switch is rebuilding the media right now: don't "repair" legs
+      // it's about to build (that raced it with duplicate offers).
+      const busy = transitionsBusyRef.current > 0;
+      if (modeRef.current === "p2p" && !busy) {
         const nowMs = Date.now();
         // (a) Recover a DEAD leg ("failed") OR a leg STUCK never reaching "connected".
         // The stuck case (present, not failed, never healthy past P2P_STUCK_MS) was the
@@ -3340,16 +3571,37 @@ export function useMediasoup() {
           if (myId) {
             for (const [peerId, ps] of store.getState().peers) {
               if (peerId === myId || ps.isMusic) continue;
-              if (!p2pConnectionsRef.current.has(peerId) && !p2pGraceTimersRef.current.has(peerId)) {
+              if (
+                !p2pConnectionsRef.current.has(peerId) &&
+                !p2pGraceTimersRef.current.has(peerId)
+              ) {
                 recoverP2pPeerRef.current(peerId);
               }
             }
           }
         }
       } else if (modeRef.current === "sfu") {
+        // Safety net: SFU mode but no transports at all for 7 ticks (~21 s — longer than
+        // any setup with its 20 s ack timeout) = a build that failed without recovery.
+        const sock = socketRef.current;
+        if (!sendTransportRef.current && !recvTransportRef.current && sock?.connected) {
+          // While a transition is still running (a slow mobile link can take a while)
+          // wait much longer before declaring it dead.
+          if (++sfuMissingTicksRef.current >= (busy ? 40 : 7)) {
+            sfuMissingTicksRef.current = 0;
+            forceRejoinRef.current("sfu-without-transports", 0);
+          }
+        } else {
+          sfuMissingTicksRef.current = 0;
+        }
         for (const dir of ["send", "recv"] as const) {
           const t = dir === "send" ? sendTransportRef.current : recvTransportRef.current;
-          if (t && !t.closed && t.connectionState === "failed" && !sfuGraceTimersRef.current.has(dir)) {
+          if (
+            t &&
+            !t.closed &&
+            t.connectionState === "failed" &&
+            !sfuGraceTimersRef.current.has(dir)
+          ) {
             recoverSfuTransportRef.current(dir);
           }
         }
@@ -3397,13 +3649,40 @@ export function useMediasoup() {
   }, []);
 
   // --- SFU: set up transports and produce ---
+  // Re-apply a local MUTE to a freshly built send path (new SFU producer after a mode
+  // switch, or a new server peer after a reconnect). Before, the new producer ran
+  // unpaused and — after a reconnect — the server's fresh peer said "unmuted", so the
+  // others saw a muted user as live (and the SFU forwarded their silence). Mirrors mute().
+  const reassertMuteState = useCallback(async () => {
+    const st = store.getState();
+    if (!st.isMuted) {
+      // Unmuted while the socket was down: that producer-resume never reached the
+      // server, which may still say "muted" (carried over from the old session). The
+      // server only broadcasts a real change, so this is silent when already in sync.
+      if (st.hasMic) await emit("set-mute-state", { muted: false }).catch(() => {});
+      return;
+    }
+    const extra =
+      (st.secondaryEnabled && !!outGraphRef.current?.secondarySource) ||
+      st.isSharingAudio ||
+      st.fileStreamName != null;
+    if (extra) {
+      await emit("set-mute-state", { muted: true }).catch(() => {});
+      return;
+    }
+    if (modeRef.current === "sfu" && producerRef.current && !producerRef.current.closed) {
+      producerRef.current.pause();
+    }
+    await emit("producer-pause", {}).catch(() => {});
+  }, [emit, store]);
+
   const setupSfuInner = useCallback(
     async (rtpCapabilities: Record<string, unknown>) => {
       // Re-acquires the mic if its track died (e.g. iOS killed it during the
       // outage that preceded a reconnect) — producing from a dead source
       // would silently send silence for the rest of the session. Null in a
       // mic-less session; the produce below still uses outDest's silent track.
-      const localStream = await ensureLocalStream();
+      const localStream = await ensureLocalStreamSafe();
       if (localStream) connectMicToGraph(localStream);
 
       // Load device if needed
@@ -3437,15 +3716,13 @@ export function useMediasoup() {
             return;
           }
           if (!isFailingState(state)) return; // "connecting"/"new"
-          const live =
-            direction === "send" ? sendTransportRef.current : recvTransportRef.current;
+          const live = direction === "send" ? sendTransportRef.current : recvTransportRef.current;
           if (live !== transport || transport.closed) return; // stale/closed transport
           if (sfuGraceTimersRef.current.has(direction)) return;
           const delay = isTerminalState(state) ? 0 : SFU_ICE_GRACE_MS;
           const timer = window.setTimeout(() => {
             sfuGraceTimersRef.current.delete(direction);
-            const now =
-              direction === "send" ? sendTransportRef.current : recvTransportRef.current;
+            const now = direction === "send" ? sendTransportRef.current : recvTransportRef.current;
             if (now !== transport || transport.closed) return;
             if (!isFailingState(transport.connectionState)) return;
             recoverSfuTransportRef.current(direction);
@@ -3526,6 +3803,11 @@ export function useMediasoup() {
       // Voice is always stereo 128k.
       const producer = await sendTransport.produce({
         track: ensureOutGraph().outDest.stream.getAudioTracks()[0],
+        // outDest's track is SHARED with the P2P senders and outlives this producer.
+        // mediasoup-client's default pause() also sets track.enabled=false — so muting
+        // on the SFU and then switching to P2P left the track disabled and unmuting sent
+        // silence until a refresh. The server-side pause already stops the forwarding.
+        disableTrackOnPause: false,
         codecOptions: {
           opusStereo: true,
           opusDtx: false,
@@ -3558,6 +3840,7 @@ export function useMediasoup() {
         stopTracks: false,
       });
       producerRef.current = producer;
+      void reassertMuteState();
       // (Re)establish network monitoring on the fresh producer, if it's on, and
       // re-assert the jam high-priority marking on the new sender.
       void applyNetworkMonitor();
@@ -3587,7 +3870,7 @@ export function useMediasoup() {
     [
       emit,
       connectMicToGraph,
-      ensureLocalStream,
+      ensureLocalStreamSafe,
       ensureOutGraph,
       consumeProducer,
       applyNetworkMonitor,
@@ -3595,6 +3878,7 @@ export function useMediasoup() {
       applyJamSendPath,
       applyJamMesh,
       ensureVideoProducer,
+      reassertMuteState,
       store,
     ],
   );
@@ -3696,6 +3980,54 @@ export function useMediasoup() {
       });
       socketRef.current = socket;
 
+      // DEAD-SOCKET PROBE. When the network changes under us (wifi <-> mobile data, a
+      // cell handover, the phone waking up) the socket's connection often dies SILENTLY:
+      // socket.io only notices after the heartbeat (pingInterval 25 s + pingTimeout 30 s
+      // = ~55 s). Meanwhile every recovery message (renegotiate, ICE restart) went into a
+      // dead socket, so that user heard nobody for about a minute. Now, on any sign of a
+      // network change, we ping the server; two unanswered pings (~16 s) -> a fresh
+      // reconnect -> rejoin -> media rebuilt.
+      let probing = false;
+      let lastProbeAt = 0;
+      const probeSocket = (why: string) => {
+        if (socketRef.current !== socket || !socket.connected || probing) return;
+        if (Date.now() - lastProbeAt < 5000) return;
+        probing = true;
+        lastProbeAt = Date.now();
+        const ping = (left: number) => {
+          socket.timeout(8000).emit("time-sync", {}, (err: Error | null) => {
+            if (!err || socketRef.current !== socket || !socket.connected) {
+              probing = false;
+              return;
+            }
+            if (left > 0) return ping(left - 1);
+            probing = false;
+            console.warn(`[ws] socket unresponsive (${why}) — forcing a reconnect`);
+            // disconnect().connect(), NOT engine.close(): on the polling transport
+            // (the mobile fallback) engine.close() waits for the hung request to drain
+            // and meanwhile drops every packet — a black hole until the heartbeat.
+            forceRejoinRef.current("socket-unresponsive", 0);
+          });
+        };
+        ping(1);
+      };
+      probeSocketRef.current = probeSocket;
+      const onOnline = () => probeSocket("online");
+      const onNetChange = () => probeSocket("network-change");
+      const onVisible = () => {
+        if (document.visibilityState === "visible") probeSocket("visible");
+      };
+      const conn = (navigator as Navigator & { connection?: EventTarget }).connection;
+      window.addEventListener("online", onOnline);
+      conn?.addEventListener?.("change", onNetChange);
+      document.addEventListener("visibilitychange", onVisible);
+      netListenersCleanupRef.current = () => {
+        window.removeEventListener("online", onOnline);
+        conn?.removeEventListener?.("change", onNetChange);
+        document.removeEventListener("visibilitychange", onVisible);
+        probeSocketRef.current = () => {};
+      };
+
       // (Re)join the room and (re)build all media from the server's response.
       // Runs on the initial join AND on every reconnect; it never registers
       // socket handlers (those are attached once, below, and persist across
@@ -3736,16 +4068,18 @@ export function useMediasoup() {
         } catch {
           /* storage blocked — token is best-effort */
         }
+        // A rename mid-call must survive a reconnect (the closure holds the ORIGINAL name).
+        const name = (hasJoined && store.getState().displayName) || displayName;
         const joinPayload = {
           roomName,
-          displayName,
+          displayName: name,
           disableP2p: opts?.disableP2p,
           token: storedToken,
         };
 
         const joinRes = await emit<JoinResponse>("join", joinPayload);
 
-        store.getState().setRoom(roomName, displayName, socket.id!);
+        store.getState().setRoom(roomName, name, socket.id!);
         store.getState().setMode(joinRes.mode);
         modeRef.current = joinRes.mode;
 
@@ -3860,7 +4194,21 @@ export function useMediasoup() {
           store.getState().setMuted(true);
           if (modeRef.current === "sfu") producerRef.current?.pause();
           await emit("producer-pause", {}).catch(() => {});
+        } else {
+          // A reconnect gives us a NEW server peer (unmuted, camera off): carry our state.
+          await reassertMuteState();
         }
+        // Camera on across a reconnect: the new server peer must know, or the room could
+        // fall back to P2P and drop our video (the camera is what pins the SFU).
+        // Sent on AND off: a change made while the socket was down never arrived, and
+        // the server may have carried the old value over (the server only announces a
+        // real change).
+        socket.emit("set-camera", { on: store.getState().cameraOn });
+        // Same for "streaming audio" (keeps our music centred for the others).
+        const st = store.getState();
+        socket.emit("set-streaming", {
+          streaming: st.fileStreamName != null || st.isSharingAudio,
+        });
       };
 
       // socket.io fires "connect" on the first connection AND on every
@@ -3903,7 +4251,9 @@ export function useMediasoup() {
         console.warn("[ws] connect_error:", err?.message ?? err);
       });
 
+      let connGen = 0;
       socket.on("connect", async () => {
+        const myGen = ++connGen;
         clearConnectTimer();
         // Reconnected → stop probing for a server-down.
         if (maintTimerRef.current != null) {
@@ -3926,6 +4276,9 @@ export function useMediasoup() {
           // Resync consumers after a (re)join so a producer advertised during the outage
           // isn't missed. No-op in P2P. Idempotent.
           resyncProducersRef.current();
+          window.setTimeout(() => {
+            if (connGen === myGen && socket.connected) forcedRejoinsRef.current = 0;
+          }, 60_000);
           if (!hasJoined) {
             hasJoined = true;
             resolveReady();
@@ -3940,15 +4293,8 @@ export function useMediasoup() {
             // reconnect cycle so the whole connect→join runs again. Only when the
             // socket is actually up; a real drop already triggers its own reconnect.
             console.error("[ws] rejoin failed — forcing reconnect:", err);
-            if (socket.connected) {
-              window.setTimeout(() => {
-                if (!socket.connected) return;
-                try {
-                  socket.disconnect().connect();
-                } catch {
-                  /* socket torn down — nothing to do */
-                }
-              }, 1500);
+            if (socket.connected && connGen === myGen) {
+              forceRejoinRef.current("rejoin-failed");
             }
           } else {
             rejectReady(err);
@@ -3964,8 +4310,7 @@ export function useMediasoup() {
         // ongoing P2P calls. A 200 (server up → flaky network) or a fetch failure (our
         // own connectivity) does NOT reload, so unstable links no longer get reload-
         // bounced. Never probe on a deliberate close (leave / kick / bitrate reconnect).
-        const deliberate =
-          reason === "io client disconnect" || reason === "io server disconnect";
+        const deliberate = reason === "io client disconnect" || reason === "io server disconnect";
         if (hasJoined && !deliberate && maintTimerRef.current == null) {
           // Require TWO consecutive 502/503 before reloading. A single 502 can be a
           // transient blip (Caddy momentarily can't reach the upstream during a normal
@@ -3997,7 +4342,17 @@ export function useMediasoup() {
       // --- Socket event handlers (attached once; persist across reconnects) ---
       socket.on(
         "peer-joined",
-        ({ peerId, displayName: name }: { peerId: string; displayName: string }) => {
+        ({
+          peerId,
+          displayName: name,
+          muted,
+          streaming,
+        }: {
+          peerId: string;
+          displayName: string;
+          muted?: boolean;
+          streaming?: boolean;
+        }) => {
           // Guard against a duplicate peer-joined stomping a listener's chosen per-peer
           // volume/mute (addPeer resets them). Only add if new; otherwise just refresh name.
           if (!store.getState().peers.has(peerId)) {
@@ -4005,6 +4360,9 @@ export function useMediasoup() {
           } else {
             store.getState().setPeerName?.(peerId, name);
           }
+          // A reconnecting user keeps their state (a muted one must not show as live).
+          if (muted) store.getState().setPeerMuted(peerId, true);
+          if (streaming) store.getState().setPeerStreaming(peerId, true);
           const joinTs = Date.now();
           store.getState().addMessage({
             id: `sys-join-${peerId}-${joinTs}`,
@@ -4056,7 +4414,11 @@ export function useMediasoup() {
         store.getState().setJamMode(enabled);
         store
           .getState()
-          .announce(enabled ? announce_jam_room_on({ by: by ?? "" }) : announce_jam_room_off({ by: by ?? "" }));
+          .announce(
+            enabled
+              ? announce_jam_room_on({ by: by ?? "" })
+              : announce_jam_room_off({ by: by ?? "" }),
+          );
       });
 
       // Wire the DeviceSettings jam checkbox to broadcast room-wide: emit to the
@@ -4138,15 +4500,16 @@ export function useMediasoup() {
       }
       // The click itself is driven by a store-watching effect (below), so both this
       // broadcast and the join response converge through the same path.
-      socket.on(
-        "metronome",
-        (mm: { bpm: number; running: boolean; anchorServerMs: number }) => {
-          metronomeAnchorRef.current = mm.anchorServerMs;
-          store
-            .getState()
-            .setMetronomeState({ bpm: mm.bpm, running: mm.running, syncMs: clockSyncRef.current?.rttMs });
-        },
-      );
+      socket.on("metronome", (mm: { bpm: number; running: boolean; anchorServerMs: number }) => {
+        metronomeAnchorRef.current = mm.anchorServerMs;
+        store
+          .getState()
+          .setMetronomeState({
+            bpm: mm.bpm,
+            running: mm.running,
+            syncMs: clockSyncRef.current?.rttMs,
+          });
+      });
       useRoomStore.setState({
         onSetMetronome: (change: { bpm?: number; running?: boolean }) => {
           void emit("set-metronome", change).catch((err) =>
@@ -4206,6 +4569,11 @@ export function useMediasoup() {
       });
 
       socket.on("peer-left", ({ peerId }: { peerId: string }) => {
+        // Invalidate anything queued for this peer (an offer job, a recover/renegotiate)
+        // so it can't build a ghost connection after this cleanup.
+        leftPeersRef.current.add(peerId);
+        offerSeqRef.current.set(peerId, (offerSeqRef.current.get(peerId) ?? 0) + 1);
+        p2pLastRecoverAtRef.current.delete(peerId);
         const name = store.getState().peers.get(peerId)?.displayName ?? announce_a_participant();
         const wasMusic = !!store.getState().peers.get(peerId)?.isMusic;
         // Clean up P2P connection if any
@@ -4307,6 +4675,11 @@ export function useMediasoup() {
             // side must not offer). Rebuild as offerer via the tested path.
             const myId = socketRef.current?.id;
             if (modeRef.current === "p2p" && myId && myId < fromPeerId) {
+              // A connection we built moments ago already has a fresh offer in flight:
+              // rebuilding again would only race it (both sides detected the same outage).
+              const cur = p2pConnectionsRef.current.get(fromPeerId);
+              const age = Date.now() - (p2pCreatedAtRef.current.get(fromPeerId) ?? 0);
+              if (cur && !isFailingState(cur.connectionState) && age < P2P_STUCK_MS) return;
               void runTransition(async () => {
                 if (modeRef.current !== "p2p") return;
                 await createP2pConnection(fromPeerId, true);
@@ -4325,11 +4698,17 @@ export function useMediasoup() {
               const existing = p2pConnectionsRef.current.get(fromPeerId);
               if (existing && !isFailingState(existing.connectionState)) return;
             }
-            // Candidates already queued for this peer belong to a previous
-            // session — a session's candidates always arrive after its offer —
-            // so clear them NOW, at offer arrival; everything queued from this
-            // point on belongs to the session this offer starts.
-            pendingCandidatesRef.current.delete(fromPeerId);
+            const offerGen = (payload as { gen?: number }).gen;
+            // Candidates queued for this peer from an OLDER negotiation are stale: drop
+            // them. (Legacy peer without gen: a session's candidates always follow its
+            // offer, so everything queued so far is stale.)
+            const queued = pendingCandidatesRef.current.get(fromPeerId) ?? [];
+            const fresh =
+              offerGen === undefined
+                ? []
+                : queued.filter((c) => ((c as { gen?: number }).gen ?? -1) >= offerGen);
+            if (fresh.length) pendingCandidatesRef.current.set(fromPeerId, fresh);
+            else pendingCandidatesRef.current.delete(fromPeerId);
             const seq = (offerSeqRef.current.get(fromPeerId) ?? 0) + 1;
             offerSeqRef.current.set(fromPeerId, seq);
             // Serialized behind any in-flight transition: answering immediately
@@ -4341,33 +4720,55 @@ export function useMediasoup() {
               if (modeRef.current !== "p2p") return;
               if (offerSeqRef.current.get(fromPeerId) !== seq) return;
               // We received an offer — create connection as answerer
-              const pc = await createP2pConnection(fromPeerId, false);
+              const pc = await createP2pConnection(fromPeerId, false, offerGen);
               if (!pc) return;
-              await pc.setRemoteDescription(
-                new RTCSessionDescription(payload as RTCSessionDescriptionInit),
-              );
+              const superseded = () =>
+                offerSeqRef.current.get(fromPeerId) !== seq ||
+                p2pConnectionsRef.current.get(fromPeerId) !== pc;
+              const { type: sdpType, sdp } = payload as RTCSessionDescriptionInit;
+              await pc.setRemoteDescription(new RTCSessionDescription({ type: sdpType, sdp }));
+              if (superseded()) return; // a newer offer (or a peer-left) arrived meanwhile
               await flushPendingCandidates(fromPeerId, pc);
               const answer = await pc.createAnswer();
               answer.sdp = forceOpusParams(answer.sdp!, 128, useRoomStore.getState().jamMode);
               await pc.setLocalDescription(answer);
+              if (superseded()) return; // never answer an offer that's already obsolete
               socket.emit("p2p-signal", {
                 targetPeerId: fromPeerId,
                 type: "answer",
-                payload: answer,
+                payload: { type: answer.type, sdp: answer.sdp, gen: offerGen },
               });
             }).catch((err) => console.error("[p2p] offer handling failed:", err));
           } else if (type === "answer") {
             const pc = p2pConnectionsRef.current.get(fromPeerId);
-            if (pc) {
-              await pc.setRemoteDescription(
-                new RTCSessionDescription(payload as RTCSessionDescriptionInit),
-              );
+            if (!pc) return;
+            // Only the answer to THIS connection's offer, and only while it's waiting
+            // for one — a stale answer used to be accepted with the old connection's
+            // ICE/DTLS credentials and leave the leg stuck.
+            const answerGen = (payload as { gen?: number }).gen;
+            const pcGen = pcGenRef.current.get(pc);
+            if (answerGen !== undefined && pcGen !== undefined && answerGen !== pcGen) return;
+            if (pc.signalingState !== "have-local-offer") return;
+            try {
+              const { type: sdpType, sdp } = payload as RTCSessionDescriptionInit;
+              await pc.setRemoteDescription(new RTCSessionDescription({ type: sdpType, sdp }));
               await flushPendingCandidates(fromPeerId, pc);
+            } catch (err) {
+              console.warn("[p2p] answer rejected (the stuck-leg watchdog will rebuild):", err);
             }
           } else if (type === "ice-candidate") {
             const pc = p2pConnectionsRef.current.get(fromPeerId);
-            if (pc?.remoteDescription) {
-              await pc.addIceCandidate(new RTCIceCandidate(payload as RTCIceCandidateInit));
+            const candGen = (payload as { gen?: number }).gen;
+            const pcGen = pc ? pcGenRef.current.get(pc) : undefined;
+            // From an older negotiation than the current connection → stale, drop it.
+            if (candGen !== undefined && pcGen !== undefined && candGen < pcGen) return;
+            const matches = candGen === undefined || pcGen === undefined || candGen === pcGen;
+            if (pc?.remoteDescription && matches) {
+              const { gen: _g, ...cand } = payload as RTCIceCandidateInit & { gen?: number };
+              void _g;
+              await pc
+                .addIceCandidate(new RTCIceCandidate(cand))
+                .catch((err) => console.warn("[p2p] addIceCandidate failed:", err));
             } else {
               // No remote description yet (its offer/answer is still being
               // processed) — addIceCandidate would throw and lose the
@@ -4390,6 +4791,10 @@ export function useMediasoup() {
           modeRef.current = "sfu";
           store.getState().setMode("sfu");
           void runTransition(async () => {
+            // Re-assert: with the polling transport several events arrive in one packet and
+            // the join continuation could overwrite the mode with a stale one meanwhile.
+            modeRef.current = "sfu";
+            store.getState().setMode("sfu");
             // Already on a live SFU (e.g. our own join response said "sfu" and
             // this broadcast raced it) — rebuilding would duplicate transports
             // and producers, so peers would hear us twice.
@@ -4397,7 +4802,15 @@ export function useMediasoup() {
             teardownP2p();
             await setupSfu(rtpCapabilities);
             // The server will send new-producer events for all existing producers after they also set up
-          }).catch((err) => console.error("[mode] switch to SFU failed:", err));
+          }).catch((err) => {
+            console.error("[mode] switch to SFU failed — forcing a rejoin:", err);
+            // setupSfu tore everything down on failure: no transports, no P2P, and
+            // nothing else re-arms the SFU → deaf and mute until a refresh. A full
+            // reconnect re-runs the tested join path.
+            if (modeRef.current === "sfu" && socket.connected) {
+              forceRejoinRef.current("switch-to-sfu-failed");
+            }
+          });
         },
       );
 
@@ -4409,6 +4822,8 @@ export function useMediasoup() {
         modeRef.current = "p2p";
         store.getState().setMode("p2p");
         void runTransition(async () => {
+          modeRef.current = "p2p"; // re-assert (see switch-to-sfu)
+          store.getState().setMode("p2p");
           teardownSfu();
 
           // Re-establish the mesh. Only the lower-id peer initiates; the higher-id
@@ -4515,7 +4930,20 @@ export function useMediasoup() {
 
       // Resolve once the first connect → join → media setup has completed (or
       // reject if that initial join fails), so callers can flip to "joined".
-      await ready;
+      try {
+        await ready;
+      } catch (err) {
+        // The initial join failed (connect timeout / join rejected). Close THIS socket: it
+        // kept retrying on its own and, once it got through, its connect handler joined
+        // the room in the background — a ghost participant the others saw (and sent audio
+        // to) while this user was looking at the error screen.
+        netListenersCleanupRef.current?.();
+        netListenersCleanupRef.current = null;
+        socket.removeAllListeners();
+        socket.disconnect();
+        if (socketRef.current === socket) socketRef.current = null;
+        throw err;
+      }
 
       // No-mic mode: UI reflects listen/chat-only state via store flag.
     },
@@ -4538,6 +4966,7 @@ export function useMediasoup() {
       startMediaWatchdog,
       getSelectedMicStream,
       effectiveGain,
+      reassertMuteState,
       store,
     ],
   );
@@ -4577,6 +5006,12 @@ export function useMediasoup() {
       store.getState().isSharingAudio ||
       store.getState().fileStreamName != null;
     if (outDestHasExtraAudio()) {
+      // Muted BEFORE the share/file started → the producer is still paused; resume it or
+      // nobody hears the voice nor the music.
+      if (modeRef.current === "sfu" && producerRef.current?.paused) {
+        producerRef.current.resume();
+        await emit("producer-resume", {}).catch(() => {});
+      }
       await emit("set-mute-state", { muted: false }).catch(() => {});
     } else {
       if (modeRef.current === "sfu" && producerRef.current) producerRef.current.resume();
@@ -5988,6 +6423,13 @@ export function useMediasoup() {
   );
 
   const leave = useCallback(() => {
+    netListenersCleanupRef.current?.();
+    netListenersCleanupRef.current = null;
+    if (forceRejoinTimerRef.current != null) {
+      window.clearTimeout(forceRejoinTimerRef.current);
+      forceRejoinTimerRef.current = null;
+    }
+    forcedRejoinsRef.current = 0;
     // Android: park the context's output for the next call (re-created in its mode).
     resetCallOutputForNextCall();
     stopMediaWatchdog();

@@ -4,19 +4,24 @@ import os from "node:os";
 
 const numCores = os.cpus().length;
 
-// The router forwards 40000-40100 to this host. That range is SHARED with our
-// own coturn (see docs/turn-server.md): mediasoup takes the lower half and
-// coturn's relay range takes 40060-40100, so no new ports had to be opened on
-// the router. Two processes can't bind the same port — keep these disjoint.
-// 60 ports is one per WebRtcTransport (~2 per SFU peer), i.e. ~30 participants.
+// PORTS. The router forwards ONLY 40000-40100 to this host, shared by:
+//   - the SFU: a mediasoup WebRtcServer per worker = 2 FIXED UDP ports per worker
+//     (public + LAN candidate), WEBRTC_SERVER_BASE_PORT… (40000-40007 with 4 workers).
+//     ALL of a worker's WebRtcTransports share them. Before, every transport opened its
+//     own port per announced address (2 per transport → 4 per SFU peer), eating 59 ports
+//     for ~14 people and starving coturn.
+//   - the WebTransport probe (parked jam experiment): WT_PROBE_PORT, default 40008.
+//   - coturn's relay range: 40009-40100 (92 ports; was 41 → "no available ports" bursts
+//     logged 164 times in 14 days, leaving TURN-dependent phones unable to hear some
+//     people). See /etc/turnserver.conf + deploy/pi/coturn/turnserver.conf.
+// The worker's own rtc port range is now used only by LOOPBACK PlainTransports
+// (recording / Icecast taps on 127.0.0.1), so it lives OUTSIDE the forwarded range.
+// Two processes can't bind the same port — keep all of these disjoint.
+export const WEBRTC_SERVER_BASE_PORT = Number(process.env.WEBRTC_SERVER_BASE_PORT || 40000);
 export const workerSettings: WorkerSettings = {
   logLevel: "warn",
-  rtcMinPort: 40000,
-  // THROWAWAY (branch feat/webtransport-jam): 40059 was freed for the embedded
-  // WebTransport probe's QUIC listener (still inside the forwarded 40000-40100
-  // range, so no new router port). On main this is 40059. Reverting the branch
-  // restores the full range.
-  rtcMaxPort: 40058,
+  rtcMinPort: 44000,
+  rtcMaxPort: 44999,
 };
 
 export const numWorkers = Math.max(1, numCores);
@@ -97,8 +102,34 @@ if (process.env.ANNOUNCED_IP6) {
   });
 }
 
+// The WebRtcServer listen infos for worker `index`: the same announced addresses as
+// `listenInfos`, each on its own FIXED port (base + index*count + k).
+export function webRtcServerListenInfos(index: number): TransportListenInfo[] {
+  return listenInfos.map((info, k) => ({
+    ...info,
+    port: WEBRTC_SERVER_BASE_PORT + index * listenInfos.length + k,
+  }));
+}
+
+// How many forwarded ports the WebRtcServers take (the WebTransport probe sits right after).
+export function webRtcServerPortCount(): number {
+  return numWorkers * listenInfos.length;
+}
+
+// Per-transport options when a WebRtcServer is used (listen addresses come from it).
+export const serverTransportOptions = {
+  initialAvailableOutgoingBitrate: 600000,
+  enableUdp: true,
+  enableTcp: false,
+  preferUdp: true,
+  iceConsentTimeout: 30,
+};
+
+// Fallback (no WebRtcServer could be created): one port per transport and address,
+// taken from the worker's range — which is now loopback-only, so give these transports
+// an explicit FORWARDED port range instead.
 export const transportOptions: WebRtcTransportOptions = {
-  listenInfos,
+  listenInfos: listenInfos.map((info) => ({ ...info, portRange: { min: 40000, max: 40007 } })),
   initialAvailableOutgoingBitrate: 600000,
   enableUdp: true,
   enableTcp: false,
