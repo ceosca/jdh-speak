@@ -221,6 +221,9 @@ let androidCtxVoice = isAndroid && typeof (sharedAudioContext as SinkableCtx).se
 let ctxNoneAt = 0; // performance.now() when the context's sink became "none" (0 = not yet)
 let ctxVoiceDone = false; // the context's real output has been (re)created for this call
 let ctxVoicePending = false;
+// The real output was created while NO mic was open (listen-only join). If a mic opens
+// later, Android enters call mode → the output must be re-created for it.
+let ctxVoiceWithoutMic = false;
 let callOutDest: MediaStreamAudioDestinationNode | null = null;
 let callOutEl: HTMLAudioElement | null = null;
 // Element route (iOS always; Android only as the fallback). See the notes on
@@ -1692,7 +1695,12 @@ export function useMediasoup() {
       // right. But if the previous mic had already DIED, the new one starts a fresh mode
       // decision → re-create the context's output for it.
       const prevTrack = g.micStream?.getAudioTracks()[0];
-      if (prevTrack && prevTrack.readyState === "ended" && androidCtxVoice && ctxVoiceDone) {
+      if (
+        androidCtxVoice &&
+        ctxVoiceDone &&
+        ((prevTrack && prevTrack.readyState === "ended") || ctxVoiceWithoutMic)
+      ) {
+        ctxVoiceWithoutMic = false;
         setCtxSinkNone();
       }
       g.micSource?.disconnect();
@@ -3665,6 +3673,13 @@ export function useMediasoup() {
         noMicRef.current = true;
         localStreamRef.current = null;
         ensureOutGraph();
+        // Android: the context was created with no physical output and only gets its real
+        // one after a mic opens. Without a mic there is no call mode to wait for → give it
+        // its real output NOW, or a listen-only Android user hears nobody.
+        if (androidCtxVoice) {
+          ctxVoiceWithoutMic = true;
+          switchCtxToVoice();
+        }
         store.getState().setHasMic(false);
         store.getState().setMuted(true);
       }
