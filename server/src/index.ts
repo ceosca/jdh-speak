@@ -11,6 +11,7 @@ import { setWorkers } from "./room-manager.js";
 import { createSignalingServer } from "./signaling.js";
 import { RecordingManager } from "./recording.js";
 import { createZipStream } from "./zip-stream.js";
+import { followFile } from "./follow-file.js";
 import {
   assertPublicAudioUrl,
   browserPlayableAudioType,
@@ -335,23 +336,55 @@ async function main() {
     });
   });
 
-  // Recording download — mixes all participants' captured audio into a single
-  // Ogg/Opus file and streams it. Works at any time while recording continues;
-  // the capture processes are never interrupted. Keyed by the recording id
-  // (a capability token handed to clients), not the room name.
+  // Recording download — every participant's captured audio mixed into ONE Ogg/Opus
+  // file. Keyed by the recording id (a capability token handed to clients), not the room.
+  // Three ways to serve it (RecordingManager.mixDownload):
+  //  - finished + pre-rendered: the file straight from disk, with Content-Length and
+  //    Range — as fast as the per-track zip (the mix was rendered right after "stop");
+  //  - finished + still pre-rendering: follow the growing file (no second mix);
+  //  - still recording: mix on the fly (parallel, low priority) and stream it; the live
+  //    captures are never interrupted.
   app.get("/api/recordings/:id/download", (req, res) => {
-    const proc = recordingManager.mixByRecordingId(req.params.id);
-    if (!proc || !proc.stdout) {
+    const dl = recordingManager.mixDownload(req.params.id);
+    if (!dl || (dl.kind === "stream" && !dl.proc.stdout)) {
       res.status(404).json({ error: "No active recording with that id, or nothing captured yet" });
       return;
     }
+    const filename = `jdh-speak-${req.params.id}.ogg`;
     res.setHeader("Content-Type", "audio/ogg");
-    res.setHeader("Content-Disposition", `attachment; filename="jdh-speak-${req.params.id}.ogg"`);
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
 
+    if (dl.kind === "file") {
+      res.sendFile(dl.path, { dotfiles: "deny" }, (err) => {
+        if (err && !res.headersSent) res.status(404).end();
+      });
+      return;
+    }
+
+    if (dl.kind === "follow") {
+      let aborted = false;
+      res.on("close", () => {
+        aborted = true;
+      });
+      void followFile({
+        partPath: dl.partPath,
+        finalPath: dl.path,
+        isDone: dl.isDone,
+        out: res,
+        aborted: () => aborted,
+      }).catch((err) => {
+        console.error(`[mix] follow failed: ${String(err)}`);
+        if (!res.headersSent) res.status(500).end();
+        else res.destroy();
+      });
+      return;
+    }
+
+    const proc = dl.proc;
     proc.stderr?.on("data", (d: Buffer) => console.error(`[mix] ${d.toString().trim()}`));
-    proc.stdout.pipe(res);
+    proc.stdout!.pipe(res);
 
-    // If the client aborts the download, kill the mixing ffmpeg.
+    // If the client aborts the download, kill the mixing ffmpeg(s).
     const kill = () => {
       try {
         proc.kill("SIGKILL");

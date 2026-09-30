@@ -156,10 +156,22 @@ export function captureHasAudio(size: number): boolean {
   return size >= MIN_CAPTURE_BYTES;
 }
 
-// Mix N captured Ogg files into a single Ogg Opus stream written to stdout
-// (pipe:1) so the HTTP download can stream it without a temp output file.
-// The source capture files keep being written — mixing does not stop them.
-export function buildMixArgs(inputs: MixInput[]): string[] {
+// Per-input filter chain, in order:
+//  - aformat upmixes mono voice to stereo BEFORE amix (amix adopts the first input's
+//    layout, so a mono-first mix would fold the stereo music/share tracks down to mono);
+//  - aresample async fills timestamp gaps with silence so a track that paused
+//    mid-recording (mute, share stopped) stays time-aligned;
+//  - adelay shifts a late-joining stream so voices line up in time.
+function inputChain(delayMs: number): string {
+  const d = Math.max(0, Math.round(delayMs));
+  return `aformat=channel_layouts=stereo,aresample=async=1${d > 0 ? `,adelay=${d}:all=1` : ""}`;
+}
+
+// Mix N captured Ogg files into a single Ogg Opus stream written to `output` (stdout —
+// "pipe:1" — so the HTTP download can stream it without a temp file, or a file path for
+// the pre-rendered cache). The source capture files keep being written — mixing does
+// not stop them. Single ffmpeg process.
+export function buildMixArgs(inputs: MixInput[], output = "pipe:1"): string[] {
   if (inputs.length === 0) throw new Error("buildMixArgs: no inputs");
 
   const args: string[] = ["-hide_banner", "-loglevel", "warning"];
@@ -176,16 +188,7 @@ export function buildMixArgs(inputs: MixInput[]): string[] {
     inputs.forEach((input, i) => {
       const label = `a${i}`;
       labels.push(`[${label}]`);
-      const d = Math.max(0, Math.round(input.delayMs));
-      // Per-input chain, in order:
-      //  - aformat upmixes mono voice to stereo BEFORE amix (amix adopts the
-      //    first input's layout, so a mono-first mix would fold the stereo
-      //    music/share tracks down to mono);
-      //  - aresample async fills timestamp gaps with silence so a track that
-      //    paused mid-recording (mute, share stopped) stays time-aligned;
-      //  - adelay shifts a late-joining stream so voices line up in time.
-      const chain = `aformat=channel_layouts=stereo,aresample=async=1${d > 0 ? `,adelay=${d}:all=1` : ""}`;
-      parts.push(`[${i}:a]${chain}[${label}]`);
+      parts.push(`[${i}:a]${inputChain(input.delayMs)}[${label}]`);
     });
     // normalize=0 keeps each voice at full level instead of dividing by N
     // (which would make everyone quieter as more people join).
@@ -193,8 +196,106 @@ export function buildMixArgs(inputs: MixInput[]): string[] {
     args.push("-filter_complex", filter, "-map", "[out]", "-c:a", "libopus", "-b:a", "96k");
   }
 
-  args.push("-f", "ogg", "pipe:1");
+  args.push("-f", "ogg");
+  if (output !== "pipe:1") args.push("-y");
+  args.push(output);
   return args;
+}
+
+// --- Parallel ("tree") mix -------------------------------------------------
+// ffmpeg 5.1 (the Pi's) decodes every input and runs the whole filter graph on ONE core.
+// Measured on the Pi 400 with 13 real stereo Opus captures: 4.7x realtime — a 77-min
+// recording took ~16 min to mix, so the "single file" download crawled while the zip
+// (plain file reads) flew. Splitting the inputs into a few GROUPS, each decoded and
+// pre-mixed by its own ffmpeg (raw float PCM out), and a FINAL ffmpeg that sums the
+// group outputs and encodes, spreads the work over the cores: 12.3x realtime with 3
+// groups on the same data, byte-identical output. Below MIX_TREE_MIN_INPUTS the single
+// process is already fast enough and simpler.
+export const MIX_TREE_MIN_INPUTS = 4;
+export const MIX_TREE_GROUPS = 3;
+
+export interface MixPlan {
+  // One ffmpeg per group: decodes its inputs, mixes them, writes f32le stereo 48 kHz to
+  // stdout. Empty for a single-process mix.
+  groups: string[][];
+  // The final ffmpeg. With groups, it reads group g from file descriptor 3+g (pipe:3…)
+  // and must be spawned with that many extra input pipes.
+  final: string[];
+}
+
+// Greedy balance: biggest files first, each to the currently lightest group. `weights`
+// (e.g. file sizes) default to 1 each.
+function assignGroups(n: number, groups: number, weights?: number[]): number[][] {
+  const out: number[][] = Array.from({ length: groups }, () => []);
+  const load = new Array<number>(groups).fill(0);
+  const order = Array.from({ length: n }, (_, i) => i).sort(
+    (a, b) => (weights?.[b] ?? 1) - (weights?.[a] ?? 1) || a - b,
+  );
+  for (const i of order) {
+    let g = 0;
+    for (let k = 1; k < groups; k++) if (load[k] < load[g]) g = k;
+    out[g].push(i);
+    load[g] += weights?.[i] ?? 1;
+  }
+  // Keep chronological input order inside each group (deterministic args).
+  return out.map((idx) => idx.sort((a, b) => a - b)).filter((idx) => idx.length > 0);
+}
+
+export function buildMixPlan(
+  inputs: MixInput[],
+  output = "pipe:1",
+  weights?: number[],
+  groupCount = MIX_TREE_GROUPS,
+): MixPlan {
+  if (inputs.length === 0) throw new Error("buildMixPlan: no inputs");
+  if (inputs.length < MIX_TREE_MIN_INPUTS || groupCount < 2) {
+    return { groups: [], final: buildMixArgs(inputs, output) };
+  }
+  const grouping = assignGroups(inputs.length, Math.min(groupCount, inputs.length), weights);
+  const groups = grouping.map((idx) => {
+    const args = ["-hide_banner", "-loglevel", "warning"];
+    for (const i of idx) args.push("-i", inputs[i].path);
+    const parts = idx.map((i, k) => `[${k}:a]${inputChain(inputs[i].delayMs)}[a${k}]`);
+    const labels = idx.map((_, k) => `[a${k}]`).join("");
+    const filter =
+      `${parts.join(";")};${labels}amix=inputs=${idx.length}:normalize=0,` +
+      `aformat=sample_fmts=flt:sample_rates=48000:channel_layouts=stereo[o]`;
+    args.push("-filter_complex", filter, "-map", "[o]", "-f", "f32le", "pipe:1");
+    return args;
+  });
+  const final = ["-hide_banner", "-loglevel", "warning"];
+  // A deep per-input queue: with the default (8) the final stage stalls on its raw
+  // PCM pipes ("Thread message queue blocking").
+  groups.forEach((_, g) =>
+    final.push(
+      "-thread_queue_size",
+      "1024",
+      "-f",
+      "f32le",
+      "-ar",
+      "48000",
+      "-ac",
+      "2",
+      "-i",
+      `pipe:${3 + g}`,
+    ),
+  );
+  const labels = groups.map((_, g) => `[${g}:a]`).join("");
+  final.push(
+    "-filter_complex",
+    `${labels}amix=inputs=${groups.length}:normalize=0[out]`,
+    "-map",
+    "[out]",
+    "-c:a",
+    "libopus",
+    "-b:a",
+    "96k",
+    "-f",
+    "ogg",
+  );
+  if (output !== "pipe:1") final.push("-y");
+  final.push(output);
+  return { groups, final };
 }
 
 // --- Mode decision --------------------------------------------------------

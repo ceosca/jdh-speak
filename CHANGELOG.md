@@ -8,6 +8,29 @@
 
 ---
 
+## 2026-09-29 (b)
+
+### Grabación: la descarga en un solo archivo ya no es lenta
+
+**Qué:** el archivo mezclado (`/api/recordings/:id/download`) bajaba lentísimo comparado con el zip de
+pistas. **Por qué (medido en el Pi 400 con la grabación real de 13 pistas, 77 min):** la mezcla se
+generaba AL VUELO mientras se descargaba, y ffmpeg 5.1 decodifica las 13 pistas y mezcla en UN solo
+núcleo → 4,7× tiempo real ≈ 16 min para 77 min (~57 KB/s). El encoder Opus no era el problema (sin él:
+5,2×); lo era decodificar + mezclar. El zip solo lee archivos del disco.
+**Cómo (`server/src/recording.ts`, `recording-util.ts`, `follow-file.ts`, `index.ts`):**
+- **Pre-render al detener:** al parar la grabación se genera el mixdown en segundo plano (`mix.ogg`,
+  baja prioridad, tras esperar que las capturas cierren su Ogg). La descarga lo sirve **desde disco**
+  (Content-Length y Range, tan rápido como el zip).
+- Si se descarga mientras aún se genera, **sigue el archivo mientras crece** (no lanza una segunda
+  mezcla que compita).
+- **Mezcla en árbol** (4+ pistas): 3 ffmpeg decodifican y pre-mezclan grupos balanceados por tamaño en
+  paralelo y uno final suma y codifica (`buildMixPlan`). Salida idéntica. Se usa en el render y al vuelo
+  (grabación en curso). Todo con `nice 19` para no afectar las llamadas.
+**Medido con el código real en el Pi** (13 pistas × 5 min): antes 7,1×, al vuelo nuevo 10,9×, pre-render
+listo en 28 s y luego la descarga es un archivo. Tests: 113/113 (plan, pipeline en árbol, pre-render,
+seguimiento del archivo). **Requiere reiniciar `sonicroom`.**
+**Ojo (sin cambiar):** una grabación detenida se borra sola a los 15 min (`finishedTtlMs`).
+
 ## 2026-09-29
 
 ### Android: sin "pitch subido" — la llamada sale por la salida propia del AudioContext

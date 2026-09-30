@@ -7,6 +7,8 @@ import {
   sdpParamsFromRtp,
   buildCaptureArgs,
   buildMixArgs,
+  buildMixPlan,
+  MIX_TREE_MIN_INPUTS,
   captureHasAudio,
   MIN_CAPTURE_BYTES,
   decideMode,
@@ -291,5 +293,63 @@ describe("trackFileName", () => {
 
   it("never yields an empty base name", () => {
     assert.equal(trackFileName({ peerId: "???", label: "***" }, 0), "01-track.ogg");
+  });
+});
+
+describe("buildMixPlan", () => {
+  const mk = (n: number, delay = (i: number) => i * 1000) =>
+    Array.from({ length: n }, (_, i) => ({ path: `/r/t${i}.ogg`, delayMs: delay(i) }));
+
+  it("keeps a single process below the tree threshold", () => {
+    const inputs = mk(MIX_TREE_MIN_INPUTS - 1);
+    const plan = buildMixPlan(inputs);
+    assert.equal(plan.groups.length, 0);
+    assert.deepEqual(plan.final, buildMixArgs(inputs));
+  });
+
+  it("splits many inputs into groups that each read every input exactly once", () => {
+    const inputs = mk(13);
+    const plan = buildMixPlan(inputs);
+    assert.equal(plan.groups.length, 3);
+    const read = plan.groups.flatMap((g) => g.filter((_, i) => g[i - 1] === "-i"));
+    assert.equal(read.length, 13);
+    assert.deepEqual([...read].sort(), inputs.map((i) => i.path).sort());
+    for (const g of plan.groups) assert.deepEqual(g.slice(-2), ["f32le", "pipe:1"]);
+  });
+
+  it("keeps each input's own delay inside its group", () => {
+    const plan = buildMixPlan(mk(5, (i) => (i === 4 ? 2500 : 0)));
+    const filters = plan.groups.map((g) => g[g.indexOf("-filter_complex") + 1]).join(" ");
+    assert.equal((filters.match(/adelay=2500:all=1/g) ?? []).length, 1);
+  });
+
+  it("final stage reads one raw PCM pipe per group and encodes Opus", () => {
+    const plan = buildMixPlan(mk(6));
+    const f = plan.final;
+    const pipes = f.filter((_, i) => f[i - 1] === "-i");
+    assert.deepEqual(pipes, ["pipe:3", "pipe:4", "pipe:5"]);
+    assert.ok(f.join(" ").includes("amix=inputs=3:normalize=0"));
+    assert.deepEqual(f.slice(-2), ["ogg", "pipe:1"]);
+  });
+
+  it("writes to a file with -y when given an output path", () => {
+    const plan = buildMixPlan(mk(6), "/r/mix.ogg.part");
+    assert.deepEqual(plan.final.slice(-3), ["ogg", "-y", "/r/mix.ogg.part"]);
+    assert.deepEqual(
+      buildMixArgs(
+        mk(1, () => 0),
+        "/r/x.ogg",
+      ).slice(-2),
+      ["-y", "/r/x.ogg"],
+    );
+  });
+
+  it("balances groups by weight (file size)", () => {
+    const inputs = mk(6);
+    const weights = [100, 1, 1, 1, 1, 96];
+    const plan = buildMixPlan(inputs, "pipe:1", weights);
+    // the two big files must not share a group
+    const groupOf = (p: string) => plan.groups.findIndex((g) => g.includes(p));
+    assert.notEqual(groupOf("/r/t0.ogg"), groupOf("/r/t5.ogg"));
   });
 });

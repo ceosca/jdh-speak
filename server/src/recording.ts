@@ -1,6 +1,12 @@
 import { spawn as nodeSpawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import { mkdir as fsMkdir, writeFile as fsWriteFile, rm as fsRm } from "node:fs/promises";
+import {
+  mkdir as fsMkdir,
+  writeFile as fsWriteFile,
+  rm as fsRm,
+  rename as fsRename,
+} from "node:fs/promises";
 import { statSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -10,11 +16,12 @@ import {
   buildSdp,
   sdpParamsFromRtp,
   buildCaptureArgs,
-  buildMixArgs,
+  buildMixPlan,
   captureHasAudio,
   computeDelayMs,
   trackFileName,
   type MixInput,
+  type MixPlan,
 } from "./recording-util.js";
 
 // --- Minimal structural interfaces -----------------------------------------
@@ -31,6 +38,12 @@ export interface SpawnedProcess {
     event: "exit",
     listener: (code: number | null, signal: NodeJS.Signals | null) => void,
   ): unknown;
+}
+
+// A process spawned with EXTRA input pipes (fd 3, 4, …) — the final stage of the
+// parallel mix reads each group's PCM from one of them.
+export interface PipedProcess extends SpawnedProcess {
+  fds: NodeJS.WritableStream[];
 }
 
 export interface RtpConsumer {
@@ -62,6 +75,19 @@ export interface RecordingRouter {
 
 export interface RecordingDeps {
   spawn: (command: string, args: string[]) => SpawnedProcess;
+  // Spawn with `extraFds` additional writable input pipes (fd 3…). Used by the mixer.
+  spawnPiped: (command: string, args: string[], extraFds: number) => PipedProcess;
+  // Wrap a mixer command so it runs at low CPU priority (it must never starve the live
+  // call's media). Identity where unsupported.
+  lowPriority: (command: string, args: string[]) => [string, string[]];
+  rename: (from: string, to: string) => Promise<void>;
+  // Pre-render the mixed download right after a recording is stopped, so the single-file
+  // download is then served straight from disk (as fast as the per-track zip) instead of
+  // being mixed on the fly while the user waits.
+  preRenderMix: boolean;
+  // How long to wait for the capture ffmpegs to exit (SIGINT → Ogg trailer written)
+  // before pre-rendering anyway.
+  captureExitTimeoutMs: number;
   now: () => number;
   mkdir: (dir: string) => Promise<void>;
   writeFile: (file: string, data: string) => Promise<void>;
@@ -105,6 +131,8 @@ interface ProducerRecorder {
   transport: RtpPlainTransport;
   consumer: RtpConsumer;
   ffmpeg: SpawnedProcess;
+  // Resolves when the capture ffmpeg has exited (its Ogg file is complete).
+  exited: Promise<void>;
 }
 
 // One captured track in the per-track download: the on-disk file and the name
@@ -115,6 +143,29 @@ export interface TrackFile {
 }
 
 export type RecordingStatus = "recording" | "finished";
+
+// The pre-rendered mixed download of a finished recording (see RecordingDeps.preRenderMix).
+export interface MixCache {
+  state: "rendering" | "ready" | "failed";
+  // Written while rendering; renamed to `path` when complete.
+  partPath: string;
+  path: string;
+  proc: SpawnedProcess | null;
+  // Resolves when rendering ends (true = ready).
+  done: Promise<boolean>;
+}
+
+// How the mixed download should be served (see mixDownload).
+export type MixDownload =
+  | { kind: "file"; path: string }
+  | {
+      kind: "follow";
+      partPath: string;
+      path: string;
+      done: Promise<boolean>;
+      isDone: () => boolean;
+    }
+  | { kind: "stream"; proc: SpawnedProcess };
 
 export interface RoomRecording {
   id: string;
@@ -130,6 +181,7 @@ export interface RoomRecording {
   status: RecordingStatus;
   ttlHandle: unknown;
   closing: boolean;
+  mixCache: MixCache | null;
 }
 
 function safeId(s: string): string {
@@ -139,6 +191,18 @@ function safeId(s: string): string {
 export function createDefaultDeps(overrides: Partial<RecordingDeps> = {}): RecordingDeps {
   return {
     spawn: (command, args) => nodeSpawn(command, args, { stdio: ["ignore", "pipe", "pipe"] }),
+    spawnPiped: (command, args, extraFds) => {
+      const child = nodeSpawn(command, args, {
+        stdio: ["ignore", "pipe", "pipe", ...Array<"pipe">(extraFds).fill("pipe")],
+      });
+      const fds = child.stdio.slice(3) as unknown as NodeJS.WritableStream[];
+      return Object.assign(child, { fds }) as unknown as PipedProcess;
+    },
+    lowPriority: (command, args) =>
+      process.platform === "win32" ? [command, args] : ["nice", ["-n", "19", command, ...args]],
+    rename: (from, to) => fsRename(from, to),
+    preRenderMix: true,
+    captureExitTimeoutMs: 5000,
     now: () => Date.now(),
     mkdir: (dir) => fsMkdir(dir, { recursive: true }).then(() => undefined),
     writeFile: (file, data) => fsWriteFile(file, data),
@@ -225,6 +289,7 @@ export class RecordingManager {
       status: "recording",
       ttlHandle: null,
       closing: false,
+      mixCache: null,
     };
     // Claim the room slot BEFORE the first await below — two concurrent
     // start() calls could otherwise both pass the checks above, and the
@@ -307,19 +372,85 @@ export class RecordingManager {
     return null;
   }
 
-  // Spawn a one-shot ffmpeg that mixes the current capture files into a single
-  // Ogg/Opus stream on stdout. Capture processes (if still running) are never
-  // interrupted. Files that don't exist yet or are empty (e.g. a recorder that
-  // failed to start) are skipped, so one bad stream can't zero out the mix.
-  // Returns null if there's nothing with audio to mix.
+  // The capture files that carry audio, with their start offsets, and their sizes (used
+  // to balance the parallel mix groups).
+  private mixInputsWithAudio(roomName: string): { inputs: MixInput[]; sizes: number[] } {
+    const inputs: MixInput[] = [];
+    const sizes: number[] = [];
+    for (const i of this.getMixInputs(roomName)) {
+      const size = this.deps.fileSize(i.path);
+      if (!captureHasAudio(size)) continue;
+      inputs.push(i);
+      sizes.push(size);
+    }
+    return { inputs, sizes };
+  }
+
+  // Run a mix plan: the group ffmpegs (if any) each write PCM into one extra input pipe
+  // of the final ffmpeg, which writes the Ogg/Opus result (stdout or a file). Returns ONE
+  // process-like handle: stdout/exit are the final stage's, kill() stops every stage.
+  // All stages run at low CPU priority so a download never starves the live call.
+  private runMixPlan(plan: MixPlan): SpawnedProcess {
+    const { deps } = this;
+    const [fCmd, fArgs] = deps.lowPriority(deps.ffmpegPath, plan.final);
+    if (plan.groups.length === 0) return deps.spawn(fCmd, fArgs);
+    const final = deps.spawnPiped(fCmd, fArgs, plan.groups.length);
+    const groups: SpawnedProcess[] = [];
+    plan.groups.forEach((gArgs, g) => {
+      const [cmd, args] = deps.lowPriority(deps.ffmpegPath, gArgs);
+      const proc = deps.spawn(cmd, args);
+      groups.push(proc);
+      const sink = final.fds[g];
+      // A broken pipe (final stage gone / client aborted) must not crash the server.
+      (sink as unknown as EventEmitter).on?.("error", () => {});
+      (proc.stdout as unknown as EventEmitter | null)?.on?.("error", () => {});
+      proc.stdout?.pipe(sink);
+      proc.stderr?.on("data", (d: Buffer) => {
+        const line = d.toString().trim();
+        if (line) deps.log(`mix group ${g}: ${line}`);
+      });
+    });
+    const handle = new EventEmitter() as EventEmitter & SpawnedProcess;
+    handle.pid = final.pid;
+    handle.stdout = final.stdout;
+    handle.stderr = final.stderr;
+    handle.kill = (signal?: NodeJS.Signals | number) => {
+      for (const p of groups) {
+        try {
+          p.kill(signal);
+        } catch {
+          /* gone */
+        }
+      }
+      return final.kill(signal);
+    };
+    final.on("exit", (code, signal) => {
+      // The final stage is done (or died): stop any group still producing.
+      for (const p of groups) {
+        try {
+          p.kill("SIGKILL");
+        } catch {
+          /* gone */
+        }
+      }
+      handle.emit("exit", code, signal);
+    });
+    return handle;
+  }
+
+  // Spawn a one-shot mix of the current capture files into a single Ogg/Opus stream on
+  // stdout. Capture processes (if still running) are never interrupted. Files that don't
+  // exist yet or carry no audio (e.g. a recorder that failed to start) are skipped, so one
+  // bad stream can't zero out the mix. Returns null if there's nothing with audio to mix.
   mix(roomName: string): SpawnedProcess | null {
-    const inputs = this.getMixInputs(roomName).filter((i) =>
-      captureHasAudio(this.deps.fileSize(i.path)),
-    );
+    const { inputs, sizes } = this.mixInputsWithAudio(roomName);
     if (inputs.length === 0) return null;
-    const args = buildMixArgs(inputs);
-    this.deps.log(`mixing ${inputs.length} stream(s) for room "${roomName}"`);
-    return this.deps.spawn(this.deps.ffmpegPath, args);
+    const plan = buildMixPlan(inputs, "pipe:1", sizes);
+    this.deps.log(
+      `mixing ${inputs.length} stream(s) for room "${roomName}"` +
+        (plan.groups.length ? ` in ${plan.groups.length} parallel groups` : ""),
+    );
+    return this.runMixPlan(plan);
   }
 
   // Same as mix(), but addressed by the (hard-to-guess) recording id, which is
@@ -329,6 +460,85 @@ export class RecordingManager {
       if (rec.id === recordingId) return this.mix(roomName);
     }
     return null;
+  }
+
+  // How to serve the single-file (mixed) download:
+  //  - finished + pre-rendered: the file on disk (fast, like the zip; Range/length work);
+  //  - finished + still pre-rendering: follow the growing file (no second, competing mix);
+  //  - still recording, or the pre-render failed/was skipped: mix on the fly.
+  mixDownload(recordingId: string): MixDownload | null {
+    for (const [roomName, rec] of this.recordings) {
+      if (rec.id !== recordingId) continue;
+      const cache = rec.mixCache;
+      if (rec.status === "finished" && cache) {
+        if (cache.state === "ready") return { kind: "file", path: cache.path };
+        if (cache.state === "rendering") {
+          return {
+            kind: "follow",
+            partPath: cache.partPath,
+            path: cache.path,
+            done: cache.done,
+            isDone: () => cache.state !== "rendering",
+          };
+        }
+      }
+      const proc = this.mix(roomName);
+      return proc ? { kind: "stream", proc } : null;
+    }
+    return null;
+  }
+
+  // Pre-render the mixed download of a just-finished recording (see preRenderMix). Waits
+  // for the capture ffmpegs to exit first so every Ogg file is complete.
+  private async preRender(rec: RoomRecording, roomName: string): Promise<void> {
+    const { deps } = this;
+    const exits = this.allRecorders(rec).map((r) => r.exited);
+    await Promise.race([Promise.all(exits), deps.sleep(deps.captureExitTimeoutMs)]);
+    if (rec.closing || this.recordings.get(roomName) !== rec) return;
+    const { inputs, sizes } = this.mixInputsWithAudio(roomName);
+    if (inputs.length === 0) return;
+    const partPath = path.join(rec.dir, "mix.ogg.part");
+    const finalPath = path.join(rec.dir, "mix.ogg");
+    let resolveDone!: (ok: boolean) => void;
+    const cache: MixCache = {
+      state: "rendering",
+      partPath,
+      path: finalPath,
+      proc: null,
+      done: new Promise<boolean>((r) => (resolveDone = r)),
+    };
+    rec.mixCache = cache;
+    const startedAt = deps.now();
+    const proc = this.runMixPlan(buildMixPlan(inputs, partPath, sizes));
+    cache.proc = proc;
+    proc.stderr?.on("data", (d: Buffer) => {
+      const line = d.toString().trim();
+      if (line) deps.log(`mix render ${rec.id}: ${line}`);
+    });
+    proc.on("exit", (code) => {
+      cache.proc = null;
+      if (code === 0 && !rec.closing) {
+        deps
+          .rename(partPath, finalPath)
+          .then(() => {
+            cache.state = "ready";
+            deps.log(
+              `pre-rendered mix for ${rec.id} (${inputs.length} stream(s)) in ` +
+                `${Math.round((deps.now() - startedAt) / 1000)} s`,
+            );
+            resolveDone(true);
+          })
+          .catch((err) => {
+            cache.state = "failed";
+            deps.log(`mix render ${rec.id}: rename failed: ${String(err)}`);
+            resolveDone(false);
+          });
+      } else {
+        cache.state = "failed";
+        deps.log(`mix render ${rec.id} failed (code ${code})`);
+        resolveDone(false);
+      }
+    });
   }
 
   // Stop capturing but KEEP the recording downloadable. Closes every capture
@@ -341,6 +551,12 @@ export class RecordingManager {
     rec.status = "finished";
     for (const recorder of rec.recorders.values()) {
       this.stopRecorder(recorder);
+    }
+    // Pre-render the single-file download in the background (never blocks the stop).
+    if (this.deps.preRenderMix) {
+      void this.preRender(rec, roomName).catch((err) =>
+        this.deps.log(`mix render ${rec.id} crashed: ${String(err)}`),
+      );
     }
 
     if (this.deps.finishedTtlMs > 0) {
@@ -364,6 +580,12 @@ export class RecordingManager {
     this.recordings.delete(roomName);
 
     if (rec.ttlHandle) this.deps.clearTimer(rec.ttlHandle);
+    // Stop a pre-render still running (its files are about to be deleted).
+    try {
+      rec.mixCache?.proc?.kill("SIGKILL");
+    } catch {
+      /* gone */
+    }
     // If still actively recording, captures are live and must be killed.
     for (const recorder of rec.recorders.values()) {
       this.stopRecorder(recorder);
@@ -414,6 +636,7 @@ export class RecordingManager {
 
       ffmpeg = deps.spawn(deps.ffmpegPath, buildCaptureArgs(sdpPath, filePath));
       const captured = ffmpeg;
+      const exited = new Promise<void>((resolve) => captured.on("exit", () => resolve()));
       ffmpeg.stderr?.on("data", (d: Buffer) => {
         const line = d.toString().trim();
         if (line) deps.log(`ffmpeg[${base}]: ${line}`);
@@ -441,6 +664,7 @@ export class RecordingManager {
         transport,
         consumer,
         ffmpeg: captured,
+        exited,
       });
       deps.log(`recording producer ${info.producerId} (peer ${info.peerId}) on port ${port}`);
     } catch (err) {

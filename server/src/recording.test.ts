@@ -1,6 +1,7 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import path from "node:path";
 import type { RtpParameters, RtpCapabilities } from "mediasoup/types";
 import {
@@ -17,8 +18,8 @@ import { PortAllocator } from "./recording-util.js";
 
 class FakeProcess extends EventEmitter implements SpawnedProcess {
   pid = Math.floor(1); // constant; randomness not allowed in some harnesses
-  stdout = new EventEmitter() as unknown as NodeJS.ReadableStream;
-  stderr = new EventEmitter() as unknown as NodeJS.ReadableStream;
+  stdout = new PassThrough() as unknown as NodeJS.ReadableStream;
+  stderr = new PassThrough() as unknown as NodeJS.ReadableStream;
   killed = false;
   lastSignal: NodeJS.Signals | number | undefined;
   command: string;
@@ -103,9 +104,10 @@ interface Harness {
   clock: { t: number };
   timers: Array<{ fn: () => void; ms: number }>;
   missingFiles: Set<string>;
+  renames: Array<[string, string]>;
 }
 
-function makeHarness(): Harness {
+function makeHarness(opts: { preRenderMix?: boolean } = {}): Harness {
   const spawned: FakeProcess[] = [];
   const mkdirCalls: string[] = [];
   const rmCalls: string[] = [];
@@ -115,6 +117,7 @@ function makeHarness(): Harness {
   const clock = { t: 1000 };
   const timers: Array<{ fn: () => void; ms: number }> = [];
   const missingFiles = new Set<string>();
+  const renames: Array<[string, string]> = [];
 
   const deps: Partial<RecordingDeps> = {
     spawn: (command, args) => {
@@ -152,6 +155,18 @@ function makeHarness(): Harness {
     resumeDelayMs: 0,
     finishedTtlMs: 60000,
     log: () => {},
+    lowPriority: (command, args) => [command, args],
+    spawnPiped: (command, args, extraFds) => {
+      const p = new FakeProcess(command, args) as FakeProcess & { fds: PassThrough[] };
+      p.fds = Array.from({ length: extraFds }, () => new PassThrough());
+      spawned.push(p);
+      return p as unknown as ReturnType<NonNullable<RecordingDeps["spawnPiped"]>>;
+    },
+    rename: async (from, to) => {
+      renames.push([from, to]);
+    },
+    preRenderMix: opts.preRenderMix ?? false,
+    captureExitTimeoutMs: 0,
   };
 
   return {
@@ -165,6 +180,7 @@ function makeHarness(): Harness {
     clock,
     timers,
     missingFiles,
+    renames,
   };
 }
 
@@ -494,5 +510,105 @@ describe("RecordingManager.discard", () => {
     assert.equal(h.manager.isRecording("room1"), false);
     assert.equal(h.manager.isRecording("room2"), false);
     assert.equal(h.ports.size, 0);
+  });
+});
+
+const MANY = ["a", "b", "c", "d", "e"].map((n, i) => ({ producerId: `p${i}`, peerId: n }));
+const flush = () => new Promise<void>((r) => setImmediate(r));
+
+describe("RecordingManager parallel mix + pre-rendered download", () => {
+  it("mixes 4+ streams as parallel groups feeding a piped final stage", async () => {
+    const h = makeHarness();
+    await h.manager.start("room1", h.router, MANY);
+    const before = h.spawned.length;
+    const proc = h.manager.mix("room1")!;
+    assert.ok(proc);
+    const stages = h.spawned.slice(before);
+    const final = stages.find((p) => (p as unknown as { fds?: unknown[] }).fds) as FakeProcess & {
+      fds: PassThrough[];
+    };
+    const groups = stages.filter((p) => p !== final);
+    assert.equal(groups.length, 3);
+    assert.equal(final.fds.length, 3);
+    assert.deepEqual(final.args.slice(-2), ["ogg", "pipe:1"]);
+    // every capture is read by exactly one group
+    const read = groups.flatMap((g) => g.args.filter((_, i) => g.args[i - 1] === "-i"));
+    assert.equal(read.length, 5);
+    assert.equal(new Set(read).size, 5);
+    // killing the handle kills every stage; the final exiting stops the groups too
+    proc.kill("SIGKILL");
+    assert.ok(final.killed && groups.every((g) => g.killed));
+  });
+
+  it("keeps a single ffmpeg for small mixes (< 4 streams)", async () => {
+    const h = makeHarness();
+    await h.manager.start("room1", h.router, PRODUCERS);
+    const before = h.spawned.length;
+    h.manager.mix("room1");
+    assert.equal(h.spawned.length, before + 1);
+  });
+
+  it("pre-renders the mix after stop; download then serves the file", async () => {
+    const h = makeHarness({ preRenderMix: true });
+    const rec = await h.manager.start("room1", h.router, MANY);
+    const captures = h.spawned.slice();
+    await h.manager.finalize("room1");
+    // waits for the captures to exit (SIGINT → Ogg trailer) before rendering
+    for (const c of captures) c.emit("exit", 0, null);
+    await flush();
+    await flush();
+    const final = h.spawned.find((p) => (p as unknown as { fds?: unknown[] }).fds) as FakeProcess;
+    assert.ok(final, "render pipeline spawned");
+    const out = final.args[final.args.length - 1];
+    assert.equal(out, path.join(rec.dir, "mix.ogg.part"));
+    // while rendering: follow the growing file
+    const during = h.manager.mixDownload(rec.id);
+    assert.equal(during?.kind, "follow");
+    // render finishes → renamed → served as a file
+    final.emit("exit", 0, null);
+    await flush();
+    await flush();
+    assert.deepEqual(h.renames[0], [
+      path.join(rec.dir, "mix.ogg.part"),
+      path.join(rec.dir, "mix.ogg"),
+    ]);
+    const after = h.manager.mixDownload(rec.id);
+    assert.deepEqual(after, { kind: "file", path: path.join(rec.dir, "mix.ogg") });
+    if (during?.kind === "follow") assert.equal(during.isDone(), true);
+  });
+
+  it("falls back to an on-the-fly mix if the pre-render fails", async () => {
+    const h = makeHarness({ preRenderMix: true });
+    const rec = await h.manager.start("room1", h.router, MANY);
+    const captures = h.spawned.slice();
+    await h.manager.finalize("room1");
+    for (const c of captures) c.emit("exit", 0, null);
+    await flush();
+    await flush();
+    const final = h.spawned.find((p) => (p as unknown as { fds?: unknown[] }).fds) as FakeProcess;
+    final.emit("exit", 1, null);
+    await flush();
+    assert.equal(h.manager.mixDownload(rec.id)?.kind, "stream");
+  });
+
+  it("streams an on-the-fly mix while still recording", async () => {
+    const h = makeHarness({ preRenderMix: true });
+    const rec = await h.manager.start("room1", h.router, MANY);
+    assert.equal(h.manager.mixDownload(rec.id)?.kind, "stream");
+    assert.equal(h.manager.mixDownload("nope"), null);
+  });
+
+  it("discarding kills a running pre-render", async () => {
+    const h = makeHarness({ preRenderMix: true });
+    const rec = await h.manager.start("room1", h.router, MANY);
+    const captures = h.spawned.slice();
+    await h.manager.finalize("room1");
+    for (const c of captures) c.emit("exit", 0, null);
+    await flush();
+    await flush();
+    const final = h.spawned.find((p) => (p as unknown as { fds?: unknown[] }).fds) as FakeProcess;
+    assert.ok(rec.mixCache?.state === "rendering");
+    await h.manager.discard("room1");
+    assert.equal(final.killed, true);
   });
 });
