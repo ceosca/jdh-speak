@@ -109,7 +109,10 @@ export function sdpParamsFromRtp(rtpParameters: RtpParameters, port: number): Sd
 // Capture one RTP stream (described by an SDP file) into a streamable Ogg
 // Opus file. `-c:a copy` keeps the original Opus payload (no re-encode), and
 // `-flush_packets 1` keeps the file flushed so a mid-recording read picks up
-// recent audio.
+// recent audio. `-page_duration 100000` (100 ms Ogg pages, default 1 s): the Ogg
+// muxer holds up to a page in memory, so a capture that has to be cut hard (no RTP
+// left to wake it — see RecordingManager.stopRecorder) lost its last ~1 s; measured
+// on the Pi: 5.0 s of 6.0 s kept by default vs all of it with 100 ms pages.
 export function buildCaptureArgs(sdpPath: string, outPath: string): string[] {
   return [
     "-hide_banner",
@@ -127,6 +130,8 @@ export function buildCaptureArgs(sdpPath: string, outPath: string): string[] {
     "copy",
     "-flush_packets",
     "1",
+    "-page_duration",
+    "100000",
     "-y",
     outPath,
   ];

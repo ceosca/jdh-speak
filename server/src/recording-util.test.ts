@@ -138,6 +138,8 @@ describe("buildCaptureArgs", () => {
       "copy",
       "-flush_packets",
       "1",
+      "-page_duration",
+      "100000",
       "-y",
       "/tmp/out.ogg",
     ]);

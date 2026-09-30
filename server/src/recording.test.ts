@@ -22,6 +22,7 @@ class FakeProcess extends EventEmitter implements SpawnedProcess {
   stderr = new PassThrough() as unknown as NodeJS.ReadableStream;
   killed = false;
   lastSignal: NodeJS.Signals | number | undefined;
+  signals: Array<NodeJS.Signals | number | undefined> = [];
   command: string;
   args: string[];
   constructor(command: string, args: string[]) {
@@ -32,6 +33,7 @@ class FakeProcess extends EventEmitter implements SpawnedProcess {
   kill(signal?: NodeJS.Signals | number): boolean {
     this.killed = true;
     this.lastSignal = signal;
+    this.signals.push(signal);
     return true;
   }
 }
@@ -107,7 +109,9 @@ interface Harness {
   renames: Array<[string, string]>;
 }
 
-function makeHarness(opts: { preRenderMix?: boolean } = {}): Harness {
+function makeHarness(
+  opts: { preRenderMix?: boolean; sleep?: (ms: number) => Promise<void> } = {},
+): Harness {
   const spawned: FakeProcess[] = [];
   const mkdirCalls: string[] = [];
   const rmCalls: string[] = [];
@@ -138,7 +142,7 @@ function makeHarness(opts: { preRenderMix?: boolean } = {}): Harness {
     // pretend capture files exist with real audio (well above MIN_CAPTURE_BYTES)
     // unless explicitly marked missing/empty
     fileSize: (file) => (missingFiles.has(file) ? 0 : 4096),
-    sleep: async () => {},
+    sleep: opts.sleep ?? (async () => {}),
     setTimer: (fn, ms) => {
       const entry = { fn, ms };
       timers.push(entry);
@@ -153,6 +157,8 @@ function makeHarness(opts: { preRenderMix?: boolean } = {}): Harness {
     ffmpegPath: "ffmpeg",
     rtpListenIp: "127.0.0.1",
     resumeDelayMs: 0,
+    waitForPortBound: async () => true,
+    captureStopGraceMs: 0,
     finishedTtlMs: 60000,
     log: () => {},
     lowPriority: (command, args) => [command, args],
@@ -402,6 +408,66 @@ describe("RecordingManager.mix", () => {
     const proc = h.manager.mixByRecordingId(rec.id) as FakeProcess;
     assert.ok(proc, "finished recording is still downloadable");
     assert.deepEqual(proc.args.slice(-2), ["ogg", "pipe:1"]);
+  });
+});
+
+// A sleep the test releases by hand (to hold a stopping capture inside its grace wait).
+function manualSleep() {
+  const pending: Array<() => void> = [];
+  return {
+    sleep: () => new Promise<void>((r) => pending.push(r)),
+    release: () => pending.splice(0).forEach((r) => r()),
+  };
+}
+const tick = () => new Promise((r) => setImmediate(r));
+
+describe("RecordingManager graceful capture stop", () => {
+  it("keeps RTP flowing until the capture exits on SIGINT (clean Ogg), no 2nd signal", async () => {
+    const ms = manualSleep();
+    const h = makeHarness({ sleep: ms.sleep });
+    await h.manager.start("room1", h.router, PRODUCERS);
+    const captures = h.spawned.slice();
+    const stopping = h.manager.finalize("room1");
+    await tick();
+    // SIGINT sent, but the consumers stay open so ffmpeg's next packet wakes it up
+    assert.ok(captures.every((p) => p.signals.length === 1 && p.signals[0] === "SIGINT"));
+    assert.ok(h.router.transports.every((t) => !t.closed && !t.consumer!.closed));
+    captures.forEach((p) => p.emit("exit", 0, null));
+    await stopping;
+    assert.ok(captures.every((p) => p.signals.length === 1)); // exited cleanly, not cut
+    assert.ok(h.router.transports.every((t) => t.closed && t.consumer!.closed));
+    assert.equal(h.ports.size, 0);
+  });
+
+  it("cuts a capture that can't exit (no RTP: muted/gone producer) after the grace", async () => {
+    const h = makeHarness(); // sleep resolves at once = grace elapsed
+    await h.manager.start("room1", h.router, PRODUCERS);
+    const captures = h.spawned.slice();
+    await h.manager.finalize("room1");
+    assert.ok(captures.every((p) => p.signals.join() === "SIGINT,SIGINT"));
+    assert.equal(h.ports.size, 0);
+  });
+
+  it("a discard during the grace wait releases each port only once", async () => {
+    const ms = manualSleep();
+    const h = makeHarness({ sleep: ms.sleep });
+    await h.manager.start("room1", h.router, PRODUCERS);
+    const stopping = h.manager.finalize("room1");
+    await tick();
+    await h.manager.discard("room1"); // room emptied while stopping
+    assert.equal(h.ports.size, 0);
+    // New captures take every port — including the two the old ones just freed.
+    for (;;) {
+      try {
+        h.ports.allocate();
+      } catch {
+        break;
+      }
+    }
+    const full = h.ports.size;
+    ms.release();
+    await stopping;
+    assert.equal(h.ports.size, full); // the old stop must NOT free ports now in use
   });
 });
 

@@ -7,7 +7,7 @@ import {
   rm as fsRm,
   rename as fsRename,
 } from "node:fs/promises";
-import { statSync } from "node:fs";
+import { statSync, readFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import type { RtpParameters, RtpCapabilities } from "mediasoup/types";
@@ -101,8 +101,17 @@ export interface RecordingDeps {
   ffmpegPath: string;
   rtpListenIp: string;
   // ms to wait after spawning the capture ffmpeg (so it binds its UDP port)
-  // before resuming the consumer, to avoid losing the first packets.
+  // before resuming the consumer, to avoid losing the first packets — the FALLBACK
+  // when waitForPortBound can't tell (non-Linux).
   resumeDelayMs: number;
+  // Resolves true once something listens on this loopback UDP port (the capture
+  // ffmpeg), false if it can't tell / timed out. Measured on the Pi: ffmpeg takes
+  // ~420 ms to bind (idle; more with several starting at once), so the old fixed
+  // 250 ms lost the first part of every track.
+  waitForPortBound: (port: number, timeoutMs: number) => Promise<boolean>;
+  // How long a stopping capture may keep receiving RTP to exit cleanly on SIGINT
+  // before it's cut (see stopRecorder).
+  captureStopGraceMs: number;
   // how long a finished (stopped) recording stays downloadable before it's
   // auto-discarded. 0 disables the timer.
   finishedTtlMs: number;
@@ -133,6 +142,8 @@ interface ProducerRecorder {
   ffmpeg: SpawnedProcess;
   // Resolves when the capture ffmpeg has exited (its Ogg file is complete).
   exited: Promise<void>;
+  // Consumer/transport closed and port released (stopRecorder runs that once).
+  released?: boolean;
 }
 
 // One captured track in the per-track download: the on-disk file and the name
@@ -188,6 +199,38 @@ function safeId(s: string): string {
   return s.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
+// Linux: is anything bound to this local UDP port? (/proc/net/udp{,6}, local_address
+// column "ADDR:PORT" in hex.) null when /proc isn't available (not Linux).
+function udpPortBound(port: number): boolean | null {
+  const hex = port.toString(16).toUpperCase().padStart(4, "0");
+  let seen = false;
+  for (const file of ["/proc/net/udp", "/proc/net/udp6"]) {
+    let text: string;
+    try {
+      text = readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    seen = true;
+    for (const line of text.split("\n").slice(1)) {
+      const local = line.trim().split(/\s+/)[1];
+      if (local && local.split(":").pop() === hex) return true;
+    }
+  }
+  return seen ? false : null;
+}
+
+async function waitUdpPortBound(port: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const bound = udpPortBound(port);
+    if (bound === null) return false; // can't tell → caller falls back to a fixed delay
+    if (bound) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
 export function createDefaultDeps(overrides: Partial<RecordingDeps> = {}): RecordingDeps {
   return {
     spawn: (command, args) => nodeSpawn(command, args, { stdio: ["ignore", "pipe", "pipe"] }),
@@ -227,6 +270,8 @@ export function createDefaultDeps(overrides: Partial<RecordingDeps> = {}): Recor
     ffmpegPath: process.env.FFMPEG_PATH || "ffmpeg",
     rtpListenIp: "127.0.0.1",
     resumeDelayMs: 250,
+    waitForPortBound: waitUdpPortBound,
+    captureStopGraceMs: 1500,
     finishedTtlMs: 15 * 60 * 1000,
     log: (msg) => console.log(`[recording] ${msg}`),
     ...overrides,
@@ -330,7 +375,7 @@ export class RecordingManager {
     if (!recorder) return;
     rec.recorders.delete(producerId);
     rec.closedRecorders.push(recorder);
-    this.stopRecorder(recorder);
+    await this.stopRecorder(recorder, true);
   }
 
   // Every recorder that belongs to this recording — still-live ones plus those
@@ -549,9 +594,8 @@ export class RecordingManager {
     if (!rec || rec.status !== "recording") return null;
 
     rec.status = "finished";
-    for (const recorder of rec.recorders.values()) {
-      this.stopRecorder(recorder);
-    }
+    // Graceful, in parallel: each capture gets up to captureStopGraceMs to exit cleanly.
+    await Promise.all(Array.from(rec.recorders.values(), (r) => this.stopRecorder(r, true)));
     // Pre-render the single-file download in the background (never blocks the stop). The
     // cache entry is created NOW, so a download clicked right after "stop" follows it.
     if (this.deps.preRenderMix) {
@@ -598,9 +642,10 @@ export class RecordingManager {
     } catch {
       /* gone */
     }
-    // If still actively recording, captures are live and must be killed.
+    // If still actively recording, captures are live and must be killed (their files
+    // are about to be deleted, so no graceful wait).
     for (const recorder of rec.recorders.values()) {
-      this.stopRecorder(recorder);
+      void this.stopRecorder(recorder, false);
     }
     rec.recorders.clear();
 
@@ -657,8 +702,10 @@ export class RecordingManager {
         deps.log(`ffmpeg[${base}] exited code=${code} signal=${signal}`);
       });
 
-      // Let ffmpeg bind its UDP port before media starts flowing.
-      if (deps.resumeDelayMs > 0) await deps.sleep(deps.resumeDelayMs);
+      // Let ffmpeg bind its UDP port before media starts flowing (packets sent before
+      // that are dropped → the start of the track was missing).
+      const bound = await deps.waitForPortBound(port, 5000);
+      if (!bound && deps.resumeDelayMs > 0) await deps.sleep(deps.resumeDelayMs);
       // Bail out if the recording was torn down while we were waiting.
       if (rec.closing || rec.status !== "recording") {
         throw new Error("recording closed during recorder startup");
@@ -701,13 +748,37 @@ export class RecordingManager {
     }
   }
 
-  private stopRecorder(recorder: ProducerRecorder): void {
+  // Stop one capture. SIGINT makes ffmpeg finish the Ogg cleanly — but ffmpeg only
+  // notices the FIRST SIGINT when its next packet arrives (a blocked read isn't
+  // interrupted by it). The old code closed the consumer in the same instant, so no
+  // packet ever came: ffmpeg hung until a second signal cut it hard ("Immediate exit
+  // requested", no trailer, the last buffered audio lost — measured: tracks ~4 s short
+  // on the Pi). Graceful: SIGINT while RTP still flows, close the consumer once ffmpeg
+  // has exited; if it can't (muted/paused or gone producer → no RTP), cut it after
+  // captureStopGraceMs (100 ms Ogg pages keep that loss negligible).
+  private async stopRecorder(recorder: ProducerRecorder, graceful: boolean): Promise<void> {
     try {
-      // SIGINT lets ffmpeg finalize the Ogg trailer cleanly.
       recorder.ffmpeg.kill("SIGINT");
     } catch {
       /* ignore */
     }
+    if (graceful) {
+      const exited = await Promise.race([
+        recorder.exited.then(() => true),
+        this.deps.sleep(this.deps.captureStopGraceMs).then(() => false),
+      ]);
+      if (!exited) {
+        try {
+          recorder.ffmpeg.kill("SIGINT"); // 2nd signal: ffmpeg exits now
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    // A discard may have torn it down during the grace wait: release only once (a port
+    // released twice could be handed to a new capture while still in use).
+    if (recorder.released) return;
+    recorder.released = true;
     try {
       recorder.consumer.close();
     } catch {

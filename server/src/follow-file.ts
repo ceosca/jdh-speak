@@ -10,6 +10,7 @@ import { open, type FileHandle } from "node:fs/promises";
 export interface FollowSink {
   write(chunk: Buffer): boolean;
   once(event: "drain" | "close", cb: () => void): unknown;
+  off(event: "drain" | "close", cb: () => void): unknown;
   end(): void;
 }
 
@@ -67,9 +68,15 @@ export async function followFile(opts: FollowOptions): Promise<number> {
         const ok = opts.out.write(Buffer.from(chunk.subarray(0, bytesRead)));
         if (!ok) {
           // Wait for the socket to drain — or to close (client gone), never forever.
+          // Remove whichever listener didn't fire, or they pile up once per wait.
           await new Promise<void>((r) => {
-            opts.out.once("drain", () => r());
-            opts.out.once("close", () => r());
+            const done = () => {
+              opts.out.off("drain", done);
+              opts.out.off("close", done);
+              r();
+            };
+            opts.out.once("drain", done);
+            opts.out.once("close", done);
           });
         }
         continue;

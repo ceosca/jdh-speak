@@ -8,6 +8,29 @@
 
 ---
 
+## 2026-09-30 (b)
+
+### Grabación: pistas completas (se perdía el principio y el final de cada una)
+
+**Qué:** en la verificación en producción las pistas salían ~4 s más cortas que la grabación.
+**Por qué (medido en la Pi con su ffmpeg):** (1) **final:** al detener se mandaba SIGINT a ffmpeg y en
+el MISMO instante se cerraba el consumidor → no llegaba más RTP, y ffmpeg solo atiende el primer SIGINT
+cuando recibe un paquete: quedaba colgado hasta que otro corte lo mataba ("Immediate exit requested",
+sin trailer, se perdía el audio que tenía en buffer — prueba: 4,0 s guardados de ~6). (2) **inicio:**
+ffmpeg tarda ~420 ms en abrir su puerto UDP (Pi en reposo; más con varias capturas a la vez) y se
+esperaba fijo 250 ms → se tiraban los primeros paquetes.
+**Cómo (`server/src/recording.ts`, `recording-util.ts`):** cierre ordenado: SIGINT con el RTP todavía
+fluyendo y se cierra el consumidor recién cuando ffmpeg terminó (medido: cierra en 62 ms con archivo
+completo); si no puede (persona silenciada o que se fue → sin RTP) se corta a los 1,5 s. Páginas Ogg de
+100 ms (`-page_duration 100000`): aun con corte forzado no se pierde nada (medido: 6,1 s de 6 vs 5,0 s
+por defecto). Al iniciar se espera a que el puerto esté realmente abierto (`/proc/net/udp`), con los
+250 ms como respaldo fuera de Linux. Un descarte durante la espera no libera un puerto dos veces.
+También: `follow-file` acumulaba listeners `close` en cada espera (warning `MaxListenersExceeded`).
+Tests: 122/122 (nuevos: cierre limpio sin segunda señal, corte tras la espera, carrera descarte/puertos
+— falla sin el arreglo, fuga de listeners — falla sin el arreglo).
+
+---
+
 ## 2026-09-30
 
 ### Estabilidad de llamadas: "deja de escuchar a algunos hasta que actualiza"
@@ -55,7 +78,9 @@ cerrada a la fuerza, silencio a través de una reconexión, 5 min continuos, cor
 completa en ~7 s); SFU 7/7 (6 personas, puertos fijos, P2P↔SFU ×3, consumidores constantes 3 min,
 `?p2p=off` con cortes, silencio entre modos, carreras de señalización 20/20 y 30/30, grabación).
 Revisión adversarial del diff: sus 3 bugs confirmados corregidos. Tests servidor 118/118.
-**Requiere:** reiniciar `sonicroom` y cambiar `/etc/turnserver.conf` a `min-port=40009` (juntos).
+**Desplegado** (`50d2275`) el 2026-09-30 09:06: `sonicroom` reiniciado y `/etc/turnserver.conf` a
+`min-port=40009` (backup `/etc/turnserver.conf.bak-2026-09-30`), coturn reiniciado. En la Pi escuchan
+40000-40007 (SFU) y 40008 (WebTransport).
 
 ## 2026-09-29 (b)
 

@@ -100,6 +100,34 @@ describe("followFile", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  it("doesn't pile up close listeners across many backpressure waits", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "follow-"));
+    const fin = path.join(dir, "mix.ogg");
+    await writeFile(fin, Buffer.alloc(4 * 1024 * 1024, 7)); // many 64 KB chunks
+    // Tiny buffer + a slow reader → write() returns false on almost every chunk.
+    const out = new PassThrough({ highWaterMark: 1024 });
+    let got = 0;
+    let maxClose = 0;
+    const timer = setInterval(() => {
+      maxClose = Math.max(maxClose, out.listenerCount("close"));
+      let c: Buffer | null;
+      while ((c = out.read() as Buffer | null)) got += c.length;
+    }, 1);
+    const n = await followFile({
+      partPath: path.join(dir, "mix.ogg.part"),
+      finalPath: fin,
+      isDone: () => true,
+      out,
+      aborted: () => false,
+    });
+    clearInterval(timer);
+    assert.equal(n, 4 * 1024 * 1024);
+    assert.ok(maxClose <= 1, `close listeners piled up: ${maxClose}`);
+    assert.equal(out.listenerCount("close"), 0);
+    assert.ok(got > 0);
+    await rm(dir, { recursive: true, force: true });
+  });
+
   it("stops when the client aborts", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "follow-"));
     const part = path.join(dir, "mix.ogg.part");
