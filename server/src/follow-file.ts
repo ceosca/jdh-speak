@@ -26,19 +26,34 @@ export interface FollowOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
-async function openEither(a: string, b: string): Promise<FileHandle> {
-  try {
-    return await open(a, "r");
-  } catch {
-    return await open(b, "r");
+async function openEither(a: string, b: string): Promise<FileHandle | null> {
+  for (const p of [a, b]) {
+    try {
+      return await open(p, "r");
+    } catch {
+      /* not there (yet) */
+    }
   }
+  return null;
 }
 
 export async function followFile(opts: FollowOptions): Promise<number> {
   const pollMs = opts.pollMs ?? 250;
   const chunk = Buffer.allocUnsafe(opts.chunkBytes ?? 64 * 1024);
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const fh = await openEither(opts.partPath, opts.finalPath);
+  // The writer may not have created the file yet: wait for it while it's still working.
+  let fh = await openEither(opts.partPath, opts.finalPath);
+  while (!fh) {
+    if (opts.aborted()) {
+      opts.out.end();
+      return 0;
+    }
+    const doneBeforeOpen = opts.isDone();
+    fh = await openEither(opts.partPath, opts.finalPath);
+    if (fh) break;
+    if (doneBeforeOpen) throw new Error("followFile: the file never appeared");
+    await sleep(pollMs);
+  }
   let pos = 0;
   try {
     for (;;) {

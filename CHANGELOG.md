@@ -29,6 +29,14 @@ núcleo → 4,7× tiempo real ≈ 16 min para 77 min (~57 KB/s). El encoder Opus
 **Medido con el código real en el Pi** (13 pistas × 5 min): antes 7,1×, al vuelo nuevo 10,9×, pre-render
 listo en 28 s y luego la descarga es un archivo. Tests: 113/113 (plan, pipeline en árbol, pre-render,
 seguimiento del archivo). **Requiere reiniciar `sonicroom`.**
+**Verificado de punta a punta en la app real** (5 participantes, Edge headless, grabación por la UI):
+durante la grabación el archivo sale válido; al detener, 186 descargas lanzadas entre 0 y 3000 ms dan
+todas 200 y byte-idénticas al `mix.ogg` final, sin ninguna mezcla extra; desde disco 168–213 MB/s con
+Content-Length/Range (el zip: ~150 MB/s). Cortar una descarga no deja ffmpeg colgados.
+**Bug encontrado y arreglado en la verificación:** una descarga en los primeros ~240 ms tras detener
+daba HTTP 500 (el archivo aún no existía). Ahora el estado "generando" se crea al detener, el `.part`
+vacío se crea antes de lanzar ffmpeg, el seguimiento espera a que aparezca y, si el pre-render falla,
+se mezcla al vuelo. Tests: 118/118.
 **Ojo (sin cambiar):** una grabación detenida se borra sola a los 15 min (`finishedTtlMs`).
 
 ## 2026-09-29

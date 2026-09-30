@@ -591,6 +591,40 @@ describe("RecordingManager parallel mix + pre-rendered download", () => {
     assert.equal(h.manager.mixDownload(rec.id)?.kind, "stream");
   });
 
+  it("a download clicked the instant recording stops follows the render (no 2nd mix)", async () => {
+    const h = makeHarness({ preRenderMix: true });
+    const rec = await h.manager.start("room1", h.router, MANY);
+    const before = h.spawned.length;
+    await h.manager.finalize("room1");
+    // captures haven't even exited yet: already "follow", and nothing extra spawned
+    assert.equal(h.manager.mixDownload(rec.id)?.kind, "follow");
+    assert.equal(h.spawned.length, before);
+  });
+
+  it("creates the (empty) output file before spawning the render", async () => {
+    const h = makeHarness({ preRenderMix: true });
+    const rec = await h.manager.start("room1", h.router, MANY);
+    const captures = h.spawned.slice();
+    await h.manager.finalize("room1");
+    for (const c of captures) c.emit("exit", 0, null);
+    await flush();
+    await flush();
+    const part = path.join(rec.dir, "mix.ogg.part");
+    assert.ok(h.writes.some((w) => w.file === part && w.data === ""));
+  });
+
+  it("marks the cache failed (download falls back) when nothing has audio", async () => {
+    const h = makeHarness({ preRenderMix: true });
+    const rec = await h.manager.start("room1", h.router, MANY);
+    for (const r of rec.recorders.values()) h.missingFiles.add(r.filePath);
+    const captures = h.spawned.slice();
+    await h.manager.finalize("room1");
+    for (const c of captures) c.emit("exit", 0, null);
+    assert.equal(await rec.mixCache!.done, false);
+    assert.equal(rec.mixCache!.state, "failed");
+    assert.equal(h.manager.mixDownload(rec.id), null); // nothing to mix → 404
+  });
+
   it("streams an on-the-fly mix while still recording", async () => {
     const h = makeHarness({ preRenderMix: true });
     const rec = await h.manager.start("room1", h.router, MANY);

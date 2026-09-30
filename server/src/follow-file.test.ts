@@ -62,6 +62,44 @@ describe("followFile", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  it("waits for the file to be created while the writer is still working", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "follow-"));
+    const part = path.join(dir, "mix.ogg.part");
+    let done = false;
+    const c = collector();
+    const p = followFile({
+      partPath: part,
+      finalPath: path.join(dir, "mix.ogg"),
+      isDone: () => done,
+      out: c.out,
+      aborted: () => false,
+      pollMs: 5,
+    });
+    await new Promise((r) => setTimeout(r, 40)); // file doesn't exist yet
+    await writeFile(part, Buffer.from("late"));
+    await new Promise((r) => setTimeout(r, 20));
+    done = true;
+    await p;
+    assert.equal(c.bytes().toString(), "late");
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("rejects (so the caller can fall back) if the writer finished without a file", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "follow-"));
+    const c = collector();
+    await assert.rejects(
+      followFile({
+        partPath: path.join(dir, "x.part"),
+        finalPath: path.join(dir, "x"),
+        isDone: () => true,
+        out: c.out,
+        aborted: () => false,
+        pollMs: 5,
+      }),
+    );
+    await rm(dir, { recursive: true, force: true });
+  });
+
   it("stops when the client aborts", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "follow-"));
     const part = path.join(dir, "mix.ogg.part");

@@ -11,6 +11,7 @@ import { setWorkers } from "./room-manager.js";
 import { createSignalingServer } from "./signaling.js";
 import { RecordingManager } from "./recording.js";
 import { createZipStream } from "./zip-stream.js";
+import type { SpawnedProcess } from "./recording.js";
 import { followFile } from "./follow-file.js";
 import {
   assertPublicAudioUrl,
@@ -354,6 +355,22 @@ async function main() {
     res.setHeader("Content-Type", "audio/ogg");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
 
+    // Stream an on-the-fly mix; kill it (every stage) if the client aborts.
+    const streamMix = (proc: SpawnedProcess) => {
+      proc.stderr?.on("data", (d: Buffer) => console.error(`[mix] ${d.toString().trim()}`));
+      proc.stdout!.pipe(res);
+      res.on("close", () => {
+        try {
+          proc.kill("SIGKILL");
+        } catch {
+          /* ignore */
+        }
+      });
+      proc.on("exit", (code) => {
+        if (code) console.error(`[mix] ffmpeg exited with code ${code}`);
+      });
+    };
+
     if (dl.kind === "file") {
       res.sendFile(dl.path, { dotfiles: "deny" }, (err) => {
         if (err && !res.headersSent) res.status(404).end();
@@ -374,28 +391,19 @@ async function main() {
         aborted: () => aborted,
       }).catch((err) => {
         console.error(`[mix] follow failed: ${String(err)}`);
-        if (!res.headersSent) res.status(500).end();
-        else res.destroy();
+        if (res.headersSent) {
+          res.destroy();
+          return;
+        }
+        // Nothing sent yet (the pre-render failed before writing): mix on the fly instead.
+        const proc = recordingManager.mixByRecordingId(req.params.id);
+        if (proc?.stdout) streamMix(proc);
+        else res.status(404).json({ error: "Nothing captured to mix" });
       });
       return;
     }
 
-    const proc = dl.proc;
-    proc.stderr?.on("data", (d: Buffer) => console.error(`[mix] ${d.toString().trim()}`));
-    proc.stdout!.pipe(res);
-
-    // If the client aborts the download, kill the mixing ffmpeg(s).
-    const kill = () => {
-      try {
-        proc.kill("SIGKILL");
-      } catch {
-        /* ignore */
-      }
-    };
-    res.on("close", kill);
-    proc.on("exit", (code) => {
-      if (code) console.error(`[mix] ffmpeg exited with code ${code}`);
-    });
+    streamMix(dl.proc);
   });
 
   // Per-track download — packs each participant's captured audio into its own

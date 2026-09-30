@@ -488,28 +488,37 @@ export class RecordingManager {
     return null;
   }
 
-  // Pre-render the mixed download of a just-finished recording (see preRenderMix). Waits
-  // for the capture ffmpegs to exit first so every Ogg file is complete.
-  private async preRender(rec: RoomRecording, roomName: string): Promise<void> {
+  // Pre-render the mixed download of a just-finished recording (see preRenderMix). The
+  // cache entry already exists (finalize creates it synchronously, so a download clicked
+  // the instant "stop" is pressed follows the render instead of starting a second, competing
+  // mix). Waits for the capture ffmpegs to exit first so every Ogg file is complete, and
+  // creates the (empty) output file BEFORE spawning ffmpeg — ffmpeg only creates it after
+  // probing all its inputs, and a download following the file in that gap used to fail.
+  private async preRender(
+    rec: RoomRecording,
+    roomName: string,
+    cache: MixCache,
+    resolveDone: (ok: boolean) => void,
+  ): Promise<void> {
     const { deps } = this;
+    const fail = (why: string) => {
+      cache.state = "failed";
+      deps.log(`mix render ${rec.id}: ${why}`);
+      resolveDone(false);
+    };
     const exits = this.allRecorders(rec).map((r) => r.exited);
     await Promise.race([Promise.all(exits), deps.sleep(deps.captureExitTimeoutMs)]);
-    if (rec.closing || this.recordings.get(roomName) !== rec) return;
+    if (rec.closing || this.recordings.get(roomName) !== rec) return fail("recording discarded");
     const { inputs, sizes } = this.mixInputsWithAudio(roomName);
-    if (inputs.length === 0) return;
-    const partPath = path.join(rec.dir, "mix.ogg.part");
-    const finalPath = path.join(rec.dir, "mix.ogg");
-    let resolveDone!: (ok: boolean) => void;
-    const cache: MixCache = {
-      state: "rendering",
-      partPath,
-      path: finalPath,
-      proc: null,
-      done: new Promise<boolean>((r) => (resolveDone = r)),
-    };
-    rec.mixCache = cache;
+    if (inputs.length === 0) return fail("nothing with audio to mix");
+    try {
+      await deps.writeFile(cache.partPath, "");
+    } catch (err) {
+      return fail(`could not create ${cache.partPath}: ${String(err)}`);
+    }
+    if (rec.closing) return fail("recording discarded");
     const startedAt = deps.now();
-    const proc = this.runMixPlan(buildMixPlan(inputs, partPath, sizes));
+    const proc = this.runMixPlan(buildMixPlan(inputs, cache.partPath, sizes));
     cache.proc = proc;
     proc.stderr?.on("data", (d: Buffer) => {
       const line = d.toString().trim();
@@ -517,27 +526,18 @@ export class RecordingManager {
     });
     proc.on("exit", (code) => {
       cache.proc = null;
-      if (code === 0 && !rec.closing) {
-        deps
-          .rename(partPath, finalPath)
-          .then(() => {
-            cache.state = "ready";
-            deps.log(
-              `pre-rendered mix for ${rec.id} (${inputs.length} stream(s)) in ` +
-                `${Math.round((deps.now() - startedAt) / 1000)} s`,
-            );
-            resolveDone(true);
-          })
-          .catch((err) => {
-            cache.state = "failed";
-            deps.log(`mix render ${rec.id}: rename failed: ${String(err)}`);
-            resolveDone(false);
-          });
-      } else {
-        cache.state = "failed";
-        deps.log(`mix render ${rec.id} failed (code ${code})`);
-        resolveDone(false);
-      }
+      if (code !== 0 || rec.closing) return fail(`failed (code ${code})`);
+      deps
+        .rename(cache.partPath, cache.path)
+        .then(() => {
+          cache.state = "ready";
+          deps.log(
+            `pre-rendered mix for ${rec.id} (${inputs.length} stream(s)) in ` +
+              `${Math.round((deps.now() - startedAt) / 1000)} s`,
+          );
+          resolveDone(true);
+        })
+        .catch((err) => fail(`rename failed: ${String(err)}`));
     });
   }
 
@@ -552,11 +552,23 @@ export class RecordingManager {
     for (const recorder of rec.recorders.values()) {
       this.stopRecorder(recorder);
     }
-    // Pre-render the single-file download in the background (never blocks the stop).
+    // Pre-render the single-file download in the background (never blocks the stop). The
+    // cache entry is created NOW, so a download clicked right after "stop" follows it.
     if (this.deps.preRenderMix) {
-      void this.preRender(rec, roomName).catch((err) =>
-        this.deps.log(`mix render ${rec.id} crashed: ${String(err)}`),
-      );
+      let resolveDone!: (ok: boolean) => void;
+      const cache: MixCache = {
+        state: "rendering",
+        partPath: path.join(rec.dir, "mix.ogg.part"),
+        path: path.join(rec.dir, "mix.ogg"),
+        proc: null,
+        done: new Promise<boolean>((r) => (resolveDone = r)),
+      };
+      rec.mixCache = cache;
+      void this.preRender(rec, roomName, cache, resolveDone).catch((err) => {
+        cache.state = "failed";
+        this.deps.log(`mix render ${rec.id} crashed: ${String(err)}`);
+        resolveDone(false);
+      });
     }
 
     if (this.deps.finishedTtlMs > 0) {
