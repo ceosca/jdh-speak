@@ -2314,13 +2314,39 @@ export function useMediasoup() {
     if (!localStreamRef.current) return;
     let cancelled = false;
     void (async () => {
+      // ANDROID: close the old capture BEFORE opening the new one. Chromium only puts
+      // the phone in MODE_IN_COMMUNICATION when a processed (AEC) input opens while NO
+      // other input is open (AudioManagerAndroid::MakeAudioInputStream,
+      // `has_input_streams`). Opening the new one first (suppression OFF → ON mid-call,
+      // or leaving jam) left the processed capture outside communication mode — on
+      // Samsung that captures SILENCE: the others stopped hearing her until she left and
+      // re-entered with suppression already on (Maga, 2026-10-04). Costs a short gap in
+      // the outgoing audio while switching; desktop/iOS keep the seamless order.
+      const stopFirst = isAndroid;
+      if (stopFirst) {
+        localStreamRef.current?.getTracks().forEach((t) => t.stop());
+        // Margin for the browser to release the old input (asynchronous) first.
+        await new Promise((r) => setTimeout(r, 200));
+      }
       let stream: MediaStream;
       try {
         // jam = lowLatency capture (smallest input buffer).
         stream = await getMicrophoneStream(micDeviceId, effectiveProcessing, jamMode);
       } catch (err) {
         console.error("[mic] device switch failed:", err);
-        return;
+        if (!stopFirst || cancelled) return;
+        // The old capture is already closed: don't leave the user without a mic —
+        // go back to the previous settings.
+        try {
+          stream = await getMicrophoneStream(
+            previous.micDeviceId,
+            previous.effectiveProcessing,
+            previous.jamMode,
+          );
+        } catch (err2) {
+          console.error("[mic] restoring the previous mic failed:", err2);
+          return;
+        }
       }
       if (cancelled) {
         stream.getTracks().forEach((t) => t.stop());
@@ -4502,13 +4528,11 @@ export function useMediasoup() {
       // broadcast and the join response converge through the same path.
       socket.on("metronome", (mm: { bpm: number; running: boolean; anchorServerMs: number }) => {
         metronomeAnchorRef.current = mm.anchorServerMs;
-        store
-          .getState()
-          .setMetronomeState({
-            bpm: mm.bpm,
-            running: mm.running,
-            syncMs: clockSyncRef.current?.rttMs,
-          });
+        store.getState().setMetronomeState({
+          bpm: mm.bpm,
+          running: mm.running,
+          syncMs: clockSyncRef.current?.rttMs,
+        });
       });
       useRoomStore.setState({
         onSetMetronome: (change: { bpm?: number; running?: boolean }) => {

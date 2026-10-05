@@ -8,6 +8,29 @@
 
 ---
 
+## 2026-10-04
+
+### Samsung: al activar la supresión en plena llamada dejaban de oírla
+
+**Qué:** Maga (Samsung) activaba la supresión de ruido en la llamada y nadie la oía; al desactivarla
+volvía. Solo funcionaba si la activaba, salía y volvía a entrar.
+**Por qué (código fuente de Chromium, `AudioManagerAndroid::MakeAudioInputStream`):** Android pone el
+teléfono en **modo comunicación** (`MODE_IN_COMMUNICATION`) solo cuando se abre un micrófono con
+procesamiento (AEC) y **no hay otro micrófono abierto** (`has_input_streams`). Nuestro cambio de
+supresión abría el micrófono nuevo (con procesamiento) mientras el viejo (sin procesamiento) seguía
+abierto → nunca se activaba el modo → en Samsung esa captura da silencio. Al entrar de cero con la
+supresión ya activada no hay otro micrófono abierto, por eso ahí funcionaba.
+**Cómo (`client/src/hooks/useMediasoup.ts`, efecto de cambio de micrófono):** en **Android** se cierra
+primero el micrófono viejo, se espera 200 ms y recién ahí se abre el nuevo; si falla, se vuelve a la
+configuración anterior para no dejarla sin micrófono. Cubre también salir del modo ensayo y cambiar de
+micrófono. Escritorio/iOS sin cambios.
+**Verificado** (Edge headless con user-agent de Samsung, P2P y SFU): el viejo se cierra antes de pedir
+el nuevo (0 micrófonos abiertos al pedirlo), el otro la vuelve a oír tras un corte de ~250 ms por
+cambio, silencio respetado, doble cambio rápido OK, sin errores. El hardware Samsung en sí solo lo
+confirma Maga.
+
+---
+
 ## 2026-09-30 (b)
 
 ### Grabación: pistas completas (se perdía el principio y el final de cada una)
